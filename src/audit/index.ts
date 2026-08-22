@@ -9,3 +9,11 @@ export type {
   ChainBreak,
   ChainVerification,
 } from './record.js';
+export { buildReport, renderMarkdown, withinPeriod } from './report.js';
+export type {
+  CategoryRow,
+  ProcessingReport,
+  RecipientRow,
+  ReportOptions,
+  ReportPeriod,
+} from './report.js';
