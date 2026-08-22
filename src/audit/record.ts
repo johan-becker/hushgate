@@ -6,6 +6,7 @@
  * passed. A record can therefore never accidentally grow a field carrying the
  * data hushgate exists to keep out of it: categories and counts, never values.
  */
+import type { EnforcementMode } from '../residency/policy.js';
 import type { Policy } from '../types.js';
 
 export type AuditOutcome =
@@ -17,6 +18,15 @@ export type AuditOutcome =
   | 'rejected'
   /** Reached the upstream, which failed or timed out. */
   | 'failed';
+
+/** The residency decision that applied to a request. */
+export interface AuditResidency {
+  readonly mode: EnforcementMode;
+  /** Config path of the rule that decided, e.g. `residency.categories.IBAN`. */
+  readonly rule: string;
+  /** Jurisdiction the upstream is operated in, as decided at startup. */
+  readonly jurisdiction: string;
+}
 
 /** What a caller reports. Timestamp and id are stamped by the log itself. */
 export interface AuditEvent {
@@ -34,6 +44,8 @@ export interface AuditEvent {
   readonly findings: Readonly<Record<string, number>>;
   /** Which policy was applied to each kind. */
   readonly policies: Readonly<Record<string, Policy>>;
+  /** The residency decision, when the request got as far as one. */
+  readonly residency: AuditResidency | null;
 }
 
 /** An event plus the fields the log stamps on it. */
@@ -61,6 +73,14 @@ export function toRecord(event: AuditEvent, ts: string, id: string): AuditRecord
     upstream: event.upstream === null ? null : String(event.upstream),
     findings: countsOnly(event.findings),
     policies: policiesOnly(event.policies),
+    residency:
+      event.residency === null
+        ? null
+        : {
+            mode: event.residency.mode,
+            rule: String(event.residency.rule),
+            jurisdiction: String(event.residency.jurisdiction),
+          },
   };
 }
 
