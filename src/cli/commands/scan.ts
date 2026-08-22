@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve as joinPath } from 'node:path';
 import { loadConfig, redactionOptions } from '../../config.js';
 import { createDetectors, detect } from '../../detectors/index.js';
-import { HushgateError } from '../../errors.js';
+import { HushgateError, UsageError } from '../../errors.js';
 import { Session } from '../../redact/session.js';
 import type { Policy, Span } from '../../types.js';
 import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
@@ -46,7 +46,7 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   const targets = parsed.positionals;
 
   if (targets.length === 0) {
-    throw new HushgateError('hushgate scan needs at least one file, or - for standard input');
+    throw new UsageError('hushgate scan needs at least one file, or - for standard input');
   }
 
   const { config } = loadConfig({
