@@ -8,6 +8,14 @@ import { isAbsolute, resolve as joinPath } from 'node:path';
 import { boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 
+/** One line about who may call this proxy. */
+function describeTenants(config: HushgateConfig): string {
+  if (config.tenants.length === 0) {
+    return 'none — single tenant, no key required (loopback only)';
+  }
+  return config.tenants.map((tenant) => `${tenant.id} (${tenant.name})`).join(', ');
+}
+
 /** Resolve a configured path against the working directory. */
 function resolvePath(cwd: string, path: string): string {
   return isAbsolute(path) ? path : joinPath(cwd, path);
@@ -49,7 +57,24 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
     ? new JsonlAuditLog({ path: resolvePath(cli.cwd, config.audit.path) })
     : nullAuditLog;
 
-  const proxy = createProxyServer({ config, audit });
+  // A tenant with its own trail gets its own file: one team's auditor should not
+  // have to be handed another team's request log to see their own.
+  const tenantAudits = new Map<string, AuditSink>();
+  if (config.audit.enabled) {
+    for (const tenant of config.tenants) {
+      if (tenant.auditPath === null) continue;
+      tenantAudits.set(
+        tenant.id,
+        new JsonlAuditLog({ path: resolvePath(cli.cwd, tenant.auditPath) }),
+      );
+    }
+  }
+
+  const proxy = createProxyServer({
+    config,
+    audit,
+    auditFor: (tenant) => (tenant === null ? audit : (tenantAudits.get(tenant.id) ?? audit)),
+  });
   await proxy.listen();
 
   cli.stdout(banner(config, proxy.origin ?? `http://${config.host}:${config.port}`, source.path));
@@ -57,7 +82,7 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
   await untilStopped(cli.signal);
   cli.stdout('\nhushgate: shutting down\n');
   await proxy.close();
-  await audit.close();
+  await Promise.all([audit.close(), ...[...tenantAudits.values()].map((sink) => sink.close())]);
 
   return EXIT.ok;
 }
@@ -102,6 +127,7 @@ function banner(config: HushgateConfig, origin: string, configPath: string | nul
     `             anthropic  ${config.upstreams.anthropic}`,
     `  policy     ${config.redaction.defaultPolicy} by default; overrides: ${overrides}`,
     `  audit      ${config.audit.enabled ? config.audit.path : 'disabled'}`,
+    `  tenants    ${describeTenants(config)}`,
     `  routes     ${ROUTES.map((route) => `POST ${route.path}`).join(', ')}, GET /healthz`,
     '',
     '  Point your SDK at this address:',

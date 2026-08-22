@@ -142,6 +142,12 @@ export interface SseRehydratorOptions {
   readonly deltaRules: readonly PathRule[];
   /** Resolve a complete token to its original value. */
   readonly resolve: TokenResolver;
+  /**
+   * Called with every JSON event, before re-hydration. Used for accounting —
+   * usage totals arrive as ordinary events and there is no other place to see
+   * them without buffering the stream.
+   */
+  readonly onEvent?: (json: JsonValue) => void;
 }
 
 interface DeltaStream {
@@ -154,11 +160,13 @@ export class SseRehydrator {
   private readonly parser = new SseParser();
   private readonly select: (path: Path) => boolean;
   private readonly resolve: TokenResolver;
+  private readonly onEvent: ((json: JsonValue) => void) | undefined;
   private readonly streams = new Map<string, DeltaStream>();
 
   constructor(options: SseRehydratorOptions) {
     this.select = selectByRules(options.deltaRules);
     this.resolve = options.resolve;
+    this.onEvent = options.onEvent;
   }
 
   /** Feed raw stream text; returns rewritten SSE text ready to send on. */
@@ -188,6 +196,8 @@ export class SseRehydrator {
       // Not JSON: substitute complete tokens and pass it through unchanged.
       return renderEvent(event, substituteComplete(event.data, this.resolve));
     }
+
+    this.onEvent?.(json);
 
     // A block or message that is ending cannot receive any more fragments, so
     // whatever is still held back for it has to go out first.

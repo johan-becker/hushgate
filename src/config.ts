@@ -21,6 +21,7 @@ import {
   type ResidencyConfig,
 } from './residency/policy.js';
 import type { DataControl, EndpointEntry } from './residency/registry.js';
+import { hashKey, type Tenant, type TenantQuotas } from './tenants/tenant.js';
 import { isPolicy, type Policy } from './types.js';
 
 /** File name looked up in the working directory when no path is given. */
@@ -73,6 +74,8 @@ export interface HushgateConfig {
   readonly limits: LimitsConfig;
   readonly audit: AuditConfig;
   readonly residency: ResidencyConfig;
+  /** Tenants, or an empty list for single-tenant operation. */
+  readonly tenants: readonly Tenant[];
 }
 
 export interface LoadedConfig {
@@ -89,6 +92,7 @@ export interface ConfigOverrides {
   readonly redaction?: Partial<RedactionConfig>;
   readonly audit?: Partial<AuditConfig>;
   readonly residency?: Partial<ResidencyConfig>;
+  readonly tenants?: readonly Tenant[];
 }
 
 // `$schema` is accepted and ignored so editors can be pointed at a schema
@@ -102,6 +106,7 @@ const KNOWN_KEYS = new Set([
   'limits',
   'audit',
   'residency',
+  'tenants',
 ]);
 
 /** Default audit trail, relative to the working directory. */
@@ -139,6 +144,7 @@ export function defaultConfig(): HushgateConfig {
       path: DEFAULT_AUDIT_PATH,
     },
     residency: defaultResidencyConfig(),
+    tenants: [],
   };
 }
 
@@ -161,6 +167,8 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
   const audit = asObject(root['audit'] ?? {}, `${where}: "audit"`);
   rejectUnknownKeys(audit, new Set(['enabled', 'path']), `${where}: "audit"`);
 
+  const redaction = parseRedaction(root['redaction'], where, base.redaction);
+
   return {
     host: optionalString(root['host'], `${where}: "host"`) ?? base.host,
     port: optionalPort(root['port'], `${where}: "port"`) ?? base.port,
@@ -171,7 +179,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
         optionalUrl(upstreams['anthropic'], `${where}: "upstreams.anthropic"`) ??
         base.upstreams.anthropic,
     },
-    redaction: parseRedaction(root['redaction'], where, base.redaction),
+    redaction,
     limits: {
       maxBodyBytes:
         optionalPositiveInt(limits['maxBodyBytes'], `${where}: "limits.maxBodyBytes"`) ??
@@ -185,6 +193,122 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       path: optionalString(audit['path'], `${where}: "audit.path"`) ?? base.audit.path,
     },
     residency: parseResidency(root['residency'], where, base.residency),
+    tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction),
+  };
+}
+
+function parseTenants(
+  raw: unknown,
+  where: string,
+  globalRedaction: RedactionConfig,
+): Tenant[] {
+  if (raw === undefined || raw === null) return [];
+
+  const tenants = asArray(raw, where).map((item, index) => {
+    const scope = `${where}[${index}]`;
+    const node = asObject(item, scope);
+    rejectUnknownKeys(
+      node,
+      new Set([
+        'id',
+        'name',
+        'keyHash',
+        'keyHashes',
+        'keyEnv',
+        'upstreamKeyEnv',
+        'quotas',
+        'audit',
+        'redaction',
+      ]),
+      scope,
+    );
+
+    const id = requiredString(node['id'], `${scope}.id`);
+    if (!/^[a-z0-9][a-z0-9._-]*$/iu.test(id)) {
+      throw new ConfigError(
+        `${scope}.id must be a short identifier of letters, digits, dots, dashes or underscores, got "${id}"`,
+      );
+    }
+
+    const audit = asObject(node['audit'] ?? {}, `${scope}.audit`);
+    rejectUnknownKeys(audit, new Set(['path']), `${scope}.audit`);
+
+    return {
+      id,
+      name: optionalString(node['name'], `${scope}.name`) ?? id,
+      keyHashes: parseKeyHashes(node, scope),
+      redaction: parseRedaction(node['redaction'], scope, globalRedaction),
+      quotas: parseQuotas(node['quotas'], `${scope}.quotas`),
+      auditPath: optionalString(audit['path'], `${scope}.audit.path`) ?? null,
+      upstreamKeyEnv: optionalString(node['upstreamKeyEnv'], `${scope}.upstreamKeyEnv`) ?? null,
+    } satisfies Tenant;
+  });
+
+  const ids = new Set(tenants.map((tenant) => tenant.id));
+  if (ids.size !== tenants.length) {
+    throw new ConfigError(`${where}: tenant ids must be unique`);
+  }
+
+  return tenants;
+}
+
+/**
+ * Accept a hash, a list of hashes (for rotation), or the name of an environment
+ * variable holding the key itself — which is how a container gets one without a
+ * secret ever touching the config file.
+ */
+function parseKeyHashes(node: Record<string, unknown>, scope: string): string[] {
+  const hashes: string[] = [];
+
+  const single = optionalString(node['keyHash'], `${scope}.keyHash`);
+  if (single !== undefined) hashes.push(normaliseHash(single, `${scope}.keyHash`));
+
+  for (const [index, value] of (
+    optionalStringArray(node['keyHashes'], `${scope}.keyHashes`) ?? []
+  ).entries()) {
+    hashes.push(normaliseHash(value, `${scope}.keyHashes[${index}]`));
+  }
+
+  const keyEnv = optionalString(node['keyEnv'], `${scope}.keyEnv`);
+  if (keyEnv !== undefined) {
+    const key = process.env[keyEnv];
+    if (key === undefined || key.length === 0) {
+      throw new ConfigError(
+        `${scope}.keyEnv names ${keyEnv}, which is not set; export it or use keyHash instead`,
+      );
+    }
+    hashes.push(hashKey(key));
+  }
+
+  if (hashes.length === 0) {
+    throw new ConfigError(
+      `${scope} needs keyHash, keyHashes or keyEnv; run "hushgate keys new ${String(node['id'])}" to mint one`,
+    );
+  }
+
+  return hashes;
+}
+
+function normaliseHash(value: string, where: string): string {
+  const hash = value.startsWith('sha256:') ? value.slice('sha256:'.length) : value;
+  if (!/^[0-9a-f]{64}$/iu.test(hash)) {
+    throw new ConfigError(`${where} must be a SHA-256 hex digest, optionally prefixed with sha256:`);
+  }
+  return hash.toLowerCase();
+}
+
+function parseQuotas(raw: unknown, where: string): TenantQuotas {
+  if (raw === undefined || raw === null) {
+    return { requestsPerMinute: null, tokensPerDay: null };
+  }
+
+  const node = asObject(raw, where);
+  rejectUnknownKeys(node, new Set(['requestsPerMinute', 'tokensPerDay']), where);
+
+  return {
+    requestsPerMinute:
+      optionalPositiveInt(node['requestsPerMinute'], `${where}.requestsPerMinute`) ?? null,
+    tokensPerDay: optionalPositiveInt(node['tokensPerDay'], `${where}.tokensPerDay`) ?? null,
   };
 }
 
@@ -534,6 +658,7 @@ export function applyOverrides(
     limits: { ...config.limits, ...overrides.limits },
     audit: { ...config.audit, ...overrides.audit },
     residency: { ...config.residency, ...overrides.residency },
+    tenants: overrides.tenants ?? config.tenants,
   };
 }
 
