@@ -12,5 +12,6 @@ export * from './stream/index.js';
 export * from './audit/index.js';
 export * from './residency/index.js';
 export * from './tenants/index.js';
+export * from './metrics/index.js';
 export * from './proxy/index.js';
 export * from './config.js';
