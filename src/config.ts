@@ -114,6 +114,16 @@ export interface UpstreamConfig {
 export interface LimitsConfig {
   /** Largest request body hushgate will read, in bytes. */
   readonly maxBodyBytes: number;
+  /**
+   * Largest upstream response hushgate will buffer, in bytes.
+   *
+   * The request side has had a limit from the start; this is its counterpart.
+   * A response is parsed, cloned and re-serialised, so several times its own
+   * size is resident at once, and a compromised, misbehaving or simply
+   * very chatty provider must not be able to push the process past its
+   * memory limit and take every tenant down with it.
+   */
+  readonly maxResponseBytes: number;
   /** How long an upstream request may take before it is aborted. */
   readonly upstreamTimeoutMs: number;
   /** How long a client may take to deliver its request. */
@@ -227,6 +237,7 @@ export function defaultConfig(): HushgateConfig {
     },
     limits: {
       maxBodyBytes: 4 * 1024 * 1024,
+      maxResponseBytes: 16 * 1024 * 1024,
       upstreamTimeoutMs: 120_000,
       requestTimeoutMs: 60_000,
       upstreamRetries: 2,
@@ -262,6 +273,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
     limits,
     new Set([
       'maxBodyBytes',
+      'maxResponseBytes',
       'upstreamTimeoutMs',
       'requestTimeoutMs',
       'upstreamRetries',
@@ -290,6 +302,9 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       maxBodyBytes:
         optionalPositiveInt(limits['maxBodyBytes'], `${where}: "limits.maxBodyBytes"`) ??
         base.limits.maxBodyBytes,
+      maxResponseBytes:
+        optionalPositiveInt(limits['maxResponseBytes'], `${where}: "limits.maxResponseBytes"`) ??
+        base.limits.maxResponseBytes,
       upstreamTimeoutMs:
         optionalPositiveInt(limits['upstreamTimeoutMs'], `${where}: "limits.upstreamTimeoutMs"`) ??
         base.limits.upstreamTimeoutMs,
@@ -764,6 +779,7 @@ export function applyEnv(
   const defaultPolicy = env['HUSHGATE_DEFAULT_POLICY'];
   const hmacKey = env['HUSHGATE_HMAC_KEY'];
   const maxBodyBytes = env['HUSHGATE_MAX_BODY_BYTES'];
+  const maxResponseBytes = env['HUSHGATE_MAX_RESPONSE_BYTES'];
   const upstreamTimeoutMs = env['HUSHGATE_UPSTREAM_TIMEOUT_MS'];
   const auditPath = env['HUSHGATE_AUDIT_PATH'];
   const auditEnabled = env['HUSHGATE_AUDIT'];
@@ -797,6 +813,10 @@ export function applyEnv(
         maxBodyBytes === undefined
           ? config.limits.maxBodyBytes
           : envPositiveInt(maxBodyBytes, 'HUSHGATE_MAX_BODY_BYTES'),
+      maxResponseBytes:
+        maxResponseBytes === undefined
+          ? config.limits.maxResponseBytes
+          : envPositiveInt(maxResponseBytes, 'HUSHGATE_MAX_RESPONSE_BYTES'),
       upstreamTimeoutMs:
         upstreamTimeoutMs === undefined
           ? config.limits.upstreamTimeoutMs

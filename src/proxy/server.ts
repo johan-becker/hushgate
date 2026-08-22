@@ -331,11 +331,18 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       const contentType = upstreamResponse.headers['content-type'] ?? '';
       if (contentType.includes('text/event-stream')) {
         stream = true;
-        await pipeEventStream(route, session, upstreamResponse, response, countTokens);
+        await pipeEventStream(
+          route,
+          session,
+          upstreamResponse,
+          response,
+          countTokens,
+          config.limits.maxResponseBytes,
+        );
         return;
       }
 
-      const raw = await collect(upstreamResponse.body);
+      const raw = await collect(upstreamResponse.body, config.limits.maxResponseBytes);
       const restored = rehydrate(raw, contentType, session, countTokens);
       const payload = Buffer.from(restored, 'utf8');
 
@@ -453,11 +460,13 @@ async function pipeEventStream(
   upstreamResponse: UpstreamResponse,
   response: ServerResponse,
   onEvent: (json: JsonValue) => void,
+  maxEventBytes: number,
 ): Promise<void> {
   const rehydrator = new SseRehydrator({
     deltaRules: route.streamRules,
     resolve: (token) => session.lookup(token),
     onEvent,
+    maxEventBytes,
   });
   // A multi-byte character can straddle two TCP segments just as easily as a
   // placeholder can; a per-chunk toString would corrupt it.

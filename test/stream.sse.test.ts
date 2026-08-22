@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { UpstreamError } from '../src/errors.js';
 import {
   ANTHROPIC_STREAM_DELTAS,
   OPENAI_STREAM_DELTAS,
@@ -288,5 +289,40 @@ describe('stream integrity', () => {
         expect(() => JSON.parse(payload)).not.toThrow();
       }
     }
+  });
+});
+
+describe('the event buffer is bounded', () => {
+  it('refuses a producer that never emits a boundary', () => {
+    const parser = new SseParser(1024);
+    // A stream of data with no blank line would otherwise grow the buffer for
+    // as long as the upstream keeps writing.
+    expect(() => {
+      for (let chunk = 0; chunk < 100; chunk++) parser.push('data: '.padEnd(64, 'x'));
+    }).toThrow(UpstreamError);
+  });
+
+  it('names the limit that refused it', () => {
+    const parser = new SseParser(16);
+    expect(() => parser.push('data: this is well over sixteen characters')).toThrow(
+      /limits\.maxResponseBytes/u,
+    );
+  });
+
+  it('leaves a stream of ordinary events alone', () => {
+    const parser = new SseParser(1024);
+    const events = parser.push('data: {"a":1}\n\ndata: {"a":2}\n\n');
+    expect(events).toHaveLength(2);
+
+    // Many small events in sequence never accumulate, however many arrive.
+    for (let i = 0; i < 1000; i++) {
+      expect(parser.push(`data: {"a":${i}}\n\n`)).toHaveLength(1);
+    }
+  });
+
+  it('allows an event right up to the limit', () => {
+    const parser = new SseParser(64);
+    const payload = `data: ${'x'.repeat(50)}\n\n`;
+    expect(parser.push(payload)).toHaveLength(1);
   });
 });

@@ -18,6 +18,7 @@
  * as one synthetic event modelled on the last real one, so nothing is ever
  * dropped and the client still sees a well-formed stream.
  */
+import { UpstreamError } from '../errors.js';
 import { mapStrings, selectByRules, type JsonValue, type Path, type PathRule } from '../redact/traverse.js';
 import { StreamRehydrator, substituteComplete, type TokenResolver } from './rehydrate.js';
 
@@ -43,10 +44,19 @@ function terminatorAt(text: string, index: number): number {
   return index + 1 < text.length ? 1 : 0;
 }
 
-/** Incremental SSE block parser. Feed it chunks; it yields complete events. */
+/**
+ * Incremental SSE block parser. Feed it chunks; it yields complete events.
+ *
+ * `maxEventBytes` bounds a single unterminated event. Without it a producer
+ * that never emits a blank-line boundary — a broken provider, a MITM, or a
+ * genuinely enormous tool-call payload — grows the buffer until the process
+ * dies, and a streamed response is the one path where no other limit applies.
+ */
 export class SseParser {
   private buffer = '';
   private scanned = 0;
+
+  constructor(private readonly maxEventBytes = Number.POSITIVE_INFINITY) {}
 
   push(text: string): SseEvent[] {
     this.buffer += text;
@@ -65,6 +75,16 @@ export class SseParser {
     // A terminator can straddle a chunk boundary, so never trust the last few
     // characters to have been scanned conclusively.
     this.scanned = Math.max(0, this.buffer.length - 3);
+
+    if (this.buffer.length > this.maxEventBytes) {
+      this.buffer = '';
+      this.scanned = 0;
+      throw new UpstreamError(
+        `upstream event exceeds ${this.maxEventBytes} bytes without a boundary [limits.maxResponseBytes]`,
+        'network',
+      );
+    }
+
     return events;
   }
 
@@ -140,6 +160,8 @@ export function renderEvent(event: SseEvent, data: string | null): string {
 export interface SseRehydratorOptions {
   /** Paths whose strings arrive in fragments across events. */
   readonly deltaRules: readonly PathRule[];
+  /** Largest single unterminated event to buffer. Unbounded when omitted. */
+  readonly maxEventBytes?: number;
   /** Resolve a complete token to its original value. */
   readonly resolve: TokenResolver;
   /**
@@ -157,13 +179,14 @@ interface DeltaStream {
 }
 
 export class SseRehydrator {
-  private readonly parser = new SseParser();
+  private readonly parser: SseParser;
   private readonly select: (path: Path) => boolean;
   private readonly resolve: TokenResolver;
   private readonly onEvent: ((json: JsonValue) => void) | undefined;
   private readonly streams = new Map<string, DeltaStream>();
 
   constructor(options: SseRehydratorOptions) {
+    this.parser = new SseParser(options.maxEventBytes);
     this.select = selectByRules(options.deltaRules);
     this.resolve = options.resolve;
     this.onEvent = options.onEvent;
