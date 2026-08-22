@@ -1098,28 +1098,64 @@ hushgate is **source-available**, not open source. It is licensed under the
 the same one used by MariaDB, Terraform and Materialize, with only the
 Parameters filled in.
 
-**Free, no licence needed, no registration, nothing to phone home to:**
+What follows is a summary, written to be read. The [LICENSE](LICENSE) file is
+the thing that governs; where this summary and the licence differ, the licence
+wins.
 
-- any **non-production** use, at any organisation size — evaluation,
-  development, staging, CI, security review;
-- **production** use by an organisation of **10 or fewer** people, counting
-  employees and independent contractors across all entities under common
-  control;
-- **production** use by an individual, personally;
-- **production** use by non-profits, registered charities and accredited
-  educational institutions, whatever their size.
+**Copying, modifying, forking, redistributing and every non-production use are
+free for everyone, at any size, unconditionally.** That is the BUSL grant
+itself, and the two production conditions below do not touch it. Evaluation,
+development, staging, CI, a security review, a proof of concept against real
+traffic captures — none of that is production use. No licence, no registration,
+nothing to phone home to.
 
-**Needs a commercial licence:**
+**Production use is free when both of these hold.**
 
-- production use by an organisation larger than that; and
-- offering hushgate, or a product or service built on it, to third parties on a
-  hosted, managed, embedded or resold basis — at any size, including a
-  two-person company.
+**(a) You are within the size grant** — any one of:
 
-[COMMERCIAL.md](COMMERCIAL.md) works through the concrete cases (a 40-person
-company using it internally, a 6-person agency, a hosting provider, a
-university, a freelancer) and says what to put in the mail. Or write directly:
-**jo_becker@mailbox.org**.
+- your organisation has **10 or fewer** individuals; or
+- you are an individual using hushgate personally, not on behalf of an
+  organisation; or
+- you are a **non-profit, a registered charity or an accredited educational
+  institution**, whatever your headcount (still subject to (b)).
+
+*How the 10 are counted.* One each, regardless of hours worked: every employee,
+officer, independent contractor, freelancer, intern, working student,
+apprentice, and every individual supplied to you by a staffing or
+temporary-employment agency. Non-executive directors and shareholders who do no
+work for the organisation are not counted. "Your organisation" is your legal
+entity plus everything under common control with it. The count is taken **on
+the first day of each calendar quarter**, and if it first goes above 10 the free
+grant keeps running for a further **90 days** from that date, so you have a
+quarter to buy a licence or to stop.
+
+**(b) You are not offering hushgate to third parties** — that is, your use does
+not include offering hushgate, or a product or service that includes or is
+derived from it, to third parties as a **hosted, managed or embedded commercial
+offering**. This one ignores headcount: a two-person company selling a managed
+hushgate instance needs a licence.
+
+**What (b) does *not* catch.** The licence says so explicitly, and it matters:
+
+- **your own employees and independent contractors are not "third parties"** —
+  running one hushgate for your own people is not an offering;
+- **running hushgate for your organisation's own internal purposes** is not an
+  offering;
+- **using hushgate as an internal component of a product whose value to your
+  customers does not consist substantially of hushgate's functionality** is not
+  an offering either.
+
+So a SaaS that puts hushgate in its own request path to sanitise its own LLM
+calls is not offering hushgate to anybody, however many customers that SaaS
+has — only its headcount is in question. Selling "PII filtering, powered by
+hushgate" as the thing the customer is buying is the case (b) exists for.
+
+**Needs a commercial licence:** production use by an organisation over the size
+grant, and any offering under (b).
+[COMMERCIAL.md](COMMERCIAL.md) works the concrete cases through one by one — a
+40-person company using it internally, a small company embedding it in its own
+product, a 6-person agency, a hosting provider, a university, a freelancer —
+and says what to put in the mail. Or write directly: **jo_becker@mailbox.org**.
 
 **It turns into open source by itself.** Four years after a version is
 published, that version converts automatically and permanently to the
