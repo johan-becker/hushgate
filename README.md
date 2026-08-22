@@ -18,7 +18,7 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 619 tests
+network calls of its own beyond the upstream you configure, and its 739 tests
 pass with the cable pulled out.
 
 Every command output printed below was produced by running that command against
@@ -91,6 +91,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 ```
 
 Your provider API key is forwarded untouched and is never written anywhere.
+(In multi-tenant mode the caller sends a hushgate key instead, and the provider
+credential comes from the environment — see §8.)
 
 `hushgate init` writes a config with the reasoning in it, not a bare skeleton:
 
@@ -203,7 +205,8 @@ hushgate 0.1.0 listening on http://127.0.0.1:8787
   policy     pseudonymize by default; overrides: SECRET=block
   audit      examples/hushgate-audit.jsonl
   tenants    none — single tenant, no key required (loopback only)
-  routes     POST /v1/chat/completions, POST /v1/messages, GET /healthz
+  routes     POST /v1/chat/completions, POST /v1/messages, GET /healthz, GET /metrics
+             /metrics is open on loopback
 
   Point your SDK at this address:
     OPENAI_BASE_URL=http://127.0.0.1:8787/v1
@@ -423,8 +426,12 @@ Enforcement is set globally, per route, or per category of personal data:
 | --- | --- |
 | `block` | Refuse the request outright; the error names the rule that refused it. |
 | `sanitize` | Remove the personal data, then forward. The default. |
-| `warn` | Forward unchanged, record what went out. For a staged rollout only. |
-| `allow` | Forward unchanged, nothing recorded. |
+| `warn` | Forward unchanged, and warn on stderr. For a staged rollout only. |
+| `allow` | Forward unchanged, silently. |
+
+All four are audited identically: every request writes a record naming each
+category found and its count, whatever the mode decided. `allow` differs from
+`warn` only in not printing the warning.
 
 Where a provider publishes a retention or training opt-out that can be set per
 request, hushgate attaches it automatically from the same registry — for example
@@ -437,11 +444,21 @@ start.
 
 Every request appends one JSONL record: timestamp, route, outcome, latency,
 upstream, the count of findings per category, the policy applied to each, and
-the residency verdict. **No values.** Each record carries the SHA-256 of the
-previous one, so the file is a hash chain.
+the residency verdict. **No values.** That includes the requests hushgate
+refused — a blocked category, a residency rule, a rejected tenant key, an
+exhausted quota, an oversized body — which are recorded as `outcome:
+"rejected"` or `"blocked"` with the status that says which. A brute force
+against tenant keys leaves a line per attempt. Each record carries the SHA-256
+of the previous one, so the file is a hash chain.
+
+The trail below is [`examples/hushgate-audit.jsonl`](examples/hushgate-audit.jsonl),
+committed to the repository so this section can be read without running
+anything. It is exactly what the two requests in §3 and the stream in §4
+produce; delete it and re-run them and you get the same records, though the
+hashes differ because the chain covers timestamps.
 
 ```json
-{"ts":"2026-08-22T13:54:19.903Z","id":"80316c97-c501-4bc9-b989-02d7e889b6e8","tenant":null,"route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":18,"stream":false,"upstream":"127.0.0.1:9099","tokens":64,"findings":{"TERM":1,"NAME":1,"EMAIL":1,"PHONE":1,"IBAN":1},"policies":{"TERM":"pseudonymize","NAME":"pseudonymize","EMAIL":"pseudonymize","PHONE":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"LOCAL","controls":[]},"prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"9af65786f636f5f0189f2a6d20452d557db1d6719a2856162fa6ba59a6c2af2c"}
+{"ts":"2026-08-22T14:55:49.202Z","id":"0b09493d-574b-4e83-b0ef-30eded2145b1","tenant":null,"route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":18,"stream":false,"upstream":"127.0.0.1:9099","tokens":64,"findings":{"TERM":1,"NAME":1,"EMAIL":1,"PHONE":1,"IBAN":1},"policies":{"TERM":"pseudonymize","NAME":"pseudonymize","EMAIL":"pseudonymize","PHONE":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"LOCAL","controls":[]},"prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"0fdf40db84a026a99c3c908ec7bbb0bcc979bef6760ef39d9a5cbd72ab722059"}
 ```
 
 `hushgate audit verify` walks the chain:
@@ -451,25 +468,26 @@ $ hushgate audit verify -c examples/demo.config.json
 audit trail /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl
   records      3
   chain        intact
-  head         40dfcb83aa6e3e4c08f0c6ff59d22f30e20729fe1620a319d9ec96d4ba463058
+  head         b2e5930378425ec5265a1bc8d61c51147dd756e19c3880176f0f591152883be2
 
 Anchor the head hash outside hushgate (a ticket, a signed note, another
 system) if you also need to detect records being dropped from the end.
 ```
 
-Change a single field of a single record — here `latencyMs` from 1 to 9 — and it
-reports exactly where the chain broke:
+Change a single field of a single record — here the count that says a
+credential was blocked, edited from 1 to 0 — and it reports exactly where the
+chain broke:
 
 ```console
-$ sed 's/"latencyMs":1,/"latencyMs":9,/' examples/hushgate-audit.jsonl > examples/tampered.jsonl
+$ sed 's/"SECRET":1/"SECRET":0/' examples/hushgate-audit.jsonl > examples/tampered.jsonl
 $ hushgate audit verify --file examples/tampered.jsonl
 audit trail /Users/johan/Projects/hushgate/examples/tampered.jsonl
   records      3
   chain        BROKEN
   first break  record 2 (altered)
-  id           0513d807-7cbb-40a6-86ec-4169a8bfb200
-  timestamp    2026-08-22T13:54:19.914Z
-  detail       record hash is f82457ee7b63…, but its contents hash to ccdc03756f86…
+  id           eb05e168-4577-4d03-9755-c87773f86fe5
+  timestamp    2026-08-22T14:55:49.213Z
+  detail       record hash is b40af9be67b1…, but its contents hash to 4f1fae52d170…
 
 Everything before that record still verifies. Everything from it onwards
 has been altered, or had records inserted or removed.
@@ -487,13 +505,13 @@ $ hushgate audit report -c examples/demo.config.json
 
 _Article 30 style summary, generated by hushgate from its own audit trail._
 
-- **Generated**: 2026-08-22T13:54:39.709Z
+- **Generated**: 2026-08-22T14:56:18.842Z
 - **Source**: /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl
-- **Period**: beginning → end (records from 2026-08-22T13:54:19.903Z to 2026-08-22T13:54:19.927Z)
+- **Period**: beginning → end (records from 2026-08-22T14:55:49.202Z to 2026-08-22T14:55:49.226Z)
 - **Controller**: Nordlicht GmbH
 - **Contact**: datenschutz@nordlicht.example
 - **Data protection officer**: A. Datenschutz
-- **Audit chain**: intact over 3 records (head 40dfcb83aa6e…)
+- **Audit chain**: intact over 3 records (head b2e593037842…)
 
 ## Purposes of processing
 
@@ -651,8 +669,10 @@ Redaction is linear in input size. Measured on an Apple M1 Pro, Node 26, mean of
 | 16 KiB | 2.04 ms |
 | 66 KiB | 8.9 ms |
 
-Four times the input, four times the work — which is what the
-`does not degrade super-linearly` test guards on every CI run. A typical chat
+Four times the input, four times the work — measured across four doublings up
+to the 4 MiB body limit, and bounded on every CI run by the
+`does not degrade super-linearly` test, which compares the growth factor of one
+doubling against the next rather than trusting a single ratio. A typical chat
 request sits in the first row of that table, against a network round trip
 measured in hundreds of milliseconds.
 
@@ -691,7 +711,14 @@ measured in hundreds of milliseconds.
 | `POST /v1/chat/completions` | OpenAI-compatible. Redacted outbound, re-hydrated inbound, streaming or not. |
 | `POST /v1/messages` | Anthropic-compatible, same treatment. |
 | `GET /healthz` | `{"status":"ok","version":"…"}`. |
-| `GET /metrics` | Prometheus text exposition. |
+| `GET /metrics` | Prometheus text exposition. Needs a tenant key once tenants exist. |
+
+`/healthz` is always open. `/metrics` is open on loopback in single-tenant mode
+and requires a tenant key as soon as any tenant is configured — counts are still
+telemetry. Annotation-based Prometheus scraping sends no `Authorization` header,
+so a multi-tenant deployment needs a scrape config that does: a `ServiceMonitor`
+with `bearerTokenSecret` pointing at the same secret the tenant key comes from,
+for example.
 
 ```console
 $ curl -sS http://127.0.0.1:8787/metrics
@@ -746,8 +773,12 @@ wins. The file is JSONC: `//` and `/* */` comments are stripped on load.
 | `redaction.custom` | `[]` | `{ "name", "pattern" }`; the name becomes the category. |
 | `redaction.hmacKey` | random per session | Set it to make `hash` output comparable across requests and restarts. |
 | `redaction.dobYearRange` | 1900 → this year − 13 | Plausible birth years. |
-| `limits.maxBodyBytes` | 4 MiB | Larger requests are refused. |
+| `limits.maxBodyBytes` | 4 MiB | Larger requests are refused with 413. |
+| `limits.maxResponseBytes` | 16 MiB | Larger upstream responses are refused with 502. |
 | `limits.upstreamTimeoutMs` | 120000 | Upstream request timeout. |
+| `limits.requestTimeoutMs` | 60000 | How long a client may take to deliver its request. |
+| `limits.upstreamRetries` | 2 | Retries for an upstream that never answered. A response is never retried. |
+| `limits.retryBackoffMs` | 250 | Base delay for the full-jitter backoff, doubled each attempt. |
 | `audit.enabled`, `audit.path` | `true`, `hushgate-audit.jsonl` | |
 | `residency.mode` | `sanitize` | `block` \| `sanitize` \| `warn` \| `allow`. |
 | `residency.routes`, `.categories` | `{}` | Per-route and per-category overrides. |
@@ -760,7 +791,8 @@ wins. The file is JSONC: `//` and `/* */` comments are stripped on load.
 Environment overrides: `HUSHGATE_HOST`, `HUSHGATE_PORT`,
 `HUSHGATE_UPSTREAM_OPENAI`, `HUSHGATE_UPSTREAM_ANTHROPIC`,
 `HUSHGATE_DEFAULT_POLICY`, `HUSHGATE_HMAC_KEY`, `HUSHGATE_MAX_BODY_BYTES`,
-`HUSHGATE_UPSTREAM_TIMEOUT_MS`, `HUSHGATE_AUDIT_PATH`, `HUSHGATE_AUDIT`,
+`HUSHGATE_MAX_RESPONSE_BYTES`, `HUSHGATE_UPSTREAM_TIMEOUT_MS`,
+`HUSHGATE_AUDIT_PATH`, `HUSHGATE_AUDIT`,
 `HUSHGATE_RESIDENCY_MODE`. A full annotated file is in
 [`hushgate.config.example.json`](hushgate.config.example.json).
 
@@ -794,9 +826,30 @@ The caller sends the key as "Authorization: Bearer <key>" or "x-api-key: <key>".
 Revoke it by removing the hash; rotate it by listing both hashes in keyHashes.
 ```
 
-Add `quotas` (`requestsPerMinute`, `tokensPerDay`), `audit.path` and a
-`redaction` block to the tenant entry to give it its own limits, stream and
-policy profile. Over-quota callers get a 429.
+A tenant entry takes:
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `name` | Identifier used in the audit trail and the metrics labels. |
+| `keyHash` | `sha256:…` of the key. The key itself is never stored. |
+| `keyHashes` | Several hashes, for rotating a key without downtime. |
+| `keyEnv` | Name of an environment variable holding the key, so a container gets one without a secret in the config file. |
+| `upstreamKeyEnv` | Where this tenant's **provider** credential is read from. Defaults to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. |
+| `quotas` | `requestsPerMinute`, `tokensPerDay`. Over-quota callers get a 429. |
+| `audit.path` | A dedicated trail for this tenant, with its own hash chain. |
+| `redaction` | Overrides folded over the global profile — see below. |
+
+A tenant's `redaction` block is an **override**, not a replacement: policies
+merge per kind, dictionaries take the union of names and terms, custom rules
+merge by name, and anything the tenant does not mention it inherits. A tenant
+with no `redaction` block gets the global profile in full.
+
+Note what changes about credentials in multi-tenant mode. The caller sends a
+*hushgate* key, not a provider key, and hushgate drops the header carrying it
+before forwarding — a tenant key must never reach a provider. The provider
+credential comes from `upstreamKeyEnv` instead. The unqualified claim in §2 that
+your provider API key is forwarded untouched holds for single-tenant operation,
+which is where you start.
 
 ### Library
 
@@ -865,7 +918,8 @@ hushgate: redacted 1 finding (PHONE 1)
 All three failed their check and were rejected, so all three passed through as
 written — but part of the IBAN's digits were then claimed by a different
 detector. `0044 0532 0130 01` really is a well-formed international number in
-the `00` form: country code 44, thirteen subscriber digits. That is a false
+the `00` form: twelve digits after the `00` prefix, inside the subscriber-length
+bounds the detector enforces. That is a false
 positive, and it is the honest illustration of hushgate's bias: **it prefers a
 false positive to a leak.** A pseudonymised phone number that was never a phone
 number costs the model a little context; the opposite mistake costs you a
@@ -928,9 +982,16 @@ inputs to that review rather than as its conclusion.
 ## 11. Deployment
 
 ```sh
-hushgate init            # the compose file mounts ./hushgate.config.json read-only
+hushgate init                 # the compose file mounts ./hushgate.config.json read-only
+hushgate keys new default     # paste the printed "tenants" block into that file
 docker compose up --build
 ```
+
+The middle step is not optional. The image binds `0.0.0.0` so the port can be
+published, and hushgate refuses to bind a non-loopback address with no tenants
+rather than become an open relay on the network — so a freshly `init`-ed config,
+whose `tenants` key is commented out, makes the container exit at startup and
+`restart: unless-stopped` turn that into a crash loop.
 
 The image is multi-stage and runs as a non-root user, with a `HEALTHCHECK` on
 `/healthz` that uses `fetch` rather than adding curl to the image. Because
@@ -988,7 +1049,7 @@ residency
 security
   ok    bound to 127.0.0.1, so only this machine can reach it
 audit
-  ok    /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl: 3 record(s), chain intact, head 40dfcb83aa6e…
+  ok    /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl: 3 record(s), chain intact, head b2e593037842…
 
 Nothing unsafe found.
 ```
@@ -1016,7 +1077,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-619 tests across 29 files, and **none of them touch the network**. Every proxy
+739 tests across 29 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`
