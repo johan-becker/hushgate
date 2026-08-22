@@ -18,7 +18,8 @@ real values back. The provider never receives the personal data.
   fail-closed at startup, with an offline registry of EU-hosted alternatives.
 - Multi-tenant: per-team keys, policy profiles, pseudonym namespaces, audit
   streams and quotas.
-- An append-only audit trail that records categories and counts, never values.
+- A tamper-evident append-only audit trail that records categories and counts,
+  never values, and an Article 30 style report generated from it.
 
 ## The migration is one line
 
@@ -216,6 +217,8 @@ hushgate scan [--json] [--show-values] [--quiet] <file...>
 hushgate check [--quiet] < input > output
 hushgate residency [--json] [--registry]
 hushgate keys new <tenant-id> | hushgate keys hash < key
+hushgate audit verify [--file <path>] [--json]
+hushgate audit report [--from <date>] [--to <date>] [--json]
 ```
 
 `scan` is built for CI — it exits **3** when it finds personal data:
@@ -410,15 +413,68 @@ Callers send the key exactly where their SDK already sends one —
 
 ## Audit trail
 
-Append-only JSONL, one object per request:
+Append-only JSONL, one object per request, each linked to the one before it by
+a SHA-256 hash chain:
 
 ```json
-{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","tenant":"support","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"tokens":1841,"upstream":"api.openai.com","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"FR","controls":["zero-retention via body store=false"]}}
+{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","tenant":"support","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"tokens":1841,"upstream":"api.mistral.ai","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"FR","controls":["zero-retention via body store=false"]},"prev":"4f3a…","hash":"9c21…"}
 ```
 
 Categories and counts, never values — the record is assembled from a fixed field
-list precisely so it cannot grow one. Blocked and rejected requests are recorded
-too: "nothing was sent" is exactly the fact worth writing down.
+list precisely so it cannot grow one, and a test drives real personal data of
+five kinds through the proxy to prove none of it lands in the file. Blocked and
+rejected requests are recorded too: "nothing was sent" is exactly the fact worth
+writing down.
+
+### Verifying it
+
+```console
+$ hushgate audit verify
+audit trail /srv/hushgate/hushgate-audit.jsonl
+  records      12481
+  chain        intact
+  head         9c21f0a4…
+
+Anchor the head hash outside hushgate (a ticket, a signed note, another
+system) if you also need to detect records being dropped from the end.
+```
+
+A break is reported with the record it starts at and what kind it is — `altered`
+when a record's contents no longer match its own hash, `unlinked` when something
+was inserted or removed at that point. Everything before the break still
+verifies. The command exits non-zero, so it works as a scheduled check.
+
+What a self-contained chain cannot detect is truncation of the tail: dropping
+the last records leaves a shorter but consistent chain. That is why the head
+hash is printed.
+
+### Reporting on it
+
+```console
+$ hushgate audit report --from 2026-03-01 --to 2026-03-31 > march.md
+```
+
+An Article 30 style record of processing: categories of personal data with the
+handling each received, recipients with their jurisdiction and transfer status,
+the safeguard recorded for each, and volumes by outcome, route, enforcement mode
+and tenant. `--json` for a pipeline.
+
+The parts hushgate cannot know, it does not invent. Purposes come from
+`organisation.purposes`; a recipient with no legal basis on the allowlist is
+printed as **none recorded**. Each report carries its own chain verification,
+because a summary that cannot be checked against its source is a claim rather
+than evidence.
+
+```json
+{
+  "organisation": {
+    "name": "Acme GmbH",
+    "contact": "datenschutz@acme.example",
+    "dpo": "A. Datenschutz",
+    "purposes": ["Drafting customer support replies", "Summarising internal documents"]
+  }
+}
+```
 
 ## Is this legally sufficient?
 

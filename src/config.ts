@@ -59,6 +59,20 @@ export interface RedactionConfig {
   readonly hmacKey: string | null;
 }
 
+/**
+ * Who is doing the processing.
+ *
+ * Only used to head the Article 30 report. Nothing here changes behaviour, and
+ * anything left out is printed as "not recorded" rather than invented.
+ */
+export interface OrganisationConfig {
+  readonly name: string | null;
+  readonly contact: string | null;
+  readonly dpo: string | null;
+  /** Purposes of processing, in the operator's own words. */
+  readonly purposes: readonly string[];
+}
+
 export interface AuditConfig {
   /** Whether to write an audit trail at all. */
   readonly enabled: boolean;
@@ -76,6 +90,7 @@ export interface HushgateConfig {
   readonly residency: ResidencyConfig;
   /** Tenants, or an empty list for single-tenant operation. */
   readonly tenants: readonly Tenant[];
+  readonly organisation: OrganisationConfig;
 }
 
 export interface LoadedConfig {
@@ -93,6 +108,7 @@ export interface ConfigOverrides {
   readonly audit?: Partial<AuditConfig>;
   readonly residency?: Partial<ResidencyConfig>;
   readonly tenants?: readonly Tenant[];
+  readonly organisation?: Partial<OrganisationConfig>;
 }
 
 // `$schema` is accepted and ignored so editors can be pointed at a schema
@@ -107,6 +123,7 @@ const KNOWN_KEYS = new Set([
   'audit',
   'residency',
   'tenants',
+  'organisation',
 ]);
 
 /** Default audit trail, relative to the working directory. */
@@ -145,6 +162,7 @@ export function defaultConfig(): HushgateConfig {
     },
     residency: defaultResidencyConfig(),
     tenants: [],
+    organisation: { name: null, contact: null, dpo: null, purposes: [] },
   };
 }
 
@@ -194,6 +212,23 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
     },
     residency: parseResidency(root['residency'], where, base.residency),
     tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction),
+    organisation: parseOrganisation(root['organisation'], `${where}: "organisation"`),
+  };
+}
+
+function parseOrganisation(raw: unknown, where: string): OrganisationConfig {
+  if (raw === undefined || raw === null) {
+    return { name: null, contact: null, dpo: null, purposes: [] };
+  }
+
+  const node = asObject(raw, where);
+  rejectUnknownKeys(node, new Set(['name', 'contact', 'dpo', 'purposes']), where);
+
+  return {
+    name: optionalString(node['name'], `${where}.name`) ?? null,
+    contact: optionalString(node['contact'], `${where}.contact`) ?? null,
+    dpo: optionalString(node['dpo'], `${where}.dpo`) ?? null,
+    purposes: optionalStringArray(node['purposes'], `${where}.purposes`) ?? [],
   };
 }
 
@@ -659,6 +694,7 @@ export function applyOverrides(
     audit: { ...config.audit, ...overrides.audit },
     residency: { ...config.residency, ...overrides.residency },
     tenants: overrides.tenants ?? config.tenants,
+    organisation: { ...config.organisation, ...overrides.organisation },
   };
 }
 

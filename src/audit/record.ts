@@ -6,8 +6,12 @@
  * passed. A record can therefore never accidentally grow a field carrying the
  * data hushgate exists to keep out of it: categories and counts, never values.
  */
+import { createHash } from 'node:crypto';
 import type { EnforcementMode } from '../residency/policy.js';
 import type { Policy } from '../types.js';
+
+/** `prev` of the first record in a trail: there is nothing before it. */
+export const GENESIS_HASH = '0'.repeat(64);
 
 export type AuditOutcome =
   /** Sanitised and forwarded upstream. */
@@ -60,15 +64,28 @@ export interface AuditRecord extends AuditEvent {
   readonly ts: string;
   /** Unique id for this record. */
   readonly id: string;
+  /** SHA-256 of the record before this one, forming the chain. */
+  readonly prev: string;
+  /** SHA-256 of this record's other fields, in the order they are written. */
+  readonly hash: string;
 }
 
 /**
- * Build the serialisable record. Copying field by field is the guarantee that
- * nothing else can ride along, and the counts are re-derived as numbers so a
- * caller cannot smuggle a string through the `findings` map.
+ * Build the serialisable record.
+ *
+ * Copying field by field is the guarantee that nothing else can ride along, and
+ * the counts are re-derived as numbers so a caller cannot smuggle a string
+ * through the `findings` map. The hash is computed last, over exactly the text
+ * that precedes it on the line, which is what makes verification a
+ * re-serialisation rather than a parse of a separate format.
  */
-export function toRecord(event: AuditEvent, ts: string, id: string): AuditRecord {
-  return {
+export function toRecord(
+  event: AuditEvent,
+  ts: string,
+  id: string,
+  prev: string = GENESIS_HASH,
+): AuditRecord {
+  const body = {
     ts,
     id,
     tenant: event.tenant === null ? null : String(event.tenant),
@@ -90,7 +107,105 @@ export function toRecord(event: AuditEvent, ts: string, id: string): AuditRecord
             jurisdiction: String(event.residency.jurisdiction),
             controls: event.residency.controls.map(String),
           },
+    prev,
   };
+
+  return { ...body, hash: hashBody(body) };
+}
+
+/**
+ * Hash everything on the line except the hash itself.
+ *
+ * Property order matters and is stable: `toRecord` writes the fields in a fixed
+ * order, `JSON.parse` preserves the order it read, and object rest preserves the
+ * order of what it keeps. So a record read back from disk re-serialises to
+ * exactly the bytes that were hashed — as long as nobody has rewritten the file,
+ * which is the thing the chain is there to detect.
+ */
+export function hashBody(body: Omit<AuditRecord, 'hash'>): string {
+  return createHash('sha256').update(JSON.stringify(body), 'utf8').digest('hex');
+}
+
+/** Recompute a record's hash from the record itself. */
+export function recomputeHash(record: AuditRecord): string {
+  const { hash: _ignored, ...body } = record;
+  return hashBody(body);
+}
+
+export interface ChainBreak {
+  /** 1-based index of the record within the trail. */
+  readonly index: number;
+  readonly id: string;
+  readonly ts: string;
+  readonly reason: 'altered' | 'unlinked';
+  readonly detail: string;
+}
+
+export interface ChainVerification {
+  readonly ok: boolean;
+  readonly records: number;
+  /** The first break, or `null` when the chain is intact. */
+  readonly firstBreak: ChainBreak | null;
+  /** Hash of the last record, to anchor the next append. */
+  readonly head: string;
+}
+
+/**
+ * Walk a chain and report the first break.
+ *
+ * Two kinds of break are distinguished because they mean different things: a
+ * record whose own hash no longer matches its contents was *altered*, while a
+ * record whose `prev` does not match the record before it means something was
+ * inserted or removed at that point.
+ *
+ * What this cannot detect is truncation of the tail — dropping the last records
+ * leaves a shorter but internally consistent chain. Ship the head hash somewhere
+ * hushgate does not control if that matters to you.
+ */
+export function verifyChain(records: readonly AuditRecord[]): ChainVerification {
+  let previous = GENESIS_HASH;
+
+  for (const [index, record] of records.entries()) {
+    const expected = recomputeHash(record);
+
+    if (record.hash !== expected) {
+      return {
+        ok: false,
+        records: records.length,
+        head: previous,
+        firstBreak: {
+          index: index + 1,
+          id: record.id ?? '',
+          ts: record.ts ?? '',
+          reason: 'altered',
+          detail: `record hash is ${short(record.hash)}, but its contents hash to ${short(expected)}`,
+        },
+      };
+    }
+
+    if (record.prev !== previous) {
+      return {
+        ok: false,
+        records: records.length,
+        head: previous,
+        firstBreak: {
+          index: index + 1,
+          id: record.id ?? '',
+          ts: record.ts ?? '',
+          reason: 'unlinked',
+          detail: `record links to ${short(record.prev)}, but the record before it hashes to ${short(previous)}`,
+        },
+      };
+    }
+
+    previous = record.hash;
+  }
+
+  return { ok: true, records: records.length, firstBreak: null, head: previous };
+}
+
+function short(hash: string | undefined): string {
+  return hash === undefined ? '(missing)' : `${hash.slice(0, 12)}…`;
 }
 
 function countsOnly(findings: Readonly<Record<string, number>>): Record<string, number> {
