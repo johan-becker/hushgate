@@ -77,3 +77,66 @@ export function isWordChar(text: string, index: number): boolean {
 export function stripSeparators(value: string): string {
   return value.replaceAll(/[\s\-./()]/g, '');
 }
+
+/** A run of "member" characters with optional single separators between them. */
+export interface RunScan {
+  /** The member characters, separators removed. */
+  readonly chars: string;
+  /** `offsets[i]` is the index in the source text of `chars[i]`. */
+  readonly offsets: readonly number[];
+}
+
+/**
+ * Walk forward from `start`, collecting member characters and tolerating a
+ * single separator between them.
+ *
+ * This is what lets `DE89 3704 0044 0532 0130 00` and `4111-1111-1111-1111` be
+ * recognised without a regex that also happily swallows the rest of the
+ * sentence. Collection stops at `maxChars`, at a non-member/non-separator
+ * character, or at a separator that is not followed by another member.
+ */
+export function collectRun(
+  text: string,
+  start: number,
+  isMember: (ch: string) => boolean,
+  isSeparator: (ch: string) => boolean,
+  maxChars: number,
+): RunScan {
+  const chars: string[] = [];
+  const offsets: number[] = [];
+  let i = start;
+
+  while (i < text.length && chars.length < maxChars) {
+    const ch = text[i];
+    if (ch === undefined) break;
+
+    if (isMember(ch)) {
+      chars.push(ch);
+      offsets.push(i);
+      i += 1;
+      continue;
+    }
+
+    if (isSeparator(ch) && chars.length > 0) {
+      const next = text[i + 1];
+      if (next !== undefined && isMember(next)) {
+        i += 1;
+        continue;
+      }
+    }
+
+    break;
+  }
+
+  return { chars: chars.join(''), offsets };
+}
+
+/** True when `text[index]` exists and satisfies `isMember`. */
+export function memberAt(text: string, index: number, isMember: (ch: string) => boolean): boolean {
+  const ch = text[index];
+  return ch !== undefined && isMember(ch);
+}
+
+export const isDigit = (ch: string): boolean => ch >= '0' && ch <= '9';
+export const isUpperAlnum = (ch: string): boolean =>
+  isDigit(ch) || (ch >= 'A' && ch <= 'Z');
