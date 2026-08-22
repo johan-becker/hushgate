@@ -1,4 +1,4 @@
-export { createProxyServer, respondWithError, statusOf } from './server.js';
+export { createProxyServer, reportFailure, respondWithError, statusOf } from './server.js';
 export type { ProxyOptions, ProxyServer } from './server.js';
 export { findRoute, ROUTES } from './routes.js';
 export type { ProviderId, Route } from './routes.js';

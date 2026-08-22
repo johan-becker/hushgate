@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { UpstreamError } from '../src/errors.js';
+import {
+  AuthenticationError,
+  BlockedContentError,
+  QuotaExceededError,
+  RequestError,
+  UpstreamError,
+} from '../src/errors.js';
 import { defaultConfig } from '../src/config.js';
 import { Metrics } from '../src/metrics/registry.js';
 import { withRetry } from '../src/proxy/retry.js';
+import { reportFailure } from '../src/proxy/server.js';
 import type { UpstreamClient, UpstreamResponse } from '../src/proxy/upstream.js';
 import { Session } from '../src/redact/session.js';
 import { startHarness, type Harness } from './helpers/proxy-harness.js';
@@ -263,6 +270,65 @@ describe('metrics', () => {
     harness = await startHarness();
     const response = await harness.post('/metrics', {});
     expect(response.status).toBe(405);
+  });
+});
+
+/** Collect what the failure sink was handed, instead of writing to the terminal. */
+function capture(error: unknown): unknown[] {
+  const logged: unknown[] = [];
+  reportFailure(error, (value) => logged.push(value));
+  return logged;
+}
+
+describe('reportFailure', () => {
+  it('reports a policy refusal as one line, not a stack trace', () => {
+    expect(capture(new BlockedContentError({ SECRET: 1 }))).toEqual([
+      'hushgate: request blocked by policy: SECRET (1)',
+    ]);
+  });
+
+  it('reports a rejected key and an exhausted quota the same way', () => {
+    expect(capture(new AuthenticationError('no tenant key presented'))).toEqual([
+      'hushgate: no tenant key presented',
+    ]);
+    expect(
+      capture(new QuotaExceededError('support is over its quota', 'support', 'requests', 60, 30)),
+    ).toEqual(['hushgate: support is over its quota']);
+  });
+
+  it('reports a rejected request as one line, whatever its 4xx status', () => {
+    expect(capture(new RequestError(413, 'body_too_large', 'body exceeds 4194304 bytes'))).toEqual([
+      'hushgate: body exceeds 4194304 bytes',
+    ]);
+  });
+
+  it('keeps the whole error for an upstream failure, whose cause is the point', () => {
+    const error = new UpstreamError('upstream did not answer in time', 'timeout');
+    expect(capture(error)).toEqual([error]);
+  });
+
+  it('keeps the whole error for a failure nothing mapped, so a real bug still shows', () => {
+    const bug = new TypeError('cannot read properties of undefined');
+    expect(capture(bug)).toEqual([bug]);
+  });
+
+  it('does not print a stack when the proxy refuses a blocked request', async () => {
+    const logged: unknown[] = [];
+    harness = await startHarness({
+      config: (base) => ({
+        ...base,
+        redaction: { ...base.redaction, policies: { SECRET: 'block' } },
+      }),
+      proxy: { onInternalError: (error) => reportFailure(error, (value) => logged.push(value)) },
+    });
+
+    const response = await harness.post('/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'token sk-proj-AAAAAAAAAAAAAAAAAAAAAAAA' }],
+    });
+
+    expect(response.status).toBe(403);
+    expect(logged).toEqual(['hushgate: request blocked by policy: SECRET (1)']);
   });
 });
 
