@@ -49,10 +49,12 @@ describe('record construction', () => {
     const record = toRecord(smuggled, '2026-01-01T00:00:00.000Z', 'id-1');
     expect(Object.keys(record).toSorted()).toEqual([
       'findings',
+      'hash',
       'id',
       'latencyMs',
       'outcome',
       'policies',
+      'prev',
       'residency',
       'route',
       'status',
