@@ -139,13 +139,20 @@ export function evaluateUpstream(upstream: string, residency: ResidencyConfig): 
     };
   }
 
-  if (residency.requireDataControls && controls.length === 0) {
+  // `block` mode implies the requirement: refusing to send personal data while
+  // being indifferent to what happens to the rest of the request is not a
+  // position anybody can defend to an auditor.
+  const controlsRequired = residency.requireDataControls || residency.mode === 'block';
+
+  if (controlsRequired && controls.length === 0) {
     return {
       upstream,
       host,
       permitted: false,
       rule: `residency.allow[${index}]`,
-      reason: `${upstream} offers no documented retention or training control, and residency.requireDataControls is set`,
+      reason: `${upstream} offers no documented retention or training control, and ${
+        residency.requireDataControls ? 'residency.requireDataControls is set' : 'residency.mode is block'
+      }`,
       jurisdiction: where,
       registry,
       legalBasis: entry.legalBasis,

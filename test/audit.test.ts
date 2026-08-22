@@ -31,7 +31,7 @@ const event = (overrides: Partial<AuditEvent> = {}): AuditEvent => ({
   upstream: 'api.openai.com',
   findings: { EMAIL: 2 },
   policies: { EMAIL: 'pseudonymize' },
-  residency: { mode: 'sanitize', rule: 'residency.mode', jurisdiction: 'US' },
+  residency: { mode: 'sanitize', rule: 'residency.mode', jurisdiction: 'US', controls: [] },
   ...overrides,
 });
 
