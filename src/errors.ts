@@ -29,3 +29,43 @@ export class BlockedContentError extends HushgateError {
     return Object.keys(this.counts).toSorted();
   }
 }
+
+/** Thrown when a request body is nested far deeper than any real payload. */
+export class TraversalDepthError extends HushgateError {
+  constructor(readonly maxDepth: number) {
+    super(`request body is nested deeper than ${maxDepth} levels; refusing to traverse it`);
+  }
+}
+
+/**
+ * A request hushgate refuses before it ever reaches an upstream: unreadable
+ * body, wrong method, unknown route, oversized payload.
+ */
+export class RequestError extends HushgateError {
+  constructor(
+    readonly status: number,
+    readonly type: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** The upstream provider could not be reached, or did not answer in time. */
+export class UpstreamError extends HushgateError {
+  constructor(
+    message: string,
+    readonly reason: 'timeout' | 'network',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+
+  /** 504 for a timeout, 502 for everything else, as a gateway should. */
+  get status(): number {
+    return this.reason === 'timeout' ? 504 : 502;
+  }
+}
+
+/** The command line was not understood. Reported with usage, and exit code 2. */
+export class UsageError extends HushgateError {}
