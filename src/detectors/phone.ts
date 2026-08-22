@@ -68,12 +68,30 @@ interface PhoneRun {
 }
 
 /**
+ * Is this run of separator characters one separator, or the gap between two
+ * different numbers?
+ *
+ * A single character always separates. Longer runs separate only when they
+ * carry exactly one piece of punctuation — `(0)` and the spaced ` / ` and ` - `
+ * forms German writers use — never when they are nothing but whitespace, which
+ * is what keeps `0721 1234567  0721 7654321` two numbers rather than one.
+ */
+function isSeparatorRun(run: string): boolean {
+  if (run.length === 1) return true;
+  if (run.includes('(') || run.includes(')')) return true;
+  return run.replaceAll(' ', '').length === 1;
+}
+
+/** Longest separator run that can still be one separator: `' / '`. */
+const MAX_SEPARATOR_RUN = 3;
+
+/**
  * Collect a phone-shaped run starting at `start`.
  *
- * Single separators are allowed between digits; a two-character separator run
- * is allowed only when it contains a parenthesis, which is what makes
- * `+49 (0) 721 123456` work without also gluing two numbers separated by a
- * double space into one.
+ * Single separators are allowed between digits; a longer separator run is
+ * allowed only when {@link isSeparatorRun} accepts it, which is what makes
+ * `+49 (0) 721 123456` and `0721 / 123 456` work without also gluing two
+ * numbers separated by a double space into one.
  */
 function collectPhoneRun(text: string, start: number): PhoneRun {
   let i = start;
@@ -103,16 +121,13 @@ function collectPhoneRun(text: string, start: number): PhoneRun {
 
     let run = '';
     let j = i;
-    while (j < text.length && run.length < 2 && isSeparator(text[j] as string)) {
+    while (j < text.length && run.length < MAX_SEPARATOR_RUN && isSeparator(text[j] as string)) {
       run += text[j];
       j += 1;
     }
 
     const next = text[j];
-    const acceptable =
-      next !== undefined &&
-      isDigit(next) &&
-      (run.length === 1 || run.includes('(') || run.includes(')'));
+    const acceptable = next !== undefined && isDigit(next) && isSeparatorRun(run);
 
     if (!acceptable) break;
 

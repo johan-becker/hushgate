@@ -32,7 +32,11 @@ export function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
-const GERMAN_PATTERN = /(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})(?![\d.])/gu;
+// As with IPv4, the trailing guard rejects a dot only when a digit follows it:
+// `1.2.1990.5` stays a fragment of a longer dotted run, but `geboren am
+// 01.02.1990.` — sentence-final, the most common position for a German date —
+// is matched instead of being dropped entirely.
+const GERMAN_PATTERN = /(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})(?!\.?\d)/gu;
 const ISO_PATTERN = /(?<![\d-])(\d{4})-(\d{2})-(\d{2})(?![\d-])/gu;
 
 /**
