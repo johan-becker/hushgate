@@ -21,8 +21,12 @@ export interface FakeReply {
   readonly status?: number;
   readonly headers?: Record<string, string>;
   readonly body: string;
-  /** Write the body in these pieces, in order, instead of all at once. */
-  readonly chunks?: readonly string[];
+  /**
+   * Write the body in these pieces, in order, instead of all at once. Buffers
+   * are written verbatim, which is how a chunk can be cut inside a multi-byte
+   * character.
+   */
+  readonly chunks?: readonly (string | Buffer)[];
   /** Milliseconds to wait between chunks. */
   readonly chunkDelayMs?: number;
   /** Never answer at all — used to exercise the upstream timeout. */
