@@ -11,6 +11,8 @@ export interface Cli {
   readonly stderr: Writer;
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
+  /** Standard input, for `check` and for `scan -`. */
+  readonly stdin?: NodeJS.ReadableStream;
   /** Aborting stops long-running commands such as `serve`. */
   readonly signal?: AbortSignal;
 }
@@ -32,5 +34,15 @@ export function processCli(argv: readonly string[] = process.argv.slice(2)): Cli
     stderr: (text) => process.stderr.write(text),
     env: process.env,
     cwd: process.cwd(),
+    stdin: process.stdin,
   };
+}
+
+/** Read a whole stream as UTF-8 text. */
+export async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
