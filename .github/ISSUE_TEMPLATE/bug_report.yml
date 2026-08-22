@@ -1,0 +1,99 @@
+name: Bug report
+description: Something hushgate does that it should not, or fails to do.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste real personal data into this form.** Build a synthetic
+        example instead — `hushgate scan` masks values by default for exactly
+        this reason, and the test suite is full of usable fixtures.
+
+        If this is a security issue — personal data reaching an upstream it
+        should not have, a placeholder resolvable across tenants, a forged
+        audit chain — stop here and follow
+        [SECURITY.md](https://github.com/johan-becker/hushgate/blob/main/SECURITY.md)
+        instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: hushgate version
+      description: Output of `hushgate version`, or the commit you built from.
+      placeholder: '0.1.0'
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version and platform
+      description: Output of `node -v`, and the OS.
+      placeholder: 'v22.11.0, Ubuntu 24.04'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Detectors — something matched that should not, or did not match
+        - Redaction and placeholders
+        - Proxy — non-streaming
+        - Proxy — streaming / SSE
+        - Residency policy or the endpoint registry
+        - Audit trail, chain or report
+        - Multi-tenant, keys or quotas
+        - CLI
+        - Docker, compose or Kubernetes
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Paste the real output. Redact anything sensitive first.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Commands, and the smallest synthetic input that triggers it. If it
+        involves the proxy, `examples/upstream.mjs` is a local stand-in you can
+        build the reproduction on.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >
+        The parts of `hushgate.config.json` that matter. Remove tenant key
+        hashes and anything else you would not publish.
+      render: json
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: This report contains no real personal data.
+          required: true
+        - label: I checked that this is not a known limitation in README §9.
+          required: true
