@@ -5,6 +5,11 @@ that your use of hushgate needs one. This page explains, in plain language, who
 needs a commercial licence, what to send me, and what you are buying. No forms,
 no portal, no sales team — there is one person here.
 
+**Evaluation is always free.** You do not need a licence, a key, a trial
+request, or a conversation with me to try hushgate — at any organisation size,
+for as long as you need. Non-production use is free under the licence itself.
+Read on only if you are taking it to production.
+
 ## The short version
 
 hushgate is **source-available**, not open source. The
