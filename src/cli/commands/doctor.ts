@@ -66,7 +66,7 @@ export function doctor(cli: Cli, argv: readonly string[]): Promise<number> {
   if (json) {
     cli.stdout(`${JSON.stringify({ findings, counts }, null, 2)}\n`);
   } else {
-    cli.stdout(render(findings, counts));
+    cli.stdout(render(findings, counts, allowWarnings));
   }
 
   if (counts.fail > 0) return Promise.resolve(EXIT.failure);
@@ -74,7 +74,11 @@ export function doctor(cli: Cli, argv: readonly string[]): Promise<number> {
   return Promise.resolve(EXIT.ok);
 }
 
-function render(findings: readonly Finding[], counts: Record<Severity, number>): string {
+function render(
+  findings: readonly Finding[],
+  counts: Record<Severity, number>,
+  allowWarnings: boolean,
+): string {
   const lines: string[] = ['hushgate doctor', ''];
   let section = '';
 
@@ -98,10 +102,14 @@ function render(findings: readonly Finding[], counts: Record<Severity, number>):
   if (counts.fail > 0) parts.push(`${counts.fail} failure${counts.fail === 1 ? '' : 's'}`);
   if (counts.warn > 0) parts.push(`${counts.warn} warning${counts.warn === 1 ? '' : 's'}`);
 
-  lines.push(
-    `${parts.join(', ')}. Fix them, or re-run with --allow-warnings to accept the warnings.`,
-    '',
-  );
+  // Telling someone to re-run with a flag they are already using reads, in a CI
+  // log, as if the flag had not taken effect — and the exit code says otherwise.
+  const advice =
+    counts.fail === 0 && allowWarnings
+      ? 'Accepted via --allow-warnings.'
+      : 'Fix them, or re-run with --allow-warnings to accept the warnings.';
+
+  lines.push(`${parts.join(', ')}. ${advice}`, '');
 
   return lines.join('\n');
 }
