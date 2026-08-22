@@ -7,15 +7,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { nullAuditLog, type AuditSink } from '../audit/log.js';
-import type { AuditOutcome } from '../audit/record.js';
+import type { AuditOutcome, AuditResidency } from '../audit/record.js';
 import { redactionOptions, type HushgateConfig } from '../config.js';
 import {
   BlockedContentError,
   ConfigError,
   RequestError,
+  ResidencyBlockedError,
   TraversalDepthError,
   UpstreamError,
 } from '../errors.js';
+import { applyDataControls } from '../residency/controls.js';
+import {
+  assertNotBlocked,
+  assertUpstreamsPermitted,
+  enforcementFor,
+  type ResidencyVerdict,
+} from '../residency/policy.js';
 import { countByKind, Session } from '../redact/session.js';
 import { redactJson, restoreJson, type JsonValue } from '../redact/traverse.js';
 import { SseRehydrator } from '../stream/sse.js';
@@ -29,7 +37,7 @@ import {
   readBody,
   sendJson,
 } from './http.js';
-import { findRoute, type Route } from './routes.js';
+import { findRoute, type ProviderId, type Route } from './routes.js';
 import { collect, nodeUpstreamClient, type UpstreamClient, type UpstreamResponse } from './upstream.js';
 
 export interface ProxyOptions {
@@ -47,6 +55,8 @@ export interface ProxyOptions {
   readonly audit?: AuditSink;
   /** Sink for internal failures. Defaults to `console.error`. */
   readonly onInternalError?: (error: unknown) => void;
+  /** Sink for residency warnings. Defaults to `console.warn`. */
+  readonly onWarning?: (message: string) => void;
 }
 
 export interface ProxyServer {
@@ -62,11 +72,23 @@ export interface ProxyServer {
 /** Build the proxy. Nothing is bound until {@link ProxyServer.listen} is called. */
 export function createProxyServer(options: ProxyOptions): ProxyServer {
   const { config } = options;
+
+  // Fail closed, and fail early: nothing is bound until every configured
+  // upstream has been checked against the residency allowlist.
+  const verdicts = assertUpstreamsPermitted(
+    { openai: config.upstreams.openai, anthropic: config.upstreams.anthropic },
+    config.residency,
+  );
+  const residencyByProvider: Readonly<Record<ProviderId, ResidencyVerdict>> = {
+    openai: verdicts[0]!,
+    anthropic: verdicts[1]!,
+  };
   const upstream = options.upstream ?? nodeUpstreamClient;
   const sessionOptions = redactionOptions(config);
   const createSession = options.createSession ?? ((): Session => new Session(sessionOptions));
   const audit = options.audit ?? nullAuditLog;
   const onInternalError = options.onInternalError ?? ((error): void => console.error(error));
+  const onWarning = options.onWarning ?? ((message): void => console.warn(message));
 
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
@@ -121,6 +143,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     let reached: string | null = null;
     let findings: readonly Finding[] = [];
     let blockedCounts: Record<string, number> | null = null;
+    let residency: AuditResidency | null = null;
 
     try {
       const body = await readBody(request, config.limits.maxBodyBytes);
@@ -132,12 +155,40 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       const redacted = redactJson(parsed as JsonValue, session, route.rules);
       findings = redacted.findings;
 
+      const verdict = residencyByProvider[route.provider];
+      const counts = countByKind(findings);
+      const decision = enforcementFor(config.residency, route.label, Object.keys(counts));
+      residency = {
+        mode: decision.mode,
+        rule: decision.rule,
+        jurisdiction: verdict.jurisdiction.code,
+        controls: [],
+      };
+
+      // Refuses before serialisation: in `block` mode nothing leaves at all.
+      assertNotBlocked(decision, verdict, counts);
+
+      // `warn` and `allow` forward the request as it came in. That is the point
+      // of a staged rollout: you see what would be redacted before it is.
+      const outbound = decision.mode === 'warn' || decision.mode === 'allow' ? parsed : redacted.body;
+      if (decision.mode === 'warn' && findings.length > 0) {
+        onWarning(
+          `hushgate: ${decision.rule} is set to warn — ${describeCounts(counts)} left the machine for ${verdict.host} [${verdict.jurisdiction.code}]`,
+        );
+      }
+
+      // Retention and training opt-outs are set here, not left to each caller:
+      // one application forgetting `store: false` should not opt the whole
+      // organisation back into retention.
+      const controlled = applyDataControls(verdict.dataControls, outbound as JsonValue);
+      residency = { ...residency, controls: controlled.applied };
+
       reached = hostOf(base);
       const upstreamResponse = await upstream({
         url: `${base}${route.path}`,
         method: 'POST',
-        headers: forwardRequestHeaders(request.headers),
-        body: JSON.stringify(redacted.body),
+        headers: { ...forwardRequestHeaders(request.headers), ...controlled.headers },
+        body: JSON.stringify(controlled.body),
         timeoutMs: config.limits.upstreamTimeoutMs,
       });
 
@@ -163,7 +214,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       response.end(payload);
     } catch (error) {
       status = statusOf(error);
-      if (error instanceof BlockedContentError) {
+      if (error instanceof BlockedContentError || error instanceof ResidencyBlockedError) {
         outcome = 'blocked';
         blockedCounts = { ...error.counts };
         // Nothing was sent, so nothing was reached.
@@ -184,6 +235,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         upstream: reached,
         findings: blockedCounts ?? countByKind(findings),
         policies: blockedCounts === null ? policiesOf(findings) : policiesForBlock(blockedCounts),
+        residency,
       });
     }
   }
@@ -346,9 +398,17 @@ function policiesForBlock(counts: Readonly<Record<string, number>>): Record<stri
   return out;
 }
 
+/** `EMAIL (2), IBAN (1)` — counts only, safe to print. */
+function describeCounts(counts: Readonly<Record<string, number>>): string {
+  return Object.entries(counts)
+    .map(([kind, count]) => `${kind} (${count})`)
+    .join(', ');
+}
+
 /** The status a failure maps to, shared by the responder and the audit trail. */
 export function statusOf(error: unknown): number {
   if (error instanceof BlockedContentError) return 403;
+  if (error instanceof ResidencyBlockedError) return 403;
   if (error instanceof RequestError) return error.status;
   if (error instanceof TraversalDepthError) return 400;
   if (error instanceof UpstreamError) return error.status;
@@ -376,6 +436,20 @@ export function respondWithError(response: ServerResponse, error: unknown): void
   // into; the only honest thing is to end the stream.
   if (response.headersSent) {
     response.end();
+    return;
+  }
+
+  if (error instanceof ResidencyBlockedError) {
+    sendJson(
+      response,
+      statusOf(error),
+      errorPayload('hushgate_residency_blocked', error.message, {
+        rule: error.rule,
+        jurisdiction: error.jurisdiction,
+        kinds: error.kinds,
+        counts: error.counts,
+      }),
+    );
     return;
   }
 
