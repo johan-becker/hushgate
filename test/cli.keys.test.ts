@@ -48,13 +48,15 @@ describe('hushgate keys new', () => {
   });
 
   it('needs a tenant id, and a usable one', async () => {
-    expect(await run(capture(['keys', 'new']).cli)).toBe(EXIT.failure);
-    expect(await run(capture(['keys', 'new', 'has space']).cli)).toBe(EXIT.failure);
+    // Usage errors, not failures: exit 2, so a CI wrapper can tell "I typed it
+    // wrong" from "something broke".
+    expect(await run(capture(['keys', 'new']).cli)).toBe(EXIT.usage);
+    expect(await run(capture(['keys', 'new', 'has space']).cli)).toBe(EXIT.usage);
   });
 
   it('needs a subcommand', async () => {
     const c = capture(['keys']);
-    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(await run(c.cli)).toBe(EXIT.usage);
     expect(c.err()).toContain('needs a subcommand');
   });
 });

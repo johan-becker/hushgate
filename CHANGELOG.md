@@ -12,10 +12,52 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+### Fixed
+
+- A tenant's `redaction` block now merges over the global profile instead of
+  replacing it. Every tenant silently lost the organisation's per-kind
+  policies, name dictionary, custom rules and birth-year window — including a
+  tenant with no `redaction` key at all, which is what `hushgate keys new`
+  prints and what `deploy/kubernetes.yaml` ships.
+- A permissive `residency.categories` rule can no longer relax a whole request.
+  A kind with no rule of its own now carries the route or global mode into the
+  strictness comparison, so `categories: {IPV4: "allow"}` exempts an IP address
+  without also exempting the IBAN beside it.
+- IPv4 addresses and German `DD.MM.YYYY` birth dates at the end of a sentence
+  are found. Their trailing guards rejected a following full stop, which lost
+  the value entirely rather than partially.
+- Phone numbers written with the spaced German separator (`0721 / 123 456`) are
+  found.
+- Maestro, Dankort and the remaining Diners ranges are recognised, at the
+  lengths those brands are actually issued at.
+- A rejected tenant key (401) and an exhausted quota (429) now write an audit
+  record and increment `hushgate_requests_total`. They previously left no trace
+  anywhere.
+- `resolveSpans` is linear in the input rather than quadratic in the number of
+  findings; a body at the 4 MiB limit went from 217 s of blocked event loop to
+  under half a second.
+- Span arrays are no longer spread into `push()`, which threw `RangeError` on a
+  body with more than ~124k findings.
+- `QuotaTracker` prunes its sliding window for a tenant with no per-minute
+  limit, which previously retained one timestamp per request forever.
+- `__proto__` survives a body rewrite instead of being silently dropped.
+- Metric values no longer render with a trailing decimal point.
+- The EEA and adequacy jurisdiction table is complete; AT, DK, PT and 17 other
+  EEA members were reported as undeclared third countries.
+- `deploy/kubernetes.yaml` starts: its ConfigMap configured an upstream that
+  its own residency allowlist refused.
+- Usage errors exit 2 rather than 1, as the README documents.
+
+### Added
+
+- `limits.maxResponseBytes` (default 16 MiB, `HUSHGATE_MAX_RESPONSE_BYTES`),
+  bounding the upstream response the way `maxBodyBytes` bounds the request.
+  The streamed path caps a single unterminated event the same way.
+
 ## [0.1.0] — 2026-08-22
 
 First release. The proxy, the detectors, the residency policy, the audit chain
-and the CLI are complete and exercised end to end by 619 tests, none of which
+and the CLI are complete and exercised end to end by 739 tests, none of which
 touch the network.
 
 ### Added

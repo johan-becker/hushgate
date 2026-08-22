@@ -87,6 +87,13 @@ export function createDetectors(options: DetectorSetOptions = {}): Detector[] {
  */
 export function detect(text: string, detectors: readonly Detector[]): Span[] {
   const candidates: Span[] = [];
-  for (const detector of detectors) candidates.push(...detector.find(text));
+  // Appended one at a time rather than spread: `push(...spans)` passes every
+  // span as a function argument, and a dense body can carry well over the
+  // hundred thousand arguments an engine will accept — a 1 MB request, a
+  // quarter of the default body limit, is enough to turn a normal request into
+  // a RangeError that no HushgateError maps.
+  for (const detector of detectors) {
+    for (const span of detector.find(text)) candidates.push(span);
+  }
   return resolveSpans(candidates);
 }

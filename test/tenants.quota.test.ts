@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { QuotaExceededError } from '../src/errors.js';
 import { defaultConfig, type HushgateConfig } from '../src/config.js';
 import { tokensFrom } from '../src/proxy/usage.js';
+import { Metrics } from '../src/metrics/registry.js';
 import { QuotaTracker, utcDay } from '../src/tenants/quota.js';
 import { hashKey, type Tenant } from '../src/tenants/tenant.js';
 import { startHarness, type Harness } from './helpers/proxy-harness.js';
@@ -153,6 +154,47 @@ describe('QuotaTracker', () => {
   });
 });
 
+describe('the sliding window stays bounded', () => {
+  it('prunes for a tenant with no per-minute limit', () => {
+    let now = 1_700_000_000_000;
+    const tracker = new QuotaTracker(() => now);
+    const unlimited = tenant('a', 'hg_a');
+
+    // A tenant with no quotas block is the default: it is what parseQuotas
+    // returns, what "hushgate keys new" prints and what the README says to
+    // paste. One retained timestamp per request would grow without bound for
+    // the life of the process.
+    for (let i = 0; i < 10_000; i++) {
+      tracker.admit(unlimited);
+      now += 1_000;
+    }
+
+    expect(tracker.usage('a').requestsInWindow).toBe(59);
+    expect(internalWindowSize(tracker, 'a')).toBeLessThanOrEqual(61);
+  });
+
+  it('still prunes when a per-minute limit is set', () => {
+    let now = 1_700_000_000_000;
+    const tracker = new QuotaTracker(() => now);
+    const limited = tenant('b', 'hg_b', { requestsPerMinute: 600 });
+
+    for (let i = 0; i < 5_000; i++) {
+      tracker.admit(limited);
+      now += 1_000;
+    }
+
+    expect(internalWindowSize(tracker, 'b')).toBeLessThanOrEqual(61);
+  });
+});
+
+/** The retained timestamp array, which is what must not grow without bound. */
+function internalWindowSize(tracker: QuotaTracker, tenantId: string): number {
+  const counters = (
+    tracker as unknown as { counters: Map<string, { requests: number[] }> }
+  ).counters.get(tenantId);
+  return counters?.requests.length ?? 0;
+}
+
 const withTenant =
   (team: Tenant) =>
   (base: HushgateConfig): HushgateConfig => ({ ...base, tenants: [team] });
@@ -253,5 +295,94 @@ describe('quotas at the proxy', () => {
       const response = await harness.post('/v1/chat/completions', chat);
       expect(response.status).toBe(200);
     }
+  });
+});
+
+describe('a refused request is as auditable as a served one', () => {
+  interface Recorded {
+    readonly outcome: string;
+    readonly status: number;
+    readonly tenant: string | null;
+    readonly upstream: string | null;
+  }
+
+  const collector = (
+    into: Recorded[],
+  ): { write: (record: unknown) => void; close: () => Promise<void> } => ({
+    write: (record) => into.push(record as Recorded),
+    close: () => Promise.resolve(),
+  });
+
+  it('records a rejected tenant key', async () => {
+    const records: Recorded[] = [];
+    const metrics = new Metrics();
+    harness = await startHarness({
+      config: withTenant(tenant('a', 'hg_a')),
+      proxy: { audit: collector(records), metrics },
+    });
+
+    const response = await harness.post('/v1/chat/completions', chat, {
+      authorization: 'Bearer wrong',
+    });
+
+    expect(response.status).toBe(401);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      outcome: 'rejected',
+      status: 401,
+      // Which tenant it would have been is exactly what was not established.
+      tenant: null,
+      upstream: null,
+    });
+    expect(metrics.render()).toContain(
+      'hushgate_requests_total{outcome="rejected",route="openai.chat.completions",status="401",tenant="none"} 1',
+    );
+    expect(harness.upstream.requests).toHaveLength(0);
+  });
+
+  it('records an exhausted quota', async () => {
+    const records: Recorded[] = [];
+    const metrics = new Metrics();
+    harness = await startHarness({
+      config: withTenant(tenant('a', 'hg_a', { requestsPerMinute: 1 })),
+      proxy: { audit: collector(records), metrics },
+    });
+
+    const key = { authorization: 'Bearer hg_a' };
+    expect((await harness.post('/v1/chat/completions', chat, key)).status).toBe(200);
+    expect((await harness.post('/v1/chat/completions', chat, key)).status).toBe(429);
+
+    expect(records.map((record) => [record.outcome, record.status])).toEqual([
+      ['forwarded', 200],
+      ['rejected', 429],
+    ]);
+    expect(records[1]!.tenant).toBe('a');
+    expect(records[1]!.upstream).toBeNull();
+
+    const rendered = metrics.render();
+    expect(rendered).toContain(
+      'hushgate_requests_total{outcome="rejected",route="openai.chat.completions",status="429",tenant="a"} 1',
+    );
+    expect(rendered).toContain(
+      'hushgate_requests_total{outcome="forwarded",route="openai.chat.completions",status="200",tenant="a"} 1',
+    );
+  });
+
+  it('leaves a trace for every attempt of a key brute force', async () => {
+    const records: Recorded[] = [];
+    harness = await startHarness({
+      config: withTenant(tenant('a', 'hg_a')),
+      proxy: { audit: collector(records) },
+    });
+
+    const attempts = [0, 1, 2, 3, 4].map((attempt) =>
+      harness!.post('/v1/chat/completions', chat, {
+        authorization: `Bearer hg_guess${attempt}`,
+      }),
+    );
+    expect((await Promise.all(attempts)).every((response) => response.status === 401)).toBe(true);
+
+    expect(records).toHaveLength(5);
+    expect(records.every((record) => record.status === 401)).toBe(true);
   });
 });

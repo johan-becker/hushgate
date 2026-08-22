@@ -282,3 +282,26 @@ describe('hushgate doctor', () => {
     expect(report.findings.every((f) => typeof f.section === 'string')).toBe(true);
   });
 });
+
+describe('the --allow-warnings summary', () => {
+  it('does not tell you to use the flag you are already using', async () => {
+    const dir = workspace({ 'hushgate.config.json': JSON.stringify({ host: '127.0.0.1' }) });
+
+    const plain = capture(['doctor'], dir);
+    expect(await run(plain.cli)).toBe(EXIT.failure);
+    expect(plain.out()).toContain('re-run with --allow-warnings');
+
+    const accepted = capture(['doctor', '--allow-warnings'], dir);
+    expect(await run(accepted.cli)).toBe(EXIT.ok);
+    expect(accepted.out()).toContain('Accepted via --allow-warnings.');
+    expect(accepted.out()).not.toContain('re-run with --allow-warnings');
+  });
+
+  it('still says how to accept them when a failure is present too', async () => {
+    const dir = workspace({ 'hushgate.config.json': '{ not json' });
+    const c = capture(['doctor', '--allow-warnings'], dir);
+    // A failure is never accepted by the flag, so the advice still applies.
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.out()).toContain('re-run with --allow-warnings');
+  });
+});

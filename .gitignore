@@ -14,6 +14,11 @@ coverage/
 hushgate.config.json
 !hushgate.config.example.json
 
+# The one exception: the fixture README §6 is transcribed from. It is generated
+# by the §3 and §4 requests against the local stand-in upstream, so it carries
+# no real request metadata, and without it §6 cannot be reproduced from a clone.
+!examples/hushgate-audit.jsonl
+
 # Environment
 .env
 .env.*

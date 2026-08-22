@@ -316,3 +316,50 @@ describe('upstream failures', () => {
     expect(response.status).toBe(502);
   });
 });
+
+const oversized = (bytes: number): FakeReply => ({
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ choices: [{ message: { content: 'x'.repeat(bytes) } }] }),
+});
+
+describe('the upstream response is bounded', () => {
+  it('refuses a response over limits.maxResponseBytes', async () => {
+    harness = await startHarness({
+      handler: () => oversized(200_000),
+      config: (base) => ({
+        ...base,
+        limits: { ...base.limits, maxResponseBytes: 64 * 1024 },
+      }),
+    });
+
+    const response = await harness.post('/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    // A gateway failure, not a 500: hushgate did not decide the response.
+    expect(response.status).toBe(502);
+    const payload = (await response.json()) as { error: { type: string; message: string } };
+    expect(payload.error.type).toBe('upstream_error');
+    expect(payload.error.message).toMatch(/limits\.maxResponseBytes/u);
+  });
+
+  it('passes a response inside the limit through untouched', async () => {
+    harness = await startHarness({
+      handler: () => oversized(1_000),
+      config: (base) => ({
+        ...base,
+        limits: { ...base.limits, maxResponseBytes: 64 * 1024 },
+      }),
+    });
+
+    const response = await harness.post('/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { choices: { message: { content: string } }[] };
+    expect(payload.choices[0]!.message.content).toBe('x'.repeat(1_000));
+  });
+});

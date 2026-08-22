@@ -187,14 +187,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       return;
     }
 
-    // Authentication happens before the body is read: an unauthenticated
-    // caller must not get as far as spending memory on their payload.
-    const tenant = authenticate(request);
-    // Refused before the body is read: an over-quota caller should not be able
-    // to make hushgate buffer four megabytes on their behalf.
-    if (tenant !== null) quotas.admit(tenant);
-
-    await proxy(route, tenant, request, response);
+    await proxy(route, request, response);
   }
 
   /**
@@ -249,7 +242,6 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
 
   async function proxy(
     route: Route,
-    tenant: Tenant | null,
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
@@ -258,6 +250,11 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
 
     // Filled in as the request progresses; written exactly once, whatever
     // happens, so a refused or failed request is as auditable as a served one.
+    // Authentication and quota admission are inside the try for that reason:
+    // a rejected key and an exhausted quota are exactly the events an auditor
+    // and an on-call operator need to see, and running them out here would
+    // leave a brute force against tenant keys no trace at all.
+    let tenant: Tenant | null = null;
     let outcome: AuditOutcome = 'rejected';
     let status = 500;
     let stream = false;
@@ -268,6 +265,13 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     let tokens = 0;
 
     try {
+      // Authentication happens before the body is read: an unauthenticated
+      // caller must not get as far as spending memory on their payload.
+      tenant = authenticate(request);
+      // Refused before the body is read: an over-quota caller should not be
+      // able to make hushgate buffer four megabytes on their behalf.
+      if (tenant !== null) quotas.admit(tenant);
+
       const body = await readBody(request, config.limits.maxBodyBytes);
       const parsed = parseJsonObject(body);
       const session = createSession(route, tenant);
@@ -327,11 +331,18 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       const contentType = upstreamResponse.headers['content-type'] ?? '';
       if (contentType.includes('text/event-stream')) {
         stream = true;
-        await pipeEventStream(route, session, upstreamResponse, response, countTokens);
+        await pipeEventStream(
+          route,
+          session,
+          upstreamResponse,
+          response,
+          countTokens,
+          config.limits.maxResponseBytes,
+        );
         return;
       }
 
-      const raw = await collect(upstreamResponse.body);
+      const raw = await collect(upstreamResponse.body, config.limits.maxResponseBytes);
       const restored = rehydrate(raw, contentType, session, countTokens);
       const payload = Buffer.from(restored, 'utf8');
 
@@ -449,11 +460,13 @@ async function pipeEventStream(
   upstreamResponse: UpstreamResponse,
   response: ServerResponse,
   onEvent: (json: JsonValue) => void,
+  maxEventBytes: number,
 ): Promise<void> {
   const rehydrator = new SseRehydrator({
     deltaRules: route.streamRules,
     resolve: (token) => session.lookup(token),
     onEvent,
+    maxEventBytes,
   });
   // A multi-byte character can straddle two TCP segments just as easily as a
   // placeholder can; a per-chunk toString would corrupt it.

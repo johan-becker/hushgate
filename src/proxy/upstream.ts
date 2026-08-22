@@ -83,11 +83,39 @@ export const nodeUpstreamClient: UpstreamClient = (request) =>
     outbound.end(payload);
   });
 
-/** Collect a response body into a string. */
-export async function collect(stream: Readable): Promise<string> {
+/**
+ * Collect a response body into a string, refusing anything over `maxBytes`.
+ *
+ * The counterpart of readBody's limit on the request side. A buffered response
+ * is concatenated, decoded, JSON-parsed, cloned by restoreJson and
+ * re-serialised, so several times its own size is resident at once; without a
+ * bound, one provider returning a very large payload — or a compromised or
+ * MITM'd one doing it deliberately — takes the whole process down and every
+ * tenant with it.
+ *
+ * The stream is destroyed rather than drained: unlike a client mid-upload,
+ * there is no one on the other end whose error message we are trying to keep
+ * intelligible, and there is no reason to keep paying for bytes we have already
+ * decided to discard.
+ */
+export async function collect(stream: Readable, maxBytes = Number.POSITIVE_INFINITY): Promise<string> {
   const chunks: Buffer[] = [];
+  let size = 0;
+
   for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    size += buffer.length;
+
+    if (size > maxBytes) {
+      stream.destroy();
+      throw new UpstreamError(
+        `upstream response exceeds ${maxBytes} bytes [limits.maxResponseBytes]`,
+        'network',
+      );
+    }
+
+    chunks.push(buffer);
   }
+
   return Buffer.concat(chunks).toString('utf8');
 }
