@@ -29,3 +29,10 @@ export class BlockedContentError extends HushgateError {
     return Object.keys(this.counts).toSorted();
   }
 }
+
+/** Thrown when a request body is nested far deeper than any real payload. */
+export class TraversalDepthError extends HushgateError {
+  constructor(readonly maxDepth: number) {
+    super(`request body is nested deeper than ${maxDepth} levels; refusing to traverse it`);
+  }
+}
