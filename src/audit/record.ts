@@ -18,7 +18,11 @@ export type AuditOutcome =
   | 'forwarded'
   /** Refused by a `block` policy; nothing left the machine. */
   | 'blocked'
-  /** Refused before redaction: malformed, oversized, unroutable. */
+  /**
+   * Refused before anything left the machine: a rejected tenant key, an
+   * exhausted quota, or a body that was malformed, oversized or unroutable.
+   * The `status` field says which — 401, 429, 400 or 413.
+   */
   | 'rejected'
   /** Reached the upstream, which failed or timed out. */
   | 'failed';
