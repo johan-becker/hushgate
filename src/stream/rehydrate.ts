@@ -51,10 +51,20 @@ export class StreamRehydrator {
   }
 
   private substitute(text: string): string {
-    if (text.length === 0) return text;
-    const pattern = new RegExp(PLACEHOLDER_PATTERN.source, PLACEHOLDER_PATTERN.flags);
-    return text.replaceAll(pattern, (token) => this.resolve(token) ?? token);
+    return substituteComplete(text, this.resolve);
   }
+}
+
+/**
+ * Replace every complete token in `text`, in a single left-to-right pass.
+ *
+ * Single pass matters: a restored value may itself look like a placeholder, and
+ * re-examining it would turn a caller's own data into a second lookup.
+ */
+export function substituteComplete(text: string, resolve: TokenResolver): string {
+  if (text.length === 0) return text;
+  const pattern = new RegExp(PLACEHOLDER_PATTERN.source, PLACEHOLDER_PATTERN.flags);
+  return text.replaceAll(pattern, (token) => resolve(token) ?? token);
 }
 
 /**
