@@ -113,6 +113,49 @@ describe('credit card', () => {
     expect(isValidCardNumber('9111111111111110')).toBe(false);
   });
 
+  it.each([
+    ['6759649826438453', 'Maestro UK'],
+    ['6304000000000000', 'Maestro Nordics'],
+    ['5019717010103742', 'Dankort'],
+    ['5610591081018250', 'Maestro/BankCard'],
+    ['5018777777777774', 'Maestro'],
+    ['5020777777777770', 'Maestro'],
+    ['5038777777777770', 'Maestro'],
+    ['5893777777777774', 'Maestro'],
+    ['6761777777777771', 'Maestro'],
+    ['30957777777777', 'Diners Club'],
+    ['39777777777770', 'Diners Club'],
+  ])('accepts the debit brand %s (%s)', (card) => {
+    expect(luhnValid(card)).toBe(true);
+    expect(hasIssuerPrefix(card)).toBe(true);
+    expect(isValidCardNumber(card)).toBe(true);
+    expect(values(`Karte ${card} belastet`, creditCardDetector)).toEqual([card]);
+  });
+
+  it('rejects a Maestro-shaped run that fails Luhn', () => {
+    expect(luhnValid('6759649826438454')).toBe(false);
+    expect(isValidCardNumber('6759649826438454')).toBe(false);
+    expect(creditCardDetector.find('Karte 6759649826438454 abgelehnt')).toEqual([]);
+  });
+
+  it('keeps the length discipline for the debit brands', () => {
+    // Luhn-valid, right prefix, but no Maestro or Diners is issued at these
+    // lengths — accepting them would turn long order numbers into cards.
+    expect(luhnValid('6759777777777')).toBe(true);
+    expect(hasIssuerPrefix('6759777777777')).toBe(false); // 13 digits
+    expect(luhnValid('3095777777779')).toBe(true);
+    expect(hasIssuerPrefix('3095777777779')).toBe(false); // 13 digits
+    expect(luhnValid('501877777777777777771')).toBe(true);
+    expect(isValidCardNumber('501877777777777777771')).toBe(false); // 21 digits
+  });
+
+  it('does not widen Mastercard beyond its own 5[1-5] range', () => {
+    expect(hasIssuerPrefix('5555555555554444')).toBe(true);
+    // 51-55 is 16 digits only; the 19-digit form belongs to Maestro, not here.
+    expect(luhnValid('5555777777777777774')).toBe(true);
+    expect(hasIssuerPrefix('5555777777777777774')).toBe(false);
+  });
+
   it('rejects a valid prefix at the wrong length', () => {
     // Amex is 15 digits; the same digits padded to 16 are not a card.
     expect(hasIssuerPrefix('378282246310005')).toBe(true);
