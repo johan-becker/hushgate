@@ -19,9 +19,13 @@ actually governs, and where the two differ the licence wins.
 
 Two groups the free grant does not cover:
 
-1. **Larger organisations in production.** More than 10 people, counting
-   employees and independent contractors across all entities under common
-   control.
+1. **Larger organisations in production.** More than 10 people. You count one
+   each, regardless of hours worked: every employee, officer, independent
+   contractor, freelancer, intern, working student, apprentice, and every
+   individual supplied to you by a staffing or temporary-employment agency —
+   across all entities under common control. Non-executive directors and
+   shareholders who do no work for the organisation are not counted. Full
+   rules [below](#how-the-10-are-counted).
 2. **Anyone offering hushgate to third parties** as a hosted, managed or
    embedded **commercial offering** — at any size, including a two-person
    company. Reselling copies of hushgate is not this: redistribution is granted
