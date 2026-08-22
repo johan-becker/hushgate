@@ -8,6 +8,7 @@ import { VERSION } from '../version.js';
 import { formatFlags, type FlagSpecs } from './args.js';
 import { EXIT, type Cli } from './cli.js';
 import { check, CHECK_FLAGS, CHECK_SUMMARY } from './commands/check.js';
+import { keys, KEYS_FLAGS, KEYS_SUMMARY } from './commands/keys.js';
 import { residency, RESIDENCY_FLAGS, RESIDENCY_SUMMARY } from './commands/residency.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
@@ -37,6 +38,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate residency [--json] [--registry]',
     flags: RESIDENCY_FLAGS,
     run: residency,
+  },
+  keys: {
+    summary: KEYS_SUMMARY,
+    usage: 'hushgate keys new <tenant-id> | hushgate keys hash < key',
+    flags: KEYS_FLAGS,
+    run: keys,
   },
   check: {
     summary: CHECK_SUMMARY,

@@ -32,6 +32,8 @@ export interface AuditResidency {
 
 /** What a caller reports. Timestamp and id are stamped by the log itself. */
 export interface AuditEvent {
+  /** Tenant the request was authenticated as, or `null` in single-tenant mode. */
+  readonly tenant: string | null;
   /** Route label, e.g. `openai.chat.completions`. */
   readonly route: string;
   readonly outcome: AuditOutcome;
@@ -67,6 +69,7 @@ export function toRecord(event: AuditEvent, ts: string, id: string): AuditRecord
   return {
     ts,
     id,
+    tenant: event.tenant === null ? null : String(event.tenant),
     route: String(event.route),
     outcome: event.outcome,
     status: Number(event.status),

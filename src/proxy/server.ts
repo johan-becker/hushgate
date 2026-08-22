@@ -10,8 +10,10 @@ import { nullAuditLog, type AuditSink } from '../audit/log.js';
 import type { AuditOutcome, AuditResidency } from '../audit/record.js';
 import { redactionOptions, type HushgateConfig } from '../config.js';
 import {
+  AuthenticationError,
   BlockedContentError,
   ConfigError,
+  QuotaExceededError,
   RequestError,
   ResidencyBlockedError,
   TraversalDepthError,
@@ -19,12 +21,19 @@ import {
 } from '../errors.js';
 import { applyDataControls } from '../residency/controls.js';
 import {
+  assertNotOpenRelay,
+  createTenantRegistry,
+  deriveTenantKey,
+  presentedKey,
+  type Tenant,
+} from '../tenants/tenant.js';
+import {
   assertNotBlocked,
   assertUpstreamsPermitted,
   enforcementFor,
   type ResidencyVerdict,
 } from '../residency/policy.js';
-import { countByKind, Session } from '../redact/session.js';
+import { countByKind, Session, type SessionOptions } from '../redact/session.js';
 import { redactJson, restoreJson, type JsonValue } from '../redact/traverse.js';
 import { SseRehydrator } from '../stream/sse.js';
 import type { Finding, Policy } from '../types.js';
@@ -50,7 +59,11 @@ export interface ProxyOptions {
    * response, and a mapping that outlives the request is a liability, not a
    * feature — the client resends the whole conversation anyway.
    */
-  readonly createSession?: (route: Route) => Session;
+  readonly createSession?: (route: Route, tenant: Tenant | null) => Session;
+  /** Where upstream credentials are read from. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Audit sink per tenant. Falls back to `audit`. */
+  readonly auditFor?: (tenant: Tenant | null) => AuditSink;
   /** Where request records go. Defaults to discarding them. */
   readonly audit?: AuditSink;
   /** Sink for internal failures. Defaults to `console.error`. */
@@ -84,9 +97,25 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     anthropic: verdicts[1]!,
   };
   const upstream = options.upstream ?? nodeUpstreamClient;
-  const sessionOptions = redactionOptions(config);
-  const createSession = options.createSession ?? ((): Session => new Session(sessionOptions));
+  const env = options.env ?? process.env;
+
+  const registry = createTenantRegistry(config.tenants);
+  assertNotOpenRelay(config.host, registry);
+
+  // One profile per tenant, resolved once: a tenant's policies, dictionary and
+  // hash namespace are fixed for the lifetime of the process.
+  const profiles = new Map<string, SessionOptions>(
+    config.tenants.map((tenant) => [tenant.id, tenantProfile(config, tenant)]),
+  );
+  const globalProfile = redactionOptions(config);
+
+  const createSession =
+    options.createSession ??
+    ((_route: Route, tenant: Tenant | null): Session =>
+      new Session(tenant === null ? globalProfile : (profiles.get(tenant.id) ?? globalProfile)));
+
   const audit = options.audit ?? nullAuditLog;
+  const auditFor = options.auditFor ?? ((): AuditSink => audit);
   const onInternalError = options.onInternalError ?? ((error): void => console.error(error));
   const onWarning = options.onWarning ?? ((message): void => console.warn(message));
 
@@ -124,11 +153,65 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       return;
     }
 
-    await proxy(route, request, response);
+    // Authentication happens before the body is read: an unauthenticated
+    // caller must not get as far as spending memory on their payload.
+    const tenant = authenticate(request);
+    await proxy(route, tenant, request, response);
+  }
+
+  /**
+   * Resolve the caller's tenant.
+   *
+   * With no tenants configured hushgate is single-tenant and loopback-only (see
+   * assertNotOpenRelay), and the caller's own provider key is passed straight
+   * through.
+   */
+  function authenticate(request: IncomingMessage): Tenant | null {
+    if (registry.empty) return null;
+
+    const tenant = registry.authenticate(presentedKey(request.headers));
+    if (tenant === null) {
+      throw new AuthenticationError(
+        'a hushgate tenant key is required; send it as Authorization: Bearer <key> or x-api-key',
+      );
+    }
+    return tenant;
+  }
+
+  /**
+   * Swap the caller's credential for the upstream one.
+   *
+   * This is the security-critical part of multi-tenant operation: a hushgate
+   * tenant key must never reach a provider. Once a key has authenticated a
+   * tenant, the header carrying it is dropped and replaced by the upstream
+   * credential, or by nothing at all when none is configured.
+   */
+  function upstreamHeaders(
+    tenant: Tenant | null,
+    route: Route,
+    headers: Record<string, string>,
+  ): Record<string, string> {
+    if (tenant === null) return headers;
+
+    const withoutCallerKey = { ...headers };
+    delete withoutCallerKey['authorization'];
+    delete withoutCallerKey['x-api-key'];
+
+    const variable = tenant.upstreamKeyEnv ?? DEFAULT_KEY_ENV[route.provider];
+    const key = env[variable];
+    if (key === undefined || key.length === 0) return withoutCallerKey;
+
+    return {
+      ...withoutCallerKey,
+      ...(route.provider === 'openai'
+        ? { authorization: `Bearer ${key}` }
+        : { 'x-api-key': key }),
+    };
   }
 
   async function proxy(
     route: Route,
+    tenant: Tenant | null,
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
@@ -148,7 +231,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     try {
       const body = await readBody(request, config.limits.maxBodyBytes);
       const parsed = parseJsonObject(body);
-      const session = createSession(route);
+      const session = createSession(route, tenant);
 
       // Outbound: only the content-bearing leaves are rewritten. A `block`
       // policy throws here, before a single byte has left the machine.
@@ -187,7 +270,10 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       const upstreamResponse = await upstream({
         url: `${base}${route.path}`,
         method: 'POST',
-        headers: { ...forwardRequestHeaders(request.headers), ...controlled.headers },
+        headers: {
+          ...upstreamHeaders(tenant, route, forwardRequestHeaders(request.headers)),
+          ...controlled.headers,
+        },
         body: JSON.stringify(controlled.body),
         timeoutMs: config.limits.upstreamTimeoutMs,
       });
@@ -226,7 +312,8 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       }
       throw error;
     } finally {
-      audit.write({
+      auditFor(tenant).write({
+        tenant: tenant?.id ?? null,
         route: route.label,
         outcome,
         status,
@@ -376,6 +463,19 @@ function upstreamBase(config: HushgateConfig, route: Route): string {
   return route.provider === 'openai' ? config.upstreams.openai : config.upstreams.anthropic;
 }
 
+/** Where each provider's credential is read from when a tenant authenticated. */
+const DEFAULT_KEY_ENV: Readonly<Record<ProviderId, string>> = {
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+};
+
+/** A tenant's redaction profile, with its own namespace for hashed values. */
+function tenantProfile(config: HushgateConfig, tenant: Tenant): SessionOptions {
+  const base = redactionOptions({ ...config, redaction: tenant.redaction });
+  const key = config.redaction.hmacKey;
+  return key === null ? base : { ...base, hmacKey: deriveTenantKey(key, tenant.id) };
+}
+
 /** Host of an upstream base URL, for the audit trail. Never the full URL. */
 function hostOf(base: string): string {
   try {
@@ -407,6 +507,8 @@ function describeCounts(counts: Readonly<Record<string, number>>): string {
 
 /** The status a failure maps to, shared by the responder and the audit trail. */
 export function statusOf(error: unknown): number {
+  if (error instanceof AuthenticationError) return 401;
+  if (error instanceof QuotaExceededError) return 429;
   if (error instanceof BlockedContentError) return 403;
   if (error instanceof ResidencyBlockedError) return 403;
   if (error instanceof RequestError) return error.status;
@@ -436,6 +538,24 @@ export function respondWithError(response: ServerResponse, error: unknown): void
   // into; the only honest thing is to end the stream.
   if (response.headersSent) {
     response.end();
+    return;
+  }
+
+  if (error instanceof AuthenticationError) {
+    sendJson(response, statusOf(error), errorPayload('authentication_error', error.message));
+    return;
+  }
+
+  if (error instanceof QuotaExceededError) {
+    sendJson(
+      response,
+      statusOf(error),
+      errorPayload('rate_limit_error', error.message, {
+        scope: error.scope,
+        limit: error.limit,
+      }),
+      { 'retry-after': String(error.retryAfterSeconds) },
+    );
     return;
   }
 

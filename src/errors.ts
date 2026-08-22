@@ -94,3 +94,19 @@ export class ResidencyBlockedError extends HushgateError {
     return Object.keys(this.counts).toSorted();
   }
 }
+
+/** No usable tenant credential was presented. */
+export class AuthenticationError extends HushgateError {}
+
+/** A tenant ran out of its allowance. */
+export class QuotaExceededError extends HushgateError {
+  constructor(
+    message: string,
+    readonly tenantId: string,
+    readonly scope: 'requests' | 'tokens',
+    readonly limit: number,
+    readonly retryAfterSeconds: number,
+  ) {
+    super(message);
+  }
+}
