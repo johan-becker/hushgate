@@ -36,13 +36,16 @@ Two groups the free grant does not cover:
    value to your customers does not consist substantially of hushgate's
    functionality. Embedding hushgate in your own product does not, by itself,
    trigger this. Reselling copies of hushgate is not this either: redistribution
-   is granted by the licence outright.
+   is granted by the licence's own Terms, subject to the notice conditions in
+   those Terms rather than to the two conditions here.
 
 Everything else is free, forever, with no registration and no phoning home:
 
 - **copying, modifying, forking and redistributing** hushgate, at any size —
-  the licence grants those outright and the two conditions above limit
-  production use only, never these;
+  the licence's Terms grant those to everyone, and the two conditions above
+  limit production use only, never these. They are not condition-free, though:
+  every copy and derivative work stays subject to the BUSL, and you must
+  conspicuously display the licence on each original or modified copy;
 - any **non-production** use at any size — evaluation, development, staging,
   CI, security review, a proof of concept for your board;
 - **production** use by an organisation of 10 or fewer people;
@@ -117,7 +120,7 @@ decides it is in [LICENSE](LICENSE).
 | **The same freelancer** builds a client a product with hushgate embedded, and the client is a 300-person insurer who will run it in their own production. | **The client needs one; she probably does not.** Delivering a bespoke product in which hushgate is an internal component is not an offering, provided the product's value to the client is not substantially hushgate's functionality — if she is selling them a PII gateway, it is. The insurer needs a licence for its own production use, on headcount. Tell them early; it is a bad surprise at go-live. |
 | **A 9-person startup** hires four people; on 1 April the count is 13. | **Yes, but not yet.** The count is taken on the first day of the quarter, and the free grant then runs for 90 more days. You have until roughly the end of June to license or to stop. |
 | **A 2,000-person bank** evaluates hushgate for six months in a lab, against real traffic captures, never in production. | **No.** Non-production use is free at any size. Come back when it goes live. |
-| **A 500-person company** forks hushgate, patches a detector, and publishes the fork under its own name. It does not run it in production. | **No.** Copying, modifying and redistributing are granted outright; the size and offering conditions limit production use only. (The name is a separate matter — see [TRADEMARKS.md](TRADEMARKS.md).) |
+| **A 500-person company** forks hushgate, patches a detector, and publishes the fork under its own name. It does not run it in production. | **No.** The size and offering conditions limit production use only; copying, modifying and redistributing are granted by the Terms at any size. The fork itself is still subject to the BUSL and must display the licence conspicuously. (The name is a separate matter — see [TRADEMARKS.md](TRADEMARKS.md).) |
 
 If your case is not on that list and you genuinely cannot tell, mail me and
 ask. Asking costs nothing and I would rather answer than have you guess.
@@ -203,8 +206,10 @@ first exceeded 10, and the count is only taken on the first day of each
 calendar quarter. Nothing breaks, nothing phones home, and there is no
 retroactive claim for the window. Mail me inside it.
 
-**"Can we resell hushgate?"** Redistribution is granted by the licence
-outright, so passing copies on is not what the commercial licence is about.
+**"Can we resell hushgate?"** Redistribution is granted by the licence's Terms
+at any size — free of the two production conditions, though still subject to
+the Terms' own: the copies stay under the BUSL and must display the licence
+conspicuously. So passing copies on is not what the commercial licence is about.
 What needs one is offering it to third parties as a hosted, managed or embedded
 commercial offering — and whoever ends up running it in production still needs
 to be inside the grant themselves. The name is separate: see

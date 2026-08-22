@@ -1103,8 +1103,11 @@ the thing that governs; where this summary and the licence differ, the licence
 wins.
 
 **Copying, modifying, forking, redistributing and every non-production use are
-free for everyone, at any size, unconditionally.** That is the BUSL grant
-itself, and the two production conditions below do not touch it. Evaluation,
+free for everyone, at any size.** That is the BUSL grant itself, and neither of
+the two production conditions below touches it. Those rights do carry the
+licence's own conditions, though: every copy and derivative work remains subject
+to the BUSL, and you must conspicuously display the licence on each original or
+modified copy. Evaluation,
 development, staging, CI, a security review, a proof of concept against real
 traffic captures — none of that is production use. No licence, no registration,
 nothing to phone home to.
