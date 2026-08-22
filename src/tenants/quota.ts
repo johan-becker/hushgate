@@ -51,13 +51,20 @@ export class QuotaTracker {
       );
     }
 
+    // Pruned unconditionally, before the unlimited case returns. A tenant with
+    // no per-minute limit is the default — it is what parseQuotas returns for
+    // a tenant with no quotas block, which is what "hushgate keys new" prints —
+    // and retaining one timestamp per request for the life of the process
+    // would grow the heap without bound in exactly the deployment that runs
+    // longest.
+    counters.requests = counters.requests.filter((stamp) => at - stamp < MINUTE_MS);
+
     const perMinute = tenant.quotas.requestsPerMinute;
     if (perMinute === null) {
       counters.requests.push(at);
       return;
     }
 
-    counters.requests = counters.requests.filter((stamp) => at - stamp < MINUTE_MS);
     if (counters.requests.length >= perMinute) {
       const oldest = counters.requests[0] ?? at;
       const waitMs = MINUTE_MS - (at - oldest);

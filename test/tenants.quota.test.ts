@@ -154,6 +154,47 @@ describe('QuotaTracker', () => {
   });
 });
 
+describe('the sliding window stays bounded', () => {
+  it('prunes for a tenant with no per-minute limit', () => {
+    let now = 1_700_000_000_000;
+    const tracker = new QuotaTracker(() => now);
+    const unlimited = tenant('a', 'hg_a');
+
+    // A tenant with no quotas block is the default: it is what parseQuotas
+    // returns, what "hushgate keys new" prints and what the README says to
+    // paste. One retained timestamp per request would grow without bound for
+    // the life of the process.
+    for (let i = 0; i < 10_000; i++) {
+      tracker.admit(unlimited);
+      now += 1_000;
+    }
+
+    expect(tracker.usage('a').requestsInWindow).toBe(59);
+    expect(internalWindowSize(tracker, 'a')).toBeLessThanOrEqual(61);
+  });
+
+  it('still prunes when a per-minute limit is set', () => {
+    let now = 1_700_000_000_000;
+    const tracker = new QuotaTracker(() => now);
+    const limited = tenant('b', 'hg_b', { requestsPerMinute: 600 });
+
+    for (let i = 0; i < 5_000; i++) {
+      tracker.admit(limited);
+      now += 1_000;
+    }
+
+    expect(internalWindowSize(tracker, 'b')).toBeLessThanOrEqual(61);
+  });
+});
+
+/** The retained timestamp array, which is what must not grow without bound. */
+function internalWindowSize(tracker: QuotaTracker, tenantId: string): number {
+  const counters = (
+    tracker as unknown as { counters: Map<string, { requests: number[] }> }
+  ).counters.get(tenantId);
+  return counters?.requests.length ?? 0;
+}
+
 const withTenant =
   (team: Tenant) =>
   (base: HushgateConfig): HushgateConfig => ({ ...base, tenants: [team] });
