@@ -166,7 +166,8 @@ describe('hushgate scan', () => {
 
   it('needs at least one file', async () => {
     const c = capture(['scan']);
-    expect(await run(c.cli)).toBe(EXIT.failure);
+    // A missing operand is a usage error (exit 2), not a failure (exit 1).
+    expect(await run(c.cli)).toBe(EXIT.usage);
     expect(c.err()).toContain('at least one file');
   });
 });
