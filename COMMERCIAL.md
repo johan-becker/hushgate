@@ -28,8 +28,15 @@ Two groups the free grant does not cover:
    rules [below](#how-the-10-are-counted).
 2. **Anyone offering hushgate to third parties** as a hosted, managed or
    embedded **commercial offering** — at any size, including a two-person
-   company. Reselling copies of hushgate is not this: redistribution is granted
-   by the licence outright.
+   company. **Read the carve-out before assuming this is you**
+   ([below](#what-counts-as-offering-it-to-third-parties)): the licence says
+   your own employees and contractors are not third parties, that running
+   hushgate for your organisation's own internal purposes is not an offering,
+   and that neither is using it as an internal component of a product whose
+   value to your customers does not consist substantially of hushgate's
+   functionality. Embedding hushgate in your own product does not, by itself,
+   trigger this. Reselling copies of hushgate is not this either: redistribution
+   is granted by the licence outright.
 
 Everything else is free, forever, with no registration and no phoning home:
 
