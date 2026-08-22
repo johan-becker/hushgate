@@ -16,6 +16,7 @@ import {
 } from '../errors.js';
 import { Session } from '../redact/session.js';
 import { redactJson, restoreJson, type JsonValue } from '../redact/traverse.js';
+import { SseRehydrator } from '../stream/sse.js';
 import { VERSION } from '../version.js';
 import {
   errorPayload,
@@ -26,7 +27,7 @@ import {
   sendJson,
 } from './http.js';
 import { findRoute, type Route } from './routes.js';
-import { collect, nodeUpstreamClient, type UpstreamClient } from './upstream.js';
+import { collect, nodeUpstreamClient, type UpstreamClient, type UpstreamResponse } from './upstream.js';
 
 export interface ProxyOptions {
   readonly config: HushgateConfig;
@@ -119,8 +120,14 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       timeoutMs: config.limits.upstreamTimeoutMs,
     });
 
+    const contentType = upstreamResponse.headers['content-type'] ?? '';
+    if (contentType.includes('text/event-stream')) {
+      await pipeEventStream(route, session, upstreamResponse, response);
+      return;
+    }
+
     const raw = await collect(upstreamResponse.body);
-    const restored = rehydrate(raw, upstreamResponse.headers['content-type'], session);
+    const restored = rehydrate(raw, contentType, session);
     const payload = Buffer.from(restored, 'utf8');
 
     if (response.writableEnded) return;
@@ -174,16 +181,84 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
 }
 
 /**
+ * Stream an SSE response through, re-hydrating as it goes.
+ *
+ * Buffering the stream would restore just as correctly and destroy the only
+ * reason the caller asked for a stream, so nothing is held back except the
+ * handful of bytes that might still be part of a placeholder.
+ */
+async function pipeEventStream(
+  route: Route,
+  session: Session,
+  upstreamResponse: UpstreamResponse,
+  response: ServerResponse,
+): Promise<void> {
+  const rehydrator = new SseRehydrator({
+    deltaRules: route.streamRules,
+    resolve: (token) => session.lookup(token),
+  });
+  // A multi-byte character can straddle two TCP segments just as easily as a
+  // placeholder can; a per-chunk toString would corrupt it.
+  const decoder = new TextDecoder('utf-8');
+
+  response.writeHead(upstreamResponse.status, {
+    ...forwardResponseHeaders(upstreamResponse.headers),
+    'cache-control': 'no-cache, no-transform',
+    // Ask intermediaries not to buffer the stream they are relaying.
+    'x-accel-buffering': 'no',
+  });
+  response.flushHeaders();
+
+  // If the caller hangs up, stop pulling tokens we are paying for.
+  const abandon = (): void => {
+    upstreamResponse.body.destroy();
+  };
+  response.once('close', abandon);
+
+  try {
+    for await (const chunk of upstreamResponse.body) {
+      const text = decoder.decode(chunk as Buffer, { stream: true });
+      await writeChunk(response, rehydrator.push(text));
+    }
+
+    await writeChunk(response, rehydrator.push(decoder.decode()));
+    await writeChunk(response, rehydrator.flush());
+    response.end();
+  } finally {
+    response.removeListener('close', abandon);
+  }
+}
+
+/** Write one piece, respecting backpressure without ever hanging on a dead socket. */
+function writeChunk(response: ServerResponse, text: string): Promise<void> {
+  if (text.length === 0 || response.writableEnded || response.destroyed) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    if (response.write(text)) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      response.removeListener('drain', done);
+      response.removeListener('close', done);
+      resolve();
+    };
+    response.once('drain', done);
+    response.once('close', done);
+  });
+}
+
+/**
  * Re-hydrate a complete response body.
  *
  * JSON is walked structurally; anything else — an SSE stream, an HTML error page
  * from a corporate proxy — is treated as text. Both are safe: only tokens this
  * session issued are ever replaced.
  */
-function rehydrate(raw: string, contentType: string | undefined, session: Session): string {
+function rehydrate(raw: string, contentType: string, session: Session): string {
   if (raw.length === 0) return raw;
 
-  if ((contentType ?? '').includes('json')) {
+  if (contentType.includes('json')) {
     try {
       return JSON.stringify(restoreJson(JSON.parse(raw) as JsonValue, session));
     } catch {
@@ -216,6 +291,13 @@ function methodNotAllowed(response: ServerResponse, allow: string): void {
 
 /** Map an internal failure onto the error envelope the SDKs understand. */
 export function respondWithError(response: ServerResponse, error: unknown): void {
+  // Once a streaming response has started there is no envelope left to write
+  // into; the only honest thing is to end the stream.
+  if (response.headersSent) {
+    response.end();
+    return;
+  }
+
   if (error instanceof BlockedContentError) {
     sendJson(
       response,
