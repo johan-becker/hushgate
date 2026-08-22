@@ -399,17 +399,19 @@ describe('the hot path stays linear', () => {
     // Warm the JIT so the first measurement is not the slow one.
     timeRedaction(document(128), 1);
 
-    const small = timeRedaction(document(128));
-    const medium = timeRedaction(document(256));
-    const large = timeRedaction(document(512));
+    const small = timeRedaction(document(128), 5);
+    const medium = timeRedaction(document(256), 5);
+    const large = timeRedaction(document(512), 5);
 
-    // Scale-free: compare how the growth factor itself grows. Linear work
-    // holds the ratio steady across both doublings; quadratic work doubles it.
-    // Timing the ratio of ratios rather than one ratio keeps this meaningful
-    // whatever the absolute speed of the machine happens to be.
-    expect(large / medium).toBeLessThan(1.6 * (medium / small));
-    // And an outright budget on the 4x step, which a quadratic term (16x)
-    // cannot fit inside.
+    // Absolute growth budgets, not a ratio of ratios. Comparing one measured
+    // ratio against another divides by the noisiest number in the set -- the
+    // smallest sample -- so a single slow `small` run on a shared CI runner
+    // collapses the bound and fails a perfectly linear implementation. These
+    // bounds are what the test actually cares about: doubling the input
+    // doubles linear work (2x) but quadruples quadratic work (4x), and the 4x
+    // step is 4x against 16x. Both thresholds sit between the two, so a
+    // quadratic regression trips them and ordinary timing jitter does not.
+    expect(large / medium).toBeLessThan(3);
     expect(large / small).toBeLessThan(6);
   });
 
