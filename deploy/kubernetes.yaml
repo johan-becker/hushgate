@@ -121,6 +121,17 @@ spec:
       labels:
         app.kubernetes.io/name: hushgate
       annotations:
+        # NOTE: /metrics requires a tenant key as soon as any tenant is defined,
+        # and this ConfigMap defines one. Annotation-based scraping sends no
+        # Authorization header, so these three alone will get 401 on every
+        # scrape. Use a ServiceMonitor (or a scrape_config) that presents the
+        # key instead, e.g.:
+        #
+        #   bearerTokenSecret:
+        #     name: hushgate-secrets
+        #     key: HUSHGATE_TENANT_KEY
+        #
+        # and drop these annotations once it is in place.
         prometheus.io/scrape: 'true'
         prometheus.io/path: /metrics
         prometheus.io/port: '8787'
