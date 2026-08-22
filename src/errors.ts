@@ -66,3 +66,6 @@ export class UpstreamError extends HushgateError {
     return this.reason === 'timeout' ? 504 : 502;
   }
 }
+
+/** The command line was not understood. Reported with usage, and exit code 2. */
+export class UsageError extends HushgateError {}

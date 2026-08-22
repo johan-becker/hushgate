@@ -86,8 +86,9 @@ describe('parseConfig', () => {
     );
   });
 
-  it('rejects an out-of-range port', () => {
-    expect(() => parseConfig({ port: 0 })).toThrow(/between 1 and 65535/u);
+  it('rejects an out-of-range port but allows the ephemeral 0', () => {
+    expect(parseConfig({ port: 0 }).port).toBe(0);
+    expect(() => parseConfig({ port: -1 })).toThrow(/between 0 and 65535/u);
     expect(() => parseConfig({ port: 70_000 })).toThrow(ConfigError);
     expect(() => parseConfig({ port: '8080' })).toThrow(ConfigError);
   });
