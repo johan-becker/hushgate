@@ -23,6 +23,7 @@ afterEach(async () => {
 });
 
 const event = (overrides: Partial<AuditEvent> = {}): AuditEvent => ({
+  tenant: null,
   route: 'openai.chat.completions',
   outcome: 'forwarded',
   status: 200,
@@ -55,6 +56,7 @@ describe('record construction', () => {
       'route',
       'status',
       'stream',
+      'tenant',
       'ts',
       'upstream',
     ]);
