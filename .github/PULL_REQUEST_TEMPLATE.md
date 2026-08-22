@@ -19,6 +19,10 @@ npm run lint && npm run build && npm test
 
 ## Checklist
 
+- [ ] Every commit is signed off (`git commit -s`) under the
+      [DCO](../DCO); see [CONTRIBUTING.md](../CONTRIBUTING.md) §6 for the
+      contributor terms, including the grant that lets a contribution ship
+      under both the BUSL and a commercial licence.
 - [ ] `npm run lint && npm run build && npm test` passes locally.
 - [ ] New behaviour has tests that assert on behaviour, not on calls.
 - [ ] No runtime dependency was added. hushgate imports from `node:` only.

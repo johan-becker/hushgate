@@ -86,3 +86,53 @@ observable behaviour, add a `CHANGELOG.md` entry under `Unreleased`.
 If output in the README would change because of your work, re-run the command
 and paste the new output. Every transcript in that file is real, and it stays
 that way — [`examples/`](examples) exists so you can reproduce them offline.
+
+## 6. Contributor terms
+
+hushgate is source-available under the [Business Source License 1.1](LICENSE),
+and commercial licences are sold for the cases the licence's Additional Use
+Grant does not cover (see [COMMERCIAL.md](COMMERCIAL.md)). That has two
+consequences for anything you contribute, and both are stated here rather than
+buried in a click-through.
+
+**Sign off every commit.** Contributions are accepted under the
+[Developer Certificate of Origin 1.1](DCO) — the Linux Foundation's DCO,
+verbatim, kept in this repository as [`DCO`](DCO). There is no CLA form to
+fill in. Sign off with:
+
+```sh
+git commit -s -m "fix: keep the trailing guard off a sentence-final IBAN"
+```
+
+which appends the line the DCO asks for:
+
+```
+Signed-off-by: Jane Doe <jane@example.com>
+```
+
+Use your real name and an address that reaches you. By signing off you certify
+the DCO: that the work is yours to submit, or that you have the right to submit
+it under this project's licence. A pull request whose commits are not signed
+off cannot be merged — `git rebase --signoff` fixes an existing branch.
+
+**Your contribution is licensed for both outbound licences.** By submitting a
+contribution you agree that it is licensed under the Business Source License
+1.1 on the same terms as the rest of hushgate, **and** you grant Johan Becker a
+perpetual, worldwide, non-exclusive, irrevocable, royalty-free right to
+license, sublicense and distribute that contribution under any commercial
+licence offered for hushgate, and under the Change License (the Apache License,
+Version 2.0) when the Change Date arrives. Without that grant a contributed
+line could not be included in a commercial licence, which would mean it could
+not be merged at all.
+
+**You keep your copyright.** This is a licence grant, not an assignment.
+Nothing here takes your work away from you or stops you using it elsewhere; it
+lets hushgate ship it under the two licences hushgate ships under.
+
+If you would rather not agree to that — a perfectly reasonable position — open
+an issue describing the change instead. A precise bug report with a
+reproduction is worth as much as a patch here, and it carries no paperwork at
+all. Issues, reproductions, benchmarks, detector test vectors and documentation
+corrections are all welcome on those terms.
+
+The project name is a separate matter: see [TRADEMARKS.md](TRADEMARKS.md).
