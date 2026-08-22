@@ -10,6 +10,7 @@ import {
   loadConfig,
   normaliseUrl,
   parseConfig,
+  stripJsonComments,
 } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
 
@@ -103,6 +104,49 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ redaction: { custom: [{ pattern: 'x' }] } }, 'my.json')).toThrow(
       /my\.json: "redaction"\.custom\[0\]\.name/u,
     );
+  });
+});
+
+describe('comments in the config file', () => {
+  it('strips line and block comments', () => {
+    expect(
+      JSON.parse(
+        stripJsonComments(`{
+          // a line comment
+          "port": 9000, /* and a block one */
+          "host": "127.0.0.1"
+        }`),
+      ),
+    ).toEqual({ port: 9000, host: '127.0.0.1' });
+  });
+
+  it('leaves comment-looking text inside strings alone', () => {
+    const text = '{"host":"http://example.com/*not a comment*/","port":1}';
+    expect(JSON.parse(stripJsonComments(text))).toEqual({
+      host: 'http://example.com/*not a comment*/',
+      port: 1,
+    });
+  });
+
+  it('handles escaped quotes before a comment', () => {
+    // The string ends at the last quote, not the escaped one in the middle.
+    const text = '{"host":"say \\"hi\\"" // done\n}';
+    expect(JSON.parse(stripJsonComments(text))).toEqual({ host: 'say "hi"' });
+  });
+
+  it('keeps line numbers, so a parse error still points at the right line', () => {
+    const stripped = stripJsonComments('{\n// one\n// two\n"port": 1\n}');
+    expect(stripped.split('\n')).toHaveLength(5);
+  });
+
+  it('loads a commented file end to end', () => {
+    const dir = workspace({
+      [CONFIG_FILENAME]: `{
+        // the port we agreed on
+        "port": 4242
+      }`,
+    });
+    expect(loadConfig({ cwd: dir, env: {} }).config.port).toBe(4242);
   });
 });
 
