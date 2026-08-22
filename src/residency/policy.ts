@@ -211,30 +211,43 @@ export interface EnforcementDecision {
  * the global mode. When several categories are present, the strictest of their
  * rules wins — one field of a request being sensitive is enough to make the
  * whole request sensitive.
+ *
+ * A category with no rule of its own is *not* silent: it carries the fallback
+ * mode into the comparison. That is what stops a permissive rule from relaxing
+ * a request it only partly describes — `categories: {IPV4: "allow"}` exempts an
+ * IP address, and must not also exempt the IBAN sitting next to it. A category
+ * rule can therefore only ever make one category stricter than the fallback,
+ * never make the request as a whole looser.
  */
 export function enforcementFor(
   residency: ResidencyConfig,
   routeLabel: string,
   kinds: readonly string[],
 ): EnforcementDecision {
-  const matched = kinds
-    .map((kind) => ({ kind, mode: residency.categories[kind] }))
-    .filter((entry): entry is { kind: string; mode: EnforcementMode } => entry.mode !== undefined);
-
-  if (matched.length > 0) {
-    // Strictest wins; the kind name breaks ties so the reported rule is stable.
-    const winner = matched.toSorted(
-      (a, b) => STRICTNESS[b.mode] - STRICTNESS[a.mode] || (a.kind < b.kind ? -1 : 1),
-    )[0]!;
-    return { mode: winner.mode, rule: `residency.categories.${winner.kind}` };
-  }
-
   const routeMode = residency.routes[routeLabel];
-  if (routeMode !== undefined) {
-    return { mode: routeMode, rule: `residency.routes.${routeLabel}` };
-  }
+  const fallback: EnforcementDecision =
+    routeMode === undefined
+      ? { mode: residency.mode, rule: 'residency.mode' }
+      : { mode: routeMode, rule: `residency.routes.${routeLabel}` };
 
-  return { mode: residency.mode, rule: 'residency.mode' };
+  const decisions = kinds.map((kind) => {
+    const mode = residency.categories[kind];
+    return mode === undefined
+      ? { kind: null, decision: fallback }
+      : { kind, decision: { mode, rule: `residency.categories.${kind}` } };
+  });
+
+  if (decisions.length === 0) return fallback;
+
+  // Strictest wins. Ties go to the more specific rule, then to the kind name,
+  // so the rule this reports never depends on the order the kinds arrived in.
+  return decisions.toSorted((a, b) => {
+    const byStrictness = STRICTNESS[b.decision.mode] - STRICTNESS[a.decision.mode];
+    if (byStrictness !== 0) return byStrictness;
+    if ((a.kind === null) !== (b.kind === null)) return a.kind === null ? 1 : -1;
+    if (a.kind === null || b.kind === null) return 0;
+    return a.kind < b.kind ? -1 : 1;
+  })[0]!.decision;
 }
 
 /**
