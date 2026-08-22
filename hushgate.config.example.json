@@ -38,6 +38,19 @@
     "path": "hushgate-audit.jsonl"
   },
 
+  "tenants": [
+    {
+      "id": "support",
+      "name": "Support desk",
+      "keyHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "quotas": { "requestsPerMinute": 120, "tokensPerDay": 2000000 },
+      "audit": { "path": "audit/support.jsonl" },
+      "redaction": {
+        "policies": { "SECRET": "block" }
+      }
+    }
+  ],
+
   "residency": {
     "mode": "sanitize",
     "routes": {},
