@@ -1,7 +1,10 @@
 /**
  * hushgate — a local-first PII firewall for cloud LLM APIs.
  *
- * The public surface is assembled here as the feature branches land. Everything
- * in this package is a plain library; the HTTP proxy is only one consumer of it.
+ * Everything here is a plain library; the HTTP proxy is only one consumer of it.
  */
 export const VERSION = '0.1.0';
+
+export * from './types.js';
+export * from './errors.js';
+export * from './detectors/index.js';
