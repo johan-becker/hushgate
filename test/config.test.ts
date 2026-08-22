@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -103,6 +103,19 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ redaction: { custom: [{ pattern: 'x' }] } }, 'my.json')).toThrow(
       /my\.json: "redaction"\.custom\[0\]\.name/u,
     );
+  });
+});
+
+describe('the shipped example config', () => {
+  it('is valid — the file people copy must not be the file that fails', () => {
+    const example = readFileSync(join(import.meta.dirname, '..', 'hushgate.config.example.json'), 'utf8');
+    const config = parseConfig(JSON.parse(example), 'hushgate.config.example.json');
+    expect(config.redaction.policies['SECRET']).toBe('block');
+    expect(config.audit.enabled).toBe(true);
+  });
+
+  it('ignores a $schema key', () => {
+    expect(() => parseConfig({ $schema: 'https://example/schema.json' })).not.toThrow();
   });
 });
 

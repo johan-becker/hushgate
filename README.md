@@ -1,15 +1,287 @@
 # hushgate
 
-Nothing personal leaves the machine.
+**Nothing personal leaves the machine.**
 
-A local-first PII firewall that sits between your application and a cloud LLM
-API. Point your existing OpenAI or Anthropic SDK at hushgate instead of the real
-endpoint: it detects personal data in the outgoing request, swaps it for stable
-pseudonymous placeholders, forwards the sanitised request upstream, and
-re-hydrates the placeholders in the response so your application sees the real
-values back. The cloud provider never sees the personal data.
+hushgate is a local-first PII firewall that sits between your application and a
+cloud LLM API. Point your existing OpenAI or Anthropic SDK at hushgate instead
+of the real endpoint: it detects personal data in the outgoing request, swaps it
+for stable pseudonymous placeholders, forwards the sanitised request upstream,
+and re-hydrates the placeholders in the response so your application sees the
+real values back. The provider never receives the personal data.
 
-Full documentation lands with the feature branches.
+- Zero runtime dependencies. Node 20+, TypeScript, ESM.
+- Deterministic detection with real checksums — no model, no network, no
+  telemetry.
+- Streaming-safe: placeholders are restored even when they arrive split across
+  SSE chunks or across separate events.
+- An append-only audit trail that records categories and counts, never values.
+
+## The migration is one line
+
+```diff
+  import OpenAI from 'openai';
+
+  const client = new OpenAI({
++   baseURL: 'http://127.0.0.1:8787/v1',
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+```
+
+```diff
+  import Anthropic from '@anthropic-ai/sdk';
+
+  const client = new Anthropic({
++   baseURL: 'http://127.0.0.1:8787',
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  });
+```
+
+Or without touching the code at all:
+
+```sh
+export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+```
+
+Your API key is passed through untouched; hushgate never stores it.
+
+## Quick start
+
+```sh
+npm install -g hushgate
+hushgate serve
+```
+
+```text
+hushgate 0.1.0 listening on http://127.0.0.1:8787
+  config     built-in defaults (no hushgate.config.json found)
+  upstreams  openai     https://api.openai.com
+             anthropic  https://api.anthropic.com
+  policy     pseudonymize by default; overrides: none
+  audit      hushgate-audit.jsonl
+  routes     POST /v1/chat/completions, POST /v1/messages, GET /healthz
+```
+
+What the provider receives:
+
+```jsonc
+// your application sent
+{ "messages": [{ "role": "user", "content": "Schreib an johan@example.com, IBAN DE89 3704 0044 0532 0130 00" }] }
+
+// api.openai.com received
+{ "messages": [{ "role": "user", "content": "Schreib an [EMAIL_1], IBAN [IBAN_1]" }] }
+
+// your application got back
+{ "choices": [{ "message": { "content": "Ich habe johan@example.com zur IBAN DE89 3704 0044 0532 0130 00 geschrieben." } }] }
+```
+
+## How it works
+
+```text
+your app ──▶ hushgate ──▶ provider
+             │  detect      sees only
+             │  redact      [EMAIL_1]
+             ▼
+          audit.jsonl (counts, never values)
+
+provider ──▶ hushgate ──▶ your app
+                restore     sees
+                            johan@example.com
+```
+
+1. **Traverse.** The request body is parsed and walked, not regex-scanned.
+   Chat messages in both content shapes, system prompts, tool-call arguments and
+   tool schemas are visited; model names, tool ids and parameters are not.
+2. **Detect.** Every detector validates rather than pattern-matches: IBANs by
+   mod-97, cards by Luhn, German tax IDs by ISO 7064 MOD 11,10 *and* the
+   digit-frequency rule. Overlaps resolve deterministically — longest match
+   wins, ties by detector priority.
+3. **Apply policy.** Per kind: `pseudonymize`, `redact`, `hash`, `allow`,
+   `block`.
+4. **Forward.** Only known headers travel upstream. Your API key does; your
+   cookies do not.
+5. **Re-hydrate.** Responses are restored structurally, and event streams are
+   restored incrementally without buffering.
+
+### Detectors
+
+| Kind | Validated by |
+| --- | --- |
+| `EMAIL` | structural validation of local and domain parts |
+| `IBAN` | mod-97 checksum plus per-country length (DE, AT, CH, FR, NL, ES, IT and more) |
+| `CREDIT_CARD` | Luhn checksum plus issuer prefix |
+| `PHONE` | E.164 and German formats (`+49…`, `0049…`, `0721/…`, spaced, slashed, hyphenated) |
+| `IPV4`, `IPV6`, `MAC` | octet ranges, `::` compression, MAC separators |
+| `GERMAN_TAX_ID` | ISO 7064 MOD 11,10 check digit and the digit-frequency rule |
+| `SECRET` | `sk-`, `sk-ant-`, `ghp_`/`gho_`/`ghs_`/`github_pat_`, AWS `AKIA`/`ASIA`, Google `AIza`, Slack `xox[baprs]-`, JWTs, PEM private keys |
+| `URL_CREDENTIALS` | `scheme://user:pass@host` |
+| `DATE_OF_BIRTH` | real calendar dates in a plausible birth-year window |
+| `NAME`, `TERM` | your dictionary: case-insensitive, whole-word, longest match wins |
+| *your own* | named regexes from the config file |
+
+A digit run that looks like an IBAN but fails its checksum is not an IBAN, and
+hushgate says so rather than redacting it — false positives cost the model the
+context it needs to be useful.
+
+### Policies
+
+| Policy | Effect | Reversible |
+| --- | --- | --- |
+| `pseudonymize` | `[EMAIL_1]` — stable within the request | yes |
+| `redact` | `[EMAIL_REDACTED]` | no |
+| `hash` | `[EMAIL:9f86d081ab2c]` — HMAC-SHA256, stable across requests with a fixed key | no |
+| `allow` | left untouched | — |
+| `block` | the whole request is refused with 403 before anything is sent | — |
+
+Placeholders are stable within a request: the same value always gets the same
+token, two different values never share one, and a token hushgate issues can
+never collide with placeholder-shaped text that was already in your input.
+
+### Streaming
+
+A model does not emit `[EMAIL_1]` in one piece. It arrives as `[`, `EMAIL`,
+`_1`, `]` in four separate SSE events, and each of those can be cut in half by
+the network. hushgate holds back only the trailing bytes that could still become
+a placeholder — never more than one token's worth — and releases them the
+instant they resolve or are ruled out. If a stream ends mid-token, the partial
+text is still delivered. Comments, event names and ids pass through unchanged.
+
+## Configuration
+
+`hushgate.config.json` in the working directory, or `--config <path>`. Every key
+is optional; unknown keys are an error rather than a shrug.
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "upstreams": {
+    "openai": "https://api.openai.com",
+    "anthropic": "https://api.anthropic.com"
+  },
+  "redaction": {
+    "defaultPolicy": "pseudonymize",
+    "policies": {
+      "SECRET": "block",
+      "IPV4": "allow",
+      "GERMAN_TAX_ID": "hash"
+    },
+    "dictionary": {
+      "names": ["Anna Schmidt", "Johan Becker"],
+      "terms": ["Projekt Nordlicht"]
+    },
+    "custom": [
+      { "name": "employee id", "pattern": "EMP-\\d{5}" }
+    ],
+    "dobYearRange": { "minYear": 1900, "maxYear": 2012 }
+  },
+  "limits": {
+    "maxBodyBytes": 4194304,
+    "upstreamTimeoutMs": 120000
+  },
+  "audit": {
+    "enabled": true,
+    "path": "hushgate-audit.jsonl"
+  }
+}
+```
+
+Environment variables override the file, and command-line flags override both:
+
+| Variable | Effect |
+| --- | --- |
+| `HUSHGATE_HOST`, `HUSHGATE_PORT` | bind address and port |
+| `HUSHGATE_UPSTREAM_OPENAI`, `HUSHGATE_UPSTREAM_ANTHROPIC` | upstream base URLs |
+| `HUSHGATE_DEFAULT_POLICY` | policy for kinds without an entry |
+| `HUSHGATE_HMAC_KEY` | key for the `hash` policy (prefer this over the file) |
+| `HUSHGATE_MAX_BODY_BYTES`, `HUSHGATE_UPSTREAM_TIMEOUT_MS` | limits |
+| `HUSHGATE_AUDIT`, `HUSHGATE_AUDIT_PATH` | audit trail on/off and location |
+
+hushgate binds to `127.0.0.1` by default. It holds the mapping from placeholders
+back to real personal data, so an accidental `0.0.0.0` is an incident, not a
+convenience.
+
+## CLI
+
+```sh
+hushgate serve [--config <path>] [--port <n>] [--host <h>]
+               [--upstream-openai <url>] [--upstream-anthropic <url>]
+               [--audit <path>] [--no-audit]
+
+hushgate scan [--json] [--show-values] [--quiet] <file...>
+hushgate check [--quiet] < input > output
+```
+
+`scan` is built for CI — it exits **3** when it finds personal data:
+
+```console
+$ hushgate scan fixtures/*.json
+fixtures/customer.json
+  12:14  EMAIL  jo••••••om  → pseudonymize
+  18:3   IBAN   DE••••••00  → pseudonymize
+
+2 findings in 1 file: EMAIL 1, IBAN 1
+```
+
+Previews are masked because CI logs are not a place to publish an IBAN; pass
+`--show-values` when you are looking at your own terminal.
+
+`check` is the Unix half:
+
+```sh
+cat notes.md | hushgate check > safe.md
+```
+
+Exit codes: `0` success, `1` failure, `2` usage, `3` `scan` found personal data.
+
+## Audit trail
+
+Append-only JSONL, one object per request:
+
+```json
+{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"upstream":"api.openai.com","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"}}
+```
+
+Categories and counts, never values — the record is assembled from a fixed field
+list precisely so it cannot grow one. Blocked and rejected requests are recorded
+too: "nothing was sent" is exactly the fact worth writing down.
+
+## Is this legally sufficient?
+
+No tool can answer that for you, and any tool that claims otherwise should be
+treated with suspicion.
+
+What hushgate does is technical and specific: it removes categories of personal
+data it can detect from the payloads you send to a third-party API, it records
+what it removed, and it refuses the request outright when you tell it to. Used
+carefully, that is a meaningful technical measure in the sense of GDPR
+Article 32, and it materially reduces what a third-country transfer under
+Chapter V actually contains.
+
+What it is not:
+
+- It is **not legal advice**, and it does not by itself make a transfer lawful.
+- It is **not a guarantee of anonymisation**. Pseudonymisation is explicitly
+  still personal data under Article 4(5). Free text can identify a person
+  without containing a single detectable identifier — "the deputy head of our
+  Karlsruhe office who resigned last Tuesday" survives every detector here.
+- It is **not a substitute** for a lawful basis, a transfer mechanism, a DPA
+  with your provider, a record of processing, or a DPIA where one is required.
+
+Treat it as one control among several, evidence it with the audit trail, and let
+your DPO decide what it is worth in your specific processing context.
+
+## Development
+
+```sh
+npm install
+npm run lint
+npm run build
+npm test
+```
+
+The test suite never touches the network: every proxy test runs against a fake
+upstream bound to `127.0.0.1` on an ephemeral port.
 
 ## License
 
