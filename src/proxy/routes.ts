@@ -4,6 +4,7 @@
  */
 import { ANTHROPIC_MESSAGES_RULES, OPENAI_CHAT_RULES } from '../redact/shapes.js';
 import type { PathRule } from '../redact/traverse.js';
+import { ANTHROPIC_STREAM_DELTAS, OPENAI_STREAM_DELTAS } from '../stream/shapes.js';
 
 export type ProviderId = 'openai' | 'anthropic';
 
@@ -13,6 +14,8 @@ export interface Route {
   readonly provider: ProviderId;
   /** Where user content lives in this provider's request body. */
   readonly rules: readonly PathRule[];
+  /** Where the *incremental* text lives in this provider's SSE events. */
+  readonly streamRules: readonly PathRule[];
   /** Stable name for audit records and metrics labels. */
   readonly label: string;
 }
@@ -22,12 +25,14 @@ export const ROUTES: readonly Route[] = [
     path: '/v1/chat/completions',
     provider: 'openai',
     rules: OPENAI_CHAT_RULES,
+    streamRules: OPENAI_STREAM_DELTAS,
     label: 'openai.chat.completions',
   },
   {
     path: '/v1/messages',
     provider: 'anthropic',
     rules: ANTHROPIC_MESSAGES_RULES,
+    streamRules: ANTHROPIC_STREAM_DELTAS,
     label: 'anthropic.messages',
   },
 ];
