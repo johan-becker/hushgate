@@ -1,10 +1,17 @@
 /** `hushgate serve` — run the proxy in the foreground. */
+import { JsonlAuditLog, nullAuditLog, type AuditSink } from '../../audit/log.js';
 import { loadConfig, type ConfigOverrides, type HushgateConfig } from '../../config.js';
 import { createProxyServer } from '../../proxy/server.js';
 import { ROUTES } from '../../proxy/routes.js';
 import { VERSION } from '../../version.js';
-import { intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { isAbsolute, resolve as joinPath } from 'node:path';
+import { boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
+
+/** Resolve a configured path against the working directory. */
+function resolvePath(cwd: string, path: string): string {
+  return isAbsolute(path) ? path : joinPath(cwd, path);
+}
 
 export const SERVE_FLAGS: FlagSpecs = {
   config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
@@ -12,6 +19,8 @@ export const SERVE_FLAGS: FlagSpecs = {
   port: { type: 'number', alias: 'p', description: 'port to bind (default 8787)', placeholder: '<port>' },
   'upstream-openai': { type: 'string', description: 'base URL for /v1/chat/completions', placeholder: '<url>' },
   'upstream-anthropic': { type: 'string', description: 'base URL for /v1/messages', placeholder: '<url>' },
+  audit: { type: 'string', description: 'path of the JSONL audit trail', placeholder: '<path>' },
+  'no-audit': { type: 'boolean', description: 'do not write an audit trail' },
 };
 
 export const SERVE_SUMMARY = 'run the redacting proxy in the foreground';
@@ -26,6 +35,7 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
       openai: stringFlag(parsed, 'upstream-openai'),
       anthropic: stringFlag(parsed, 'upstream-anthropic'),
     },
+    audit: auditOverride(parsed),
   };
 
   const { config, source } = loadConfig({
@@ -35,7 +45,11 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
     overrides: pruneOverrides(overrides),
   });
 
-  const proxy = createProxyServer({ config });
+  const audit: AuditSink = config.audit.enabled
+    ? new JsonlAuditLog({ path: resolvePath(cli.cwd, config.audit.path) })
+    : nullAuditLog;
+
+  const proxy = createProxyServer({ config, audit });
   await proxy.listen();
 
   cli.stdout(banner(config, proxy.origin ?? `http://${config.host}:${config.port}`, source.path));
@@ -43,8 +57,17 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
   await untilStopped(cli.signal);
   cli.stdout('\nhushgate: shutting down\n');
   await proxy.close();
+  await audit.close();
 
   return EXIT.ok;
+}
+
+function auditOverride(parsed: ReturnType<typeof parseFlags>): { enabled?: boolean; path?: string } {
+  const override: { enabled?: boolean; path?: string } = {};
+  const path = stringFlag(parsed, 'audit');
+  if (path !== undefined) override.path = path;
+  if (boolFlag(parsed, 'no-audit')) override.enabled = false;
+  return override;
 }
 
 /** Drop keys the user did not pass, so they do not overwrite file values. */
@@ -59,6 +82,9 @@ function pruneOverrides(overrides: ConfigOverrides): ConfigOverrides {
   if (overrides.host !== undefined) Object.assign(pruned, { host: overrides.host });
   if (overrides.port !== undefined) Object.assign(pruned, { port: overrides.port });
   if (Object.keys(upstreams).length > 0) Object.assign(pruned, { upstreams });
+  if (overrides.audit !== undefined && Object.keys(overrides.audit).length > 0) {
+    Object.assign(pruned, { audit: overrides.audit });
+  }
   return pruned;
 }
 
@@ -75,6 +101,7 @@ function banner(config: HushgateConfig, origin: string, configPath: string | nul
     `  upstreams  openai     ${config.upstreams.openai}`,
     `             anthropic  ${config.upstreams.anthropic}`,
     `  policy     ${config.redaction.defaultPolicy} by default; overrides: ${overrides}`,
+    `  audit      ${config.audit.enabled ? config.audit.path : 'disabled'}`,
     `  routes     ${ROUTES.map((route) => `POST ${route.path}`).join(', ')}, GET /healthz`,
     '',
     '  Point your SDK at this address:',
