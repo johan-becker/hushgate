@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a capability hushgate does not have yet.
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        hushgate has **zero runtime dependencies** and that is deliberate —
+        proposals that would require adding one will be declined however
+        convenient the library is. Everything is built on `node:` modules.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you unable to do today? Describe the situation, not the
+        solution — a concrete scenario is worth more than a feature name.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like hushgate to do
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part it touches
+      options:
+        - A new detector
+        - Redaction policies or placeholder behaviour
+        - Provider or route support
+        - Streaming
+        - Residency policy or the endpoint registry
+        - Audit trail or reporting
+        - Multi-tenant, keys or quotas
+        - CLI
+        - Deployment
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: detector
+    attributes:
+      label: If this is a new detector
+      description: >
+        What validates it? A checksum, a check digit, a structural rule — and
+        the specification or reference that defines it. A detector that can
+        only match a shape is a false-positive generator, and those are not
+        accepted.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried instead
+      description: >
+        Custom regexes, a dictionary, a different policy — and why they were
+        not enough.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: This would not require adding a runtime dependency.
+          required: true
+        - label: I checked the README reference in case it already exists.
+          required: true
