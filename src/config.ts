@@ -424,10 +424,12 @@ function optionalPositiveInt(value: unknown, where: string): number | undefined 
   return value;
 }
 
+/** Port 0 is allowed on purpose: it binds an ephemeral port, which is what the
+ * test suite and supervised sidecars want. The chosen port is printed at start. */
 function optionalPort(value: unknown, where: string): number | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65_535) {
-    throw new ConfigError(`${where} must be an integer between 1 and 65535, got ${describe(value)}`);
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 65_535) {
+    throw new ConfigError(`${where} must be an integer between 0 and 65535, got ${describe(value)}`);
   }
   return value;
 }
@@ -466,8 +468,8 @@ export function normaliseUrl(value: string, where: string): string {
 
 function envPort(value: string, name: string): number {
   const port = Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new ConfigError(`${name} must be an integer between 1 and 65535, got "${value}"`);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new ConfigError(`${name} must be an integer between 0 and 65535, got "${value}"`);
   }
   return port;
 }

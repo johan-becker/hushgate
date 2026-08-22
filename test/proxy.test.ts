@@ -10,6 +10,18 @@ afterEach(async () => {
   harness = undefined;
 });
 
+interface ErrorEnvelope {
+  readonly error: {
+    readonly type: string;
+    readonly message: string;
+    readonly kinds?: string[];
+    readonly counts?: Record<string, number>;
+  };
+}
+
+const errorOf = async (response: Response): Promise<ErrorEnvelope['error']> =>
+  ((await response.json()) as ErrorEnvelope).error;
+
 const chatBody = (text: string): Record<string, unknown> => ({
   model: 'gpt-4o-mini',
   messages: [{ role: 'user', content: text }],
@@ -28,7 +40,7 @@ describe('routing', () => {
     harness = await startHarness();
     const response = await harness.post('/v1/embeddings', {});
     expect(response.status).toBe(404);
-    expect((await response.json()).error.type).toBe('not_found');
+    expect((await errorOf(response)).type).toBe('not_found');
   });
 
   it('rejects the wrong method with 405 and an Allow header', async () => {
@@ -208,8 +220,8 @@ describe('inbound re-hydration', () => {
     // request that created it.
     expect(harness.upstream.requests[0]!.body).toContain('[EMAIL_1]');
     expect(harness.upstream.requests[1]!.body).toContain('[EMAIL_1]');
-    expect((await first.json()).echo).toBe('a@x.de');
-    expect((await second.json()).echo).toBe('b@x.de');
+    expect(((await first.json()) as { echo: string }).echo).toBe('a@x.de');
+    expect(((await second.json()) as { echo: string }).echo).toBe('b@x.de');
   });
 });
 
@@ -228,13 +240,11 @@ describe('policy enforcement', () => {
     );
 
     expect(response.status).toBe(403);
-    const payload = (await response.json()) as {
-      error: { type: string; kinds: string[]; counts: Record<string, number> };
-    };
-    expect(payload.error.type).toBe('hushgate_policy_blocked');
-    expect(payload.error.kinds).toEqual(['SECRET']);
-    expect(payload.error.counts).toEqual({ SECRET: 1 });
-    expect(JSON.stringify(payload)).not.toContain('sk-abcdefghijklmnopqrstuvwx');
+    const failure = await errorOf(response);
+    expect(failure.type).toBe('hushgate_policy_blocked');
+    expect(failure.kinds).toEqual(['SECRET']);
+    expect(failure.counts).toEqual({ SECRET: 1 });
+    expect(JSON.stringify(failure)).not.toContain('sk-abcdefghijklmnopqrstuvwx');
     expect(harness.upstream.requests).toHaveLength(0);
   });
 });
@@ -244,7 +254,7 @@ describe('malformed requests', () => {
     harness = await startHarness();
     const response = await harness.post('/v1/chat/completions', 'not json');
     expect(response.status).toBe(400);
-    expect((await response.json()).error.type).toBe('invalid_request_error');
+    expect((await errorOf(response)).type).toBe('invalid_request_error');
   });
 
   it('rejects a body that is not a JSON object', async () => {
@@ -266,7 +276,7 @@ describe('malformed requests', () => {
 
     const response = await harness.post('/v1/chat/completions', chatBody('x'.repeat(4096)));
     expect(response.status).toBe(413);
-    expect((await response.json()).error.type).toBe('request_too_large');
+    expect((await errorOf(response)).type).toBe('request_too_large');
     expect(harness.upstream.requests).toHaveLength(0);
   });
 
@@ -277,7 +287,7 @@ describe('malformed requests', () => {
 
     const response = await harness.post('/v1/chat/completions', { model: 'm', messages: deep });
     expect(response.status).toBe(400);
-    expect((await response.json()).error.message).toMatch(/nested deeper/u);
+    expect((await errorOf(response)).message).toMatch(/nested deeper/u);
   });
 });
 
@@ -290,7 +300,7 @@ describe('upstream failures', () => {
 
     const response = await harness.post('/v1/chat/completions', chatBody('hi'));
     expect(response.status).toBe(504);
-    expect((await response.json()).error.type).toBe('upstream_error');
+    expect((await errorOf(response)).type).toBe('upstream_error');
   });
 
   it('answers 502 when the upstream cannot be reached', async () => {
