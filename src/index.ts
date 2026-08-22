@@ -3,9 +3,10 @@
  *
  * Everything here is a plain library; the HTTP proxy is only one consumer of it.
  */
-export const VERSION = '0.1.0';
-
+export { VERSION } from './version.js';
 export * from './types.js';
 export * from './errors.js';
 export * from './detectors/index.js';
 export * from './redact/index.js';
+export * from './proxy/index.js';
+export * from './config.js';

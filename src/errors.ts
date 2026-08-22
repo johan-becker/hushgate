@@ -36,3 +36,33 @@ export class TraversalDepthError extends HushgateError {
     super(`request body is nested deeper than ${maxDepth} levels; refusing to traverse it`);
   }
 }
+
+/**
+ * A request hushgate refuses before it ever reaches an upstream: unreadable
+ * body, wrong method, unknown route, oversized payload.
+ */
+export class RequestError extends HushgateError {
+  constructor(
+    readonly status: number,
+    readonly type: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** The upstream provider could not be reached, or did not answer in time. */
+export class UpstreamError extends HushgateError {
+  constructor(
+    message: string,
+    readonly reason: 'timeout' | 'network',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+
+  /** 504 for a timeout, 502 for everything else, as a gateway should. */
+  get status(): number {
+    return this.reason === 'timeout' ? 504 : 502;
+  }
+}

@@ -12,6 +12,7 @@ import type { CustomRule } from './detectors/custom.js';
 import type { DictionaryInput } from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
 import { ConfigError } from './errors.js';
+import type { SessionOptions } from './redact/session.js';
 import { isPolicy, type Policy } from './types.js';
 
 /** File name looked up in the working directory when no path is given. */
@@ -496,4 +497,22 @@ function describe(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
   return typeof value;
+}
+
+/**
+ * Project the redaction section onto the options a {@link Session} takes.
+ *
+ * One place turns configuration into behaviour, so the proxy, the CLI and the
+ * tests cannot drift apart on what a config file means.
+ */
+export function redactionOptions(config: HushgateConfig): SessionOptions {
+  const { defaultPolicy, policies, dictionary, custom, dobYearRange, hmacKey } = config.redaction;
+  return {
+    defaultPolicy,
+    policies,
+    dictionary,
+    custom,
+    dobYearRange: dobYearRange ?? undefined,
+    hmacKey: hmacKey ?? undefined,
+  };
 }
