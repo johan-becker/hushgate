@@ -14,6 +14,18 @@ and the re-hydration mappings that already exist.
 
 ### Fixed
 
+- The plain-language licence summaries in [`README.md`](README.md) §13,
+  [`COMMERCIAL.md`](COMMERCIAL.md) and this file described a licence stricter
+  than the one in [`LICENSE`](LICENSE). They said production use was forbidden
+  on a "resold" basis, which the Additional Use Grant does not say and could
+  not say without restricting a right the BUSL Terms grant outright; and they
+  omitted the grant's carve-out that your own employees and contractors are not
+  third parties and that internal use — including hushgate as an internal
+  component of a product whose value is not substantially hushgate's
+  functionality — is not an offering to third parties. They also omitted the
+  90-day grace period, the headcount rules and the quarterly counting date.
+  If you read those summaries and concluded you needed a commercial licence,
+  read them again: the licence itself never changed.
 - A tenant's `redaction` block now merges over the global profile instead of
   replacing it. Every tenant silently lost the organisation's per-kind
   policies, name dictionary, custom rules and birth-year window — including a
@@ -69,13 +81,20 @@ version under different terms.
 #### Licensing
 
 - [`LICENSE`](LICENSE) — the standard, unmodified BUSL 1.1 text with only the
-  Parameters filled in. Non-production use is free at any size; production use
-  is free for organisations of 10 or fewer people, for individuals personally,
-  and for non-profits, registered charities and accredited educational
-  institutions — in every case provided the work is not offered to third
-  parties on a hosted, managed, embedded or resold basis. Anything beyond that
-  needs a commercial licence. Each published version converts automatically to
-  the Apache License, Version 2.0 four years after it is published.
+  Parameters filled in. Copying, modifying, redistributing and non-production
+  use are free at any size and are not limited by the Additional Use Grant's
+  conditions. Production use is free for organisations of 10 or fewer
+  individuals (counted on the first day of each calendar quarter, with a
+  90-day grace period on first exceeding 10), for individuals personally, and
+  for non-profits, registered charities and accredited educational institutions
+  regardless of headcount — in every case provided the work is not offered to
+  third parties as a hosted, managed or embedded commercial offering. Your own
+  employees and contractors are not third parties, and internal use — including
+  hushgate as an internal component of a product whose value is not
+  substantially hushgate's functionality — is not such an offering. Anything
+  beyond that needs a commercial licence. Each published version converts
+  automatically to the Apache License, Version 2.0 four years after it is
+  published.
 - [`COMMERCIAL.md`](COMMERCIAL.md) — who needs a commercial licence, with
   worked examples, what to send to jo_becker@mailbox.org, and the statement
   that evaluation is always free.
