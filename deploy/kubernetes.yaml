@@ -6,6 +6,13 @@
 # and its own in-memory quota counters, so scaling out means either one volume
 # and one trail per pod, or an external aggregator. Decide that deliberately
 # rather than by editing a number here.
+#
+# Both upstreams are checked against residency.allow before the listener binds,
+# and both are always configured — omitting one from the ConfigMap only falls
+# back to the official endpoint, it does not switch the route off. So each needs
+# an allowlist entry with a legal basis you have actually assessed. The Anthropic
+# entry below is a third-country transfer: assess it, or point upstreams.anthropic
+# at an EU endpoint and narrow the entry to match.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -36,6 +43,12 @@ data:
             "endpoint": "https://api.mistral.ai",
             "jurisdiction": "FR",
             "legalBasis": "REPLACE ME: the DPA and transfer basis you actually rely on"
+          },
+          {
+            "endpoint": "https://api.anthropic.com",
+            "jurisdiction": "US",
+            "legalBasis": "REPLACE ME: the transfer basis for the Anthropic route, or delete this entry and point upstreams.anthropic at an EU endpoint",
+            "note": "A third-country transfer. hushgate still redacts before sending; assess it or remove the route."
           }
         ]
       },
