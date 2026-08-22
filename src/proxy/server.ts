@@ -6,6 +6,8 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { nullAuditLog, type AuditSink } from '../audit/log.js';
+import type { AuditOutcome } from '../audit/record.js';
 import { redactionOptions, type HushgateConfig } from '../config.js';
 import {
   BlockedContentError,
@@ -14,9 +16,10 @@ import {
   TraversalDepthError,
   UpstreamError,
 } from '../errors.js';
-import { Session } from '../redact/session.js';
+import { countByKind, Session } from '../redact/session.js';
 import { redactJson, restoreJson, type JsonValue } from '../redact/traverse.js';
 import { SseRehydrator } from '../stream/sse.js';
+import type { Finding, Policy } from '../types.js';
 import { VERSION } from '../version.js';
 import {
   errorPayload,
@@ -40,6 +43,8 @@ export interface ProxyOptions {
    * feature — the client resends the whole conversation anyway.
    */
   readonly createSession?: (route: Route) => Session;
+  /** Where request records go. Defaults to discarding them. */
+  readonly audit?: AuditSink;
   /** Sink for internal failures. Defaults to `console.error`. */
   readonly onInternalError?: (error: unknown) => void;
 }
@@ -60,6 +65,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   const upstream = options.upstream ?? nodeUpstreamClient;
   const sessionOptions = redactionOptions(config);
   const createSession = options.createSession ?? ((): Session => new Session(sessionOptions));
+  const audit = options.audit ?? nullAuditLog;
   const onInternalError = options.onInternalError ?? ((error): void => console.error(error));
 
   const server = createServer((request, response) => {
@@ -104,38 +110,82 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
-    const body = await readBody(request, config.limits.maxBodyBytes);
-    const parsed = parseJsonObject(body);
-    const session = createSession(route);
+    const started = Date.now();
+    const base = upstreamBase(config, route);
 
-    // Outbound: only the content-bearing leaves are rewritten. A `block` policy
-    // throws here, before a single byte has left the machine.
-    const { body: sanitised } = redactJson(parsed as JsonValue, session, route.rules);
+    // Filled in as the request progresses; written exactly once, whatever
+    // happens, so a refused or failed request is as auditable as a served one.
+    let outcome: AuditOutcome = 'rejected';
+    let status = 500;
+    let stream = false;
+    let reached: string | null = null;
+    let findings: readonly Finding[] = [];
+    let blockedCounts: Record<string, number> | null = null;
 
-    const upstreamResponse = await upstream({
-      url: `${upstreamBase(config, route)}${route.path}`,
-      method: 'POST',
-      headers: forwardRequestHeaders(request.headers),
-      body: JSON.stringify(sanitised),
-      timeoutMs: config.limits.upstreamTimeoutMs,
-    });
+    try {
+      const body = await readBody(request, config.limits.maxBodyBytes);
+      const parsed = parseJsonObject(body);
+      const session = createSession(route);
 
-    const contentType = upstreamResponse.headers['content-type'] ?? '';
-    if (contentType.includes('text/event-stream')) {
-      await pipeEventStream(route, session, upstreamResponse, response);
-      return;
+      // Outbound: only the content-bearing leaves are rewritten. A `block`
+      // policy throws here, before a single byte has left the machine.
+      const redacted = redactJson(parsed as JsonValue, session, route.rules);
+      findings = redacted.findings;
+
+      reached = hostOf(base);
+      const upstreamResponse = await upstream({
+        url: `${base}${route.path}`,
+        method: 'POST',
+        headers: forwardRequestHeaders(request.headers),
+        body: JSON.stringify(redacted.body),
+        timeoutMs: config.limits.upstreamTimeoutMs,
+      });
+
+      outcome = 'forwarded';
+      status = upstreamResponse.status;
+
+      const contentType = upstreamResponse.headers['content-type'] ?? '';
+      if (contentType.includes('text/event-stream')) {
+        stream = true;
+        await pipeEventStream(route, session, upstreamResponse, response);
+        return;
+      }
+
+      const raw = await collect(upstreamResponse.body);
+      const restored = rehydrate(raw, contentType, session);
+      const payload = Buffer.from(restored, 'utf8');
+
+      if (response.writableEnded) return;
+      response.writeHead(upstreamResponse.status, {
+        ...forwardResponseHeaders(upstreamResponse.headers),
+        'content-length': String(payload.length),
+      });
+      response.end(payload);
+    } catch (error) {
+      status = statusOf(error);
+      if (error instanceof BlockedContentError) {
+        outcome = 'blocked';
+        blockedCounts = { ...error.counts };
+        // Nothing was sent, so nothing was reached.
+        reached = null;
+      } else if (error instanceof UpstreamError) {
+        outcome = 'failed';
+      } else if (outcome === 'forwarded') {
+        outcome = 'failed';
+      }
+      throw error;
+    } finally {
+      audit.write({
+        route: route.label,
+        outcome,
+        status,
+        latencyMs: Date.now() - started,
+        stream,
+        upstream: reached,
+        findings: blockedCounts ?? countByKind(findings),
+        policies: blockedCounts === null ? policiesOf(findings) : policiesForBlock(blockedCounts),
+      });
     }
-
-    const raw = await collect(upstreamResponse.body);
-    const restored = rehydrate(raw, contentType, session);
-    const payload = Buffer.from(restored, 'utf8');
-
-    if (response.writableEnded) return;
-    response.writeHead(upstreamResponse.status, {
-      ...forwardResponseHeaders(upstreamResponse.headers),
-      'content-length': String(payload.length),
-    });
-    response.end(payload);
   }
 
   return {
@@ -274,6 +324,37 @@ function upstreamBase(config: HushgateConfig, route: Route): string {
   return route.provider === 'openai' ? config.upstreams.openai : config.upstreams.anthropic;
 }
 
+/** Host of an upstream base URL, for the audit trail. Never the full URL. */
+function hostOf(base: string): string {
+  try {
+    return new URL(base).host;
+  } catch {
+    return base;
+  }
+}
+
+/** Which policy was applied to each kind that was found. */
+function policiesOf(findings: readonly Finding[]): Record<string, Policy> {
+  const out: Record<string, Policy> = {};
+  for (const finding of findings) out[finding.kind] = finding.policy;
+  return out;
+}
+
+function policiesForBlock(counts: Readonly<Record<string, number>>): Record<string, Policy> {
+  const out: Record<string, Policy> = {};
+  for (const kind of Object.keys(counts)) out[kind] = 'block';
+  return out;
+}
+
+/** The status a failure maps to, shared by the responder and the audit trail. */
+export function statusOf(error: unknown): number {
+  if (error instanceof BlockedContentError) return 403;
+  if (error instanceof RequestError) return error.status;
+  if (error instanceof TraversalDepthError) return 400;
+  if (error instanceof UpstreamError) return error.status;
+  return 500;
+}
+
 function pathOf(request: IncomingMessage): string {
   const target = request.url ?? '/';
   const query = target.indexOf('?');
@@ -301,7 +382,7 @@ export function respondWithError(response: ServerResponse, error: unknown): void
   if (error instanceof BlockedContentError) {
     sendJson(
       response,
-      403,
+      statusOf(error),
       errorPayload('hushgate_policy_blocked', error.message, {
         kinds: error.kinds,
         counts: error.counts,
@@ -311,17 +392,17 @@ export function respondWithError(response: ServerResponse, error: unknown): void
   }
 
   if (error instanceof RequestError) {
-    sendJson(response, error.status, errorPayload(error.type, error.message));
+    sendJson(response, statusOf(error), errorPayload(error.type, error.message));
     return;
   }
 
   if (error instanceof TraversalDepthError) {
-    sendJson(response, 400, errorPayload('invalid_request_error', error.message));
+    sendJson(response, statusOf(error), errorPayload('invalid_request_error', error.message));
     return;
   }
 
   if (error instanceof UpstreamError) {
-    sendJson(response, error.status, errorPayload('upstream_error', error.message));
+    sendJson(response, statusOf(error), errorPayload('upstream_error', error.message));
     return;
   }
 

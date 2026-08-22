@@ -50,12 +50,20 @@ export interface RedactionConfig {
   readonly hmacKey: string | null;
 }
 
+export interface AuditConfig {
+  /** Whether to write an audit trail at all. */
+  readonly enabled: boolean;
+  /** Where the JSONL trail is appended. */
+  readonly path: string;
+}
+
 export interface HushgateConfig {
   readonly host: string;
   readonly port: number;
   readonly upstreams: UpstreamConfig;
   readonly redaction: RedactionConfig;
   readonly limits: LimitsConfig;
+  readonly audit: AuditConfig;
 }
 
 export interface LoadedConfig {
@@ -70,9 +78,13 @@ export interface ConfigOverrides {
   readonly upstreams?: Partial<UpstreamConfig>;
   readonly limits?: Partial<LimitsConfig>;
   readonly redaction?: Partial<RedactionConfig>;
+  readonly audit?: Partial<AuditConfig>;
 }
 
-const KNOWN_KEYS = new Set(['host', 'port', 'upstreams', 'redaction', 'limits']);
+const KNOWN_KEYS = new Set(['host', 'port', 'upstreams', 'redaction', 'limits', 'audit']);
+
+/** Default audit trail, relative to the working directory. */
+export const DEFAULT_AUDIT_PATH = 'hushgate-audit.jsonl';
 
 /**
  * Bind to loopback by default: hushgate holds the mapping from placeholders back
@@ -99,6 +111,12 @@ export function defaultConfig(): HushgateConfig {
       maxBodyBytes: 4 * 1024 * 1024,
       upstreamTimeoutMs: 120_000,
     },
+    // On by default: a privacy control nobody can evidence is a claim, not a
+    // control. The trail holds categories and counts only, never values.
+    audit: {
+      enabled: true,
+      path: DEFAULT_AUDIT_PATH,
+    },
   };
 }
 
@@ -118,6 +136,9 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
   const limits = asObject(root['limits'] ?? {}, `${where}: "limits"`);
   rejectUnknownKeys(limits, new Set(['maxBodyBytes', 'upstreamTimeoutMs']), `${where}: "limits"`);
 
+  const audit = asObject(root['audit'] ?? {}, `${where}: "audit"`);
+  rejectUnknownKeys(audit, new Set(['enabled', 'path']), `${where}: "audit"`);
+
   return {
     host: optionalString(root['host'], `${where}: "host"`) ?? base.host,
     port: optionalPort(root['port'], `${where}: "port"`) ?? base.port,
@@ -136,6 +157,10 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       upstreamTimeoutMs:
         optionalPositiveInt(limits['upstreamTimeoutMs'], `${where}: "limits.upstreamTimeoutMs"`) ??
         base.limits.upstreamTimeoutMs,
+    },
+    audit: {
+      enabled: optionalBoolean(audit['enabled'], `${where}: "audit.enabled"`) ?? base.audit.enabled,
+      path: optionalString(audit['path'], `${where}: "audit.path"`) ?? base.audit.path,
     },
   };
 }
@@ -264,6 +289,8 @@ export function applyEnv(
   const hmacKey = env['HUSHGATE_HMAC_KEY'];
   const maxBodyBytes = env['HUSHGATE_MAX_BODY_BYTES'];
   const upstreamTimeoutMs = env['HUSHGATE_UPSTREAM_TIMEOUT_MS'];
+  const auditPath = env['HUSHGATE_AUDIT_PATH'];
+  const auditEnabled = env['HUSHGATE_AUDIT'];
 
   return {
     ...config,
@@ -297,6 +324,13 @@ export function applyEnv(
           ? config.limits.upstreamTimeoutMs
           : envPositiveInt(upstreamTimeoutMs, 'HUSHGATE_UPSTREAM_TIMEOUT_MS'),
     },
+    audit: {
+      enabled:
+        auditEnabled === undefined
+          ? config.audit.enabled
+          : envBoolean(auditEnabled, 'HUSHGATE_AUDIT'),
+      path: auditPath ?? config.audit.path,
+    },
   };
 }
 
@@ -312,6 +346,7 @@ export function applyOverrides(
     upstreams: { ...config.upstreams, ...overrides.upstreams },
     redaction: { ...config.redaction, ...overrides.redaction },
     limits: { ...config.limits, ...overrides.limits },
+    audit: { ...config.audit, ...overrides.audit },
   };
 }
 
@@ -434,6 +469,14 @@ function optionalPort(value: unknown, where: string): number | undefined {
   return value;
 }
 
+function optionalBoolean(value: unknown, where: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new ConfigError(`${where} must be true or false, got ${describe(value)}`);
+  }
+  return value;
+}
+
 function optionalPolicy(value: unknown, where: string): Policy | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isPolicy(value)) {
@@ -489,6 +532,16 @@ function envPolicy(value: string, name: string): Policy {
     );
   }
   return value;
+}
+
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+function envBoolean(value: string, name: string): boolean {
+  const normalised = value.trim().toLowerCase();
+  if (TRUE_VALUES.has(normalised)) return true;
+  if (FALSE_VALUES.has(normalised)) return false;
+  throw new ConfigError(`${name} must be one of true/false/1/0/yes/no/on/off, got "${value}"`);
 }
 
 function envUrl(value: string, name: string): string {
