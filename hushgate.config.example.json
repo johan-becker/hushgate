@@ -1,0 +1,40 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+
+  "upstreams": {
+    "openai": "https://api.openai.com",
+    "anthropic": "https://api.anthropic.com"
+  },
+
+  "redaction": {
+    "defaultPolicy": "pseudonymize",
+
+    "policies": {
+      "SECRET": "block",
+      "GERMAN_TAX_ID": "hash",
+      "IPV4": "allow"
+    },
+
+    "dictionary": {
+      "names": ["Anna Schmidt"],
+      "terms": ["Projekt Nordlicht"]
+    },
+
+    "custom": [
+      { "name": "employee id", "pattern": "EMP-\\d{5}" }
+    ],
+
+    "dobYearRange": { "minYear": 1900, "maxYear": 2012 }
+  },
+
+  "limits": {
+    "maxBodyBytes": 4194304,
+    "upstreamTimeoutMs": 120000
+  },
+
+  "audit": {
+    "enabled": true,
+    "path": "hushgate-audit.jsonl"
+  }
+}

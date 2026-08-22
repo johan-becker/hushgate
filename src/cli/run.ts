@@ -7,6 +7,8 @@ import { ConfigError, HushgateError, UsageError } from '../errors.js';
 import { VERSION } from '../version.js';
 import { formatFlags, type FlagSpecs } from './args.js';
 import { EXIT, type Cli } from './cli.js';
+import { check, CHECK_FLAGS, CHECK_SUMMARY } from './commands/check.js';
+import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
 
 interface Command {
@@ -22,6 +24,18 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate serve [options]',
     flags: SERVE_FLAGS,
     run: serve,
+  },
+  scan: {
+    summary: SCAN_SUMMARY,
+    usage: 'hushgate scan [options] <file...>',
+    flags: SCAN_FLAGS,
+    run: scan,
+  },
+  check: {
+    summary: CHECK_SUMMARY,
+    usage: 'cat file | hushgate check [options]',
+    flags: CHECK_FLAGS,
+    run: check,
   },
 };
 
@@ -92,6 +106,8 @@ ${commands}
 
   help [command]  show help, optionally for one command
   version         print the version
+
+exit codes: 0 success, 1 failure, 2 usage, 3 hushgate scan found personal data.
 
 Nothing personal leaves the machine.
 `;
