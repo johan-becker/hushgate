@@ -1,0 +1,19 @@
+version: 2
+
+updates:
+  # hushgate has no runtime dependencies; this covers the toolchain that builds
+  # and tests it, which is the part that can still rot.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
