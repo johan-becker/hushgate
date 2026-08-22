@@ -1,29 +1,61 @@
-# hushgate
+![hushgate banner](docs/assets/banner.svg)
 
-**Nothing personal leaves the machine.**
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A5%2020-339933?style=flat&logo=node.js&logoColor=white)](https://nodejs.org/en/about/previous-releases)
+[![CI](https://github.com/johan-becker/hushgate/actions/workflows/ci.yml/badge.svg)](https://github.com/johan-becker/hushgate/actions/workflows/ci.yml)
+[![runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-0-1f6feb?style=flat)](package.json)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat)](LICENSE)
 
-hushgate is a local-first PII firewall that sits between your application and a
-cloud LLM API. Point your existing OpenAI or Anthropic SDK at hushgate instead
-of the real endpoint: it detects personal data in the outgoing request, swaps it
-for stable pseudonymous placeholders, forwards the sanitised request upstream,
-and re-hydrates the placeholders in the response so your application sees the
-real values back. The provider never receives the personal data.
+hushgate is a PII firewall that runs on your own machine, between your
+application and a cloud LLM API. Point the OpenAI or Anthropic SDK at it
+instead of the provider: it finds the personal data in the outgoing request,
+replaces it with stable pseudonymous placeholders, forwards the sanitised
+request, and puts the real values back into the response — so your code still
+sees `anna.schmidt@nordlicht.example` while the provider only ever saw
+`[EMAIL_1]`.
 
-- Zero runtime dependencies. Node 20+, TypeScript, ESM.
-- Deterministic detection with real checksums — no model, no network, no
-  telemetry.
-- Streaming-safe: placeholders are restored even when they arrive split across
-  SSE chunks or across separate events.
-- Data residency enforcement: a declarative allowlist of permitted upstreams,
-  fail-closed at startup, with an offline registry of EU-hosted alternatives.
-- Multi-tenant: per-team keys, policy profiles, pseudonym namespaces, audit
-  streams and quotas.
-- A tamper-evident append-only audit trail that records categories and counts,
-  never values, and an Article 30 style report generated from it.
-- Ships to run: hardened Docker and Kubernetes manifests, Prometheus metrics,
-  and a `doctor` command that fails your pipeline on an unsafe configuration.
+I built it for the situation a European team keeps hitting: the models they
+want are operated in the United States, and the data they would like to send is
+not allowed to go there. hushgate is the technical half of the answer — the
+half you can point an auditor at. It has zero runtime dependencies, makes no
+network calls of its own beyond the upstream you configure, and its 613 tests
+pass with the cable pulled out.
 
-## The migration is one line
+Every command output printed below was produced by running that command against
+this repository. [`examples/`](examples) contains the config and the local
+stand-in upstream, so you can reproduce all of it offline.
+
+## 1. The problem
+
+A support tool drafts replies with GPT-4o. The ticket it summarises contains a
+name, an e-mail address, a phone number and an IBAN. That request leaves the
+EU. Under GDPR Chapter V that is a third-country transfer of personal data, and
+the DPO wants to know which categories go where, on what legal basis, and how
+you would prove any of it six months from now.
+
+The usual answers are all bad. Self-host a weaker model. Ask engineers to "be
+careful what you put in prompts". Buy a gateway that terminates your traffic in
+someone else's cloud, which is the same transfer with an extra hop. Or paste a
+regex into a middleware, which will happily match
+`DE89 3704 0044 0532 0130 01` — an IBAN whose checksum does not hold — and
+mangle the one that does.
+
+hushgate takes the narrower, checkable position: **the personal data never
+reaches the provider in the first place.** It runs inside your own network, the
+mapping from placeholder back to real value exists only in the process that
+issued it, and every request leaves an audit record naming the categories and
+their counts but never the values.
+
+## 2. Quickstart
+
+```sh
+npm install -g hushgate
+hushgate init          # write a commented starter config
+hushgate doctor        # check it; non-zero exit on anything unsafe
+hushgate serve
+```
+
+Then change one line in your application:
 
 ```diff
   import OpenAI from 'openai';
@@ -43,336 +75,700 @@ real values back. The provider never receives the personal data.
   });
 ```
 
-Or without touching the code at all:
+Or change no code at all — both official SDKs read these:
 
 ```sh
 export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 ```
 
-Your API key is passed through untouched; hushgate never stores it.
+Your provider API key is forwarded untouched and is never written anywhere.
 
-## Quick start
+`hushgate init` writes a config with the reasoning in it, not a bare skeleton:
 
-```sh
-npm install -g hushgate
-hushgate serve
+```console
+$ hushgate init
+wrote hushgate.config.json
+
+Next:
+  1. Fill in the organisation block — it heads the Article 30 report.
+  2. Decide your upstreams, then list them in residency.allow with the
+     legal basis you actually rely on. Run "hushgate residency --registry"
+     to see the EU-hosted options hushgate knows about.
+  3. Run "hushgate doctor" until it is quiet.
+  4. Start it with "hushgate serve" and point your SDK at it.
 ```
-
-```text
-hushgate 0.1.0 listening on http://127.0.0.1:8787
-  config     built-in defaults (no hushgate.config.json found)
-  upstreams  openai     https://api.openai.com
-             anthropic  https://api.anthropic.com
-  policy     pseudonymize by default; overrides: none
-  audit      hushgate-audit.jsonl
-  routes     POST /v1/chat/completions, POST /v1/messages, GET /healthz
-```
-
-What the provider receives:
 
 ```jsonc
-// your application sent
-{ "messages": [{ "role": "user", "content": "Schreib an johan@example.com, IBAN DE89 3704 0044 0532 0130 00" }] }
+{
+  // hushgate configuration. Comments are allowed and stripped on load.
+  // Every key is optional; anything left out uses the documented default.
+  // Environment variables (HUSHGATE_*) override this file, and command-line
+  // flags override those.
 
-// api.openai.com received
-{ "messages": [{ "role": "user", "content": "Schreib an [EMAIL_1], IBAN [IBAN_1]" }] }
+  // Loopback by default. Binding anything else requires tenants, because
+  // hushgate holds the mapping back to real personal data.
+  "host": "127.0.0.1",
+  "port": 8787,
 
-// your application got back
-{ "choices": [{ "message": { "content": "Ich habe johan@example.com zur IBAN DE89 3704 0044 0532 0130 00 geschrieben." } }] }
+  // Where sanitised requests are forwarded. Swap these for an EU-hosted
+  // endpoint when you have one: "hushgate residency --registry" lists them.
+  "upstreams": {
+    "openai": "https://api.openai.com",
+    "anthropic": "https://api.anthropic.com"
+  },
+
+  "redaction": {
+    // pseudonymize | redact | hash | allow | block
+    "defaultPolicy": "pseudonymize",
+
+    "policies": {
+      // Credentials should never reach a model, yours or anyone else's.
+      "SECRET": "block"
+    },
+
+    // Names, customers and codenames no detector could know about.
+    "dictionary": {
+      "names": [],
+      "terms": []
+    },
+
+    // Your own identifiers, as named regular expressions.
+    // { "name": "employee id", "pattern": "EMP-\\d{5}" }
+    "custom": []
+  },
+
+  "residency": {
+    // block | sanitize | warn | allow. Start at "warn" for a staged rollout if
+    // you must, but "hushgate doctor" will keep reminding you.
+    "mode": "sanitize",
+
+    // Refuse a category outright, wherever it appears.
+    "categories": {},
+
+    // An empty allowlist permits every upstream. Fill it in and hushgate
+    // refuses to start against anything else.
+    // {
+    //   "endpoint": "https://api.mistral.ai",
+    //   "jurisdiction": "FR",
+    //   "legalBasis": "Art. 28 DPA of 2026-01-12, processing in France"
+    // }
+    "allow": []
+  },
+
+  // Categories and counts, never values. This is the evidence.
+  "audit": {
+    "enabled": true,
+    "path": "hushgate-audit.jsonl"
+  },
+
+  // Heads the Article 30 report. hushgate cannot know any of it.
+  "organisation": {
+    "name": null,
+    "contact": null,
+    "dpo": null,
+    "purposes": []
+  }
+
+  // Multi-tenant operation: run "hushgate keys new <id>" and paste the snippet.
+  // "tenants": []
+}
 ```
 
-## How it works
+## 3. What the provider actually receives
 
-```text
-your app ──▶ hushgate ──▶ provider
-             │  detect      sees only
-             │  redact      [EMAIL_1]
-             ▼
-          audit.jsonl (counts, never values)
+To reproduce this section, start the local stand-in upstream shipped in
+[`examples/`](examples) and point hushgate at it. It is an OpenAI-compatible
+server on `127.0.0.1:9099` that logs the body it received — which is the whole
+point, since it lets you read exactly what hushgate forwarded. Nothing about
+the redaction path changes when the upstream is `api.openai.com`.
 
-provider ──▶ hushgate ──▶ your app
-                restore     sees
-                            johan@example.com
+```console
+$ node examples/upstream.mjs &
+fake upstream on http://127.0.0.1:9099
+
+$ hushgate serve -c examples/demo.config.json
+hushgate 0.1.0 listening on http://127.0.0.1:8787
+  config     /Users/johan/Projects/hushgate/examples/demo.config.json
+  upstreams  openai     http://127.0.0.1:9099
+             anthropic  http://127.0.0.1:9099
+  policy     pseudonymize by default; overrides: SECRET=block
+  audit      examples/hushgate-audit.jsonl
+  tenants    none — single tenant, no key required (loopback only)
+  routes     POST /v1/chat/completions, POST /v1/messages, GET /healthz
+
+  Point your SDK at this address:
+    OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+    ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 ```
 
-1. **Traverse.** The request body is parsed and walked, not regex-scanned.
-   Chat messages in both content shapes, system prompts, tool-call arguments and
-   tool schemas are visited; model names, tool ids and parameters are not.
-2. **Detect.** Every detector validates rather than pattern-matches: IBANs by
-   mod-97, cards by Luhn, German tax IDs by ISO 7064 MOD 11,10 *and* the
-   digit-frequency rule. Overlaps resolve deterministically — longest match
-   wins, ties by detector priority.
-3. **Apply policy.** Per kind: `pseudonymize`, `redact`, `hash`, `allow`,
-   `block`.
-4. **Forward.** Only known headers travel upstream. Your API key does; your
-   cookies do not.
-5. **Re-hydrate.** Responses are restored structurally, and event streams are
-   restored incrementally without buffering.
+Send a ticket through it:
 
-### Detectors
+```sh
+curl -sS http://127.0.0.1:8787/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer sk-not-a-real-key' \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      { "role": "system", "content": "Du bist die Support-Assistenz von Projekt Nordlicht." },
+      { "role": "user", "content": "Anna Schmidt (anna.schmidt@nordlicht.example, +49 721 9876543) hat die Rechnung nicht bezahlt. Bitte erinnere sie und buche auf DE89 3704 0044 0532 0130 00." }
+    ]
+  }'
+```
 
-| Kind | Validated by |
+The upstream logged exactly this request body:
+
+```json
+{"model":"gpt-4o-mini","messages":[{"role":"system","content":"Du bist die Support-Assistenz von [TERM_1]."},{"role":"user","content":"[NAME_1] ([EMAIL_1], [PHONE_1]) hat die Rechnung nicht bezahlt. Bitte erinnere sie und buche auf [IBAN_1]."}]}
+```
+
+The caller got this back:
+
+```json
+{
+    "id": "chatcmpl-demo",
+    "object": "chat.completion",
+    "model": "gpt-4o-mini",
+    "choices": [
+        {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Alles klar. Ich schreibe an anna.schmidt@nordlicht.example und buche auf DE89 3704 0044 0532 0130 00."
+            },
+            "finish_reason": "stop"
+        }
+    ],
+    "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 23,
+        "total_tokens": 64
+    }
+}
+```
+
+The system prompt was traversed too — `Projekt Nordlicht` is a dictionary term —
+the model name and every other knob were forwarded untouched, and the reply came
+back with the real address and the real IBAN in it.
+
+A credential is a different case. There is no pseudonym worth minting for a
+token, so the starter config puts `SECRET` on the `block` policy and the request
+never leaves:
+
+```console
+$ curl -sS -w '%{http_code}\n' http://127.0.0.1:8787/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Deploy with GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 please"}]}'
+403
+{
+    "error": {
+        "type": "hushgate_policy_blocked",
+        "message": "request blocked by policy: SECRET (1)",
+        "kinds": [
+            "SECRET"
+        ],
+        "counts": {
+            "SECRET": 1
+        }
+    }
+}
+```
+
+The upstream log stayed empty for that one.
+
+## 4. Streaming
+
+Streaming is where a naive proxy falls apart. A model does not emit `[EMAIL_1]`
+as one token; it emits `[`, then `EMAIL`, then `_1]`, in three separate SSE
+events. A per-chunk find-and-replace sees none of them and hands the placeholder
+straight to the user.
+
+Here is the same conversation with `"stream": true`. First, what the upstream
+put on the wire — note `[EMAIL_1` cut in half across two events:
+
+```console
+$ curl -sSN http://127.0.0.1:9099/v1/chat/completions -H 'content-type: application/json' \
+    -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"[NAME_1] ([EMAIL_1]) buche auf [IBAN_1]."}]}'
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Alles klar. "}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Ich schreibe"}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" an [EMAIL_1"}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"] und buche "}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"auf [IBAN_1]"}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"."}}]}
+
+data: [DONE]
+```
+
+And what the client sees through hushgate, for the same generation:
+
+```console
+$ curl -sSN http://127.0.0.1:8787/v1/chat/completions -H 'content-type: application/json' \
+    -H 'authorization: Bearer sk-not-a-real-key' \
+    -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Anna Schmidt (anna.schmidt@nordlicht.example) hat die Rechnung nicht bezahlt. Bitte erinnere sie und buche auf DE89 3704 0044 0532 0130 00."}]}'
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Alles klar. "}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Ich schreibe"}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" an "}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"anna.schmidt@nordlicht.example und buche "}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"auf DE89 3704 0044 0532 0130 00"}}]}
+
+data: {"id":"chatcmpl-demo","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"."}}]}
+
+data: [DONE]
+```
+
+The third event emitted only ` an ` and held `[EMAIL_1` back, because that run
+could still grow into a placeholder. The fourth resolved it and flushed the
+whole address at once. §7 explains why that can never stall.
+
+## 5. Data residency
+
+`hushgate residency` answers the DPO's question directly: where does each route
+send data, and on whose authority. This is the command an engineer screenshots.
+
+```console
+$ hushgate residency
+hushgate residency
+  config       built-in defaults (no hushgate.config.json found)
+
+  route        openai.chat.completions  (POST /v1/chat/completions)
+  upstream     https://api.openai.com
+  endpoint     OpenAI API — OpenAI, L.L.C.
+  jurisdiction US — United States [third-country]
+               Third country. The EU–US Data Privacy Framework covers certified organisations only; otherwise Article 46 safeguards apply.
+  rule         residency.allow (empty)
+  legal basis  none recorded
+  enforcement  sanitize  (residency.mode)
+  controls     zero-retention via body store=false [set per request]
+               no-training (account) [arranged with the provider]
+  verdict      PERMITTED — no allowlist is configured, so every upstream is permitted; add residency.allow to enforce one
+
+  route        anthropic.messages  (POST /v1/messages)
+  upstream     https://api.anthropic.com
+  endpoint     Anthropic API — Anthropic PBC
+  jurisdiction US — United States [third-country]
+               Third country. The EU–US Data Privacy Framework covers certified organisations only; otherwise Article 46 safeguards apply.
+  rule         residency.allow (empty)
+  legal basis  none recorded
+  enforcement  sanitize  (residency.mode)
+  controls     no-training (contract) [arranged with the provider]
+               zero-retention (account) [arranged with the provider]
+  verdict      PERMITTED — no allowlist is configured, so every upstream is permitted; add residency.allow to enforce one
+
+2 of 2 routes permitted.
+
+This is a technical control, not legal advice. See the README.
+```
+
+Jurisdictions come from a curated **offline** registry — data in the repository,
+no lookups, no telemetry. `hushgate residency --registry` prints all of it
+(abridged here):
+
+```console
+$ hushgate residency --registry
+known endpoints (offline registry — extend it with residency.endpoints)
+
+  US       OpenAI API                                                api.openai.com
+  US       Anthropic API                                             api.anthropic.com
+  US       Google Gemini API                                         generativelanguage.googleapis.com
+  UNKNOWN  Azure OpenAI Service                                      *.openai.azure.com, *.cognitiveservices.azure.com
+  DE       AWS Bedrock (eu-central-1)                                bedrock-runtime.eu-central-1.amazonaws.com, bedrock.eu-central-1.amazonaws.com
+  CH       AWS Bedrock (eu-central-2)                                bedrock-runtime.eu-central-2.amazonaws.com, bedrock.eu-central-2.amazonaws.com
+  ...
+  FR       Mistral AI — La Plateforme                                api.mistral.ai
+  DE       Aleph Alpha                                               api.aleph-alpha.com
+  DE       IONOS AI Model Hub                                        inference.de-txl.ionos.com, openai.inference.de-txl.ionos.com
+  FR       OVHcloud AI Endpoints                                     *.endpoints.kepler.ai.cloud.ovh.net, *.endpoints.ai.cloud.ovh.net
+  FR       Scaleway Generative APIs                                  api.scaleway.ai
+  LOCAL    Local model runtime (Ollama, vLLM, LM Studio, llama.cpp)  localhost, 127.0.0.1, ::1, [::1], host.docker.internal
+
+Jurisdictions are where the operator documents the service as running.
+Confirm them against your own contract before relying on them.
+```
+
+Once `residency.allow` has an entry the list is closed, and **hushgate refuses
+to start against anything else**. A typo in an upstream URL is a startup
+failure, not a silent leak:
+
+```console
+$ hushgate serve -c examples/demo.config.json --upstream-openai https://api.openai.com
+hushgate: configuration error
+  residency policy refuses this configuration:
+  upstreams.openai → https://api.openai.com is not on the residency allowlist [residency.allow]
+
+$ echo $?
+1
+```
+
+Enforcement is set globally, per route, or per category of personal data:
+
+| Mode | Behaviour |
 | --- | --- |
-| `EMAIL` | structural validation of local and domain parts |
-| `IBAN` | mod-97 checksum plus per-country length (DE, AT, CH, FR, NL, ES, IT and more) |
-| `CREDIT_CARD` | Luhn checksum plus issuer prefix |
-| `PHONE` | E.164 and German formats (`+49…`, `0049…`, `0721/…`, spaced, slashed, hyphenated) |
-| `IPV4`, `IPV6`, `MAC` | octet ranges, `::` compression, MAC separators |
-| `GERMAN_TAX_ID` | ISO 7064 MOD 11,10 check digit and the digit-frequency rule |
-| `SECRET` | `sk-`, `sk-ant-`, `ghp_`/`gho_`/`ghs_`/`github_pat_`, AWS `AKIA`/`ASIA`, Google `AIza`, Slack `xox[baprs]-`, JWTs, PEM private keys |
-| `URL_CREDENTIALS` | `scheme://user:pass@host` |
-| `DATE_OF_BIRTH` | real calendar dates in a plausible birth-year window |
-| `NAME`, `TERM` | your dictionary: case-insensitive, whole-word, longest match wins |
-| *your own* | named regexes from the config file |
+| `block` | Refuse the request outright; the error names the rule that refused it. |
+| `sanitize` | Remove the personal data, then forward. The default. |
+| `warn` | Forward unchanged, record what went out. For a staged rollout only. |
+| `allow` | Forward unchanged, nothing recorded. |
 
-A digit run that looks like an IBAN but fails its checksum is not an IBAN, and
-hushgate says so rather than redacting it — false positives cost the model the
-context it needs to be useful.
+Where a provider publishes a retention or training opt-out that can be set per
+request, hushgate attaches it automatically from the same registry — for example
+`store: false` on OpenAI. Controls that can only be arranged with the provider,
+an account setting or a contract clause, are reported rather than faked; with
+`residency.requireDataControls` set, an upstream that offers none refuses to
+start.
+
+## 6. The audit trail
+
+Every request appends one JSONL record: timestamp, route, outcome, latency,
+upstream, the count of findings per category, the policy applied to each, and
+the residency verdict. **No values.** Each record carries the SHA-256 of the
+previous one, so the file is a hash chain.
+
+```json
+{"ts":"2026-08-22T13:38:08.770Z","id":"762ad117-0b70-44aa-94e5-eac925bcc186","tenant":null,"route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":11,"stream":false,"upstream":"127.0.0.1:9099","tokens":64,"findings":{"TERM":1,"NAME":1,"EMAIL":1,"PHONE":1,"IBAN":1},"policies":{"TERM":"pseudonymize","NAME":"pseudonymize","EMAIL":"pseudonymize","PHONE":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"LOCAL","controls":[]},"prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"2312b6fa2e68bb599f047cebc085b9fdfce24515c95a4ca87cadca75d7090e97"}
+```
+
+`hushgate audit verify` walks the chain:
+
+```console
+$ hushgate audit verify -c examples/demo.config.json
+audit trail /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl
+  records      3
+  chain        intact
+  head         4c993591f4aafb94a78c17916e7ec9597dcad2994f0bbd789591e582ace94ba3
+
+Anchor the head hash outside hushgate (a ticket, a signed note, another
+system) if you also need to detect records being dropped from the end.
+```
+
+Change a single field of a single record — here `latencyMs` from 1 to 9 — and it
+reports exactly where the chain broke:
+
+```console
+$ sed 's/"latencyMs":1,/"latencyMs":9,/' examples/hushgate-audit.jsonl > examples/tampered.jsonl
+$ hushgate audit verify --file examples/tampered.jsonl
+audit trail /Users/johan/Projects/hushgate/examples/tampered.jsonl
+  records      3
+  chain        BROKEN
+  first break  record 2 (altered)
+  id           40b0475c-5249-46b6-a377-c4d3b887782a
+  timestamp    2026-08-22T13:38:18.568Z
+  detail       record hash is 928dbdd71a24…, but its contents hash to e4b57c228f1b…
+
+Everything before that record still verifies. Everything from it onwards
+has been altered, or had records inserted or removed.
+
+$ echo $?
+1
+```
+
+`hushgate audit report` turns the same file into an Article 30 style record of
+processing activities, in Markdown or JSON:
+
+```console
+$ hushgate audit report -c examples/demo.config.json
+# Record of processing activities
+
+_Article 30 style summary, generated by hushgate from its own audit trail._
+
+- **Generated**: 2026-08-22T13:38:36.679Z
+- **Source**: /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl
+- **Period**: beginning → end (records from 2026-08-22T13:38:08.770Z to 2026-08-22T13:38:18.622Z)
+- **Controller**: Nordlicht GmbH
+- **Contact**: datenschutz@nordlicht.example
+- **Data protection officer**: A. Datenschutz
+- **Audit chain**: intact over 3 records (head 4c993591f4aa…)
+
+## Purposes of processing
+
+- Drafting customer support replies
+
+## Volumes
+
+- Requests: **3**
+- Tokens reported by providers: **64**
+- Outcomes: blocked 1, forwarded 2
+- Routes: openai.chat.completions 3
+- Residency enforcement: n/a 1, sanitize 2
+
+## Categories of personal data
+
+| Category | Findings | Requests | Handling |
+| --- | ---: | ---: | --- |
+| EMAIL | 2 | 2 | pseudonymize |
+| IBAN | 2 | 2 | pseudonymize |
+| NAME | 2 | 2 | pseudonymize |
+| PHONE | 1 | 1 | pseudonymize |
+| SECRET | 1 | 1 | block |
+| TERM | 1 | 1 | pseudonymize |
+
+## Recipients and transfers
+
+| Recipient | Jurisdiction | Transfer | Requests | Tokens | Safeguard recorded |
+| --- | --- | --- | ---: | ---: | --- |
+| 127.0.0.1:9099 | Your own infrastructure (LOCAL) | no transfer | 2 | 64 | Processing on our own hardware; no transfer occurs. |
+
+### Controls applied to outbound requests
+
+- 127.0.0.1:9099: none set per request
+
+## Technical measures
+
+Personal data detected in outbound requests is replaced with pseudonymous
+placeholders before the request leaves the machine, and restored in the
+response. The audit trail records categories and counts only; it contains no
+personal data itself, by construction.
+
+---
+
+This document is generated from a technical control. It supports a record of
+processing activities; it is not legal advice and does not by itself make any
+transfer lawful.
+```
+
+## 7. How it works
+
+### Structural traversal, not a regex over the blob
+
+A request body is parsed and walked by path rules, so hushgate redacts the
+*conversation* rather than the JSON. `model`, tool identifiers, `stream`,
+`max_tokens` and the rest are forwarded byte for byte; the prose, the tool-call
+arguments and the tool schemas are not.
+
+| Provider | Paths that carry user content |
+| --- | --- |
+| OpenAI | `messages.*.content` (string form), `messages.*.content.*.text`, `messages.*.content.*.input_text`, `messages.*.name`, `messages.*.refusal`, `messages.*.tool_calls.*.function.arguments`, `messages.*.function_call.arguments`, `tools.*.function.description`, `tools.*.function.parameters.**`, `functions.*.description`, `functions.*.parameters.**` |
+| Anthropic | `system`, `system.*.text`, `messages.*.content`, `messages.*.content.*.text`, `messages.*.content.*.content`, `messages.*.content.*.content.*.text`, `messages.*.content.*.input.**`, `tools.*.description`, `tools.*.input_schema.**`, `metadata.user_id` |
+
+Tool-call arguments are a JSON *string*; redacting them as text is safe because
+a placeholder contains no character that JSON escapes, and the model's reply is
+re-hydrated the same way. Image content parts are deliberately excluded: a
+`data:` URL is megabytes of base64 in which no detector can validate anything,
+and scanning it would only burn time.
+
+### Detectors validate, they do not pattern-match
+
+Every detector that can check itself does. This is the difference between a tool
+that flags `4111 1111 1111 1112` and one that does not.
+
+| Kind | Validation |
+| --- | --- |
+| `IBAN` | ISO 13616 / ISO 7064 MOD 97-10, folded digit by digit because the number does not fit a JS `number`; length table for 76 countries. The remainder must be exactly 1. |
+| `CREDIT_CARD` | Luhn plus an issuer-prefix check. A 16-digit run that fails Luhn is not a card. |
+| `GERMAN_TAX_ID` | ISO 7064 MOD 11,10 check digit **and** the digit-frequency rule: within the first ten digits exactly one digit repeats — twice, or three times — and no more. Both must hold. |
+| `EMAIL` | A practical RFC 5322 grammar, then the structural checks a regex cannot express: 64-byte local part, 254-byte total, 63-byte labels, no leading, trailing or doubled dot. |
+| `PHONE` | E.164, `00` international and German national forms, with subscriber-length bounds; `(0)` trunk notation tolerated. |
+| `IPV4` / `IPV6` / `MAC` | Octets bounded at 255; IPv6 `::` compression handled, embedded-IPv4 form included. |
+| `DATE_OF_BIRTH` | German `DD.MM.YYYY` and ISO, real calendar dates including leap years, inside a configurable birth-year window. |
+| `SECRET` | Anthropic and OpenAI keys, GitHub tokens classic and fine-grained, AWS access key ids, Google API keys, Slack tokens, JWTs whose header segment actually decodes, PEM private-key blocks. |
+| `URL_CREDENTIALS` | `scheme://user:pass@host`. |
+| `NAME` / `TERM` | Your dictionary: case-insensitive, whole-word, longest match wins. |
+| custom | Your named regexes; the name becomes the category, e.g. `EMPLOYEE_ID`. |
+
+Detectors return *candidates*, and candidates overlap. Resolution is central and
+deterministic: the longest span wins, ties broken by detector priority
+(`SECRET` 100 > `URL_CREDENTIALS` 95 > `IBAN` 90 > `CREDIT_CARD` 85 >
+`GERMAN_TAX_ID` 80 > `EMAIL` 75 > … > dictionary 40).
+
+### Placeholders, and the injection case
+
+Within one session the same value of the same kind always maps to the same
+placeholder, and two different values never share one. The interesting part is
+what happens when the caller's own text already contains something that looks
+like a placeholder — otherwise a user could type `[EMAIL_1]` into a prompt and
+be handed somebody else's address on the way back.
+
+Placeholder-shaped literals in the input are themselves captured, under a
+reserved `LITERAL` kind, and re-issued — so no token hushgate mints can ever
+collide with one that arrived from outside:
+
+```console
+$ node examples/redact.mjs
+upstream sees : [NAME_1] <[EMAIL_2]> — the template still says [LITERAL_1]. Steuer-ID [GERMAN_TAX_ID:a86f2fa599f1], host 10.14.2.7.
+findings      : NAME=pseudonymize EMAIL=pseudonymize LITERAL=pseudonymize GERMAN_TAX_ID=hash
+restored      : Anna Schmidt <anna.schmidt@nordlicht.example> — the template still says [EMAIL_1]. Steuer-ID [GERMAN_TAX_ID:a86f2fa599f1], host 10.14.2.7.
+```
+
+The real address became `[EMAIL_2]`, not `[EMAIL_1]`, and the caller's literal
+came back exactly as typed. `GERMAN_TAX_ID` was on the `hash` policy, so it is
+stable but irreversible and stays hashed in the response; `IPV4` was on `allow`
+and was never touched.
+
+### Streaming: hold back only what could still become a token
+
+Re-hydration happens in two layers.
+
+The **byte layer** keeps a running buffer and emits everything except the
+trailing run that could still grow into a placeholder. Only the last `[` can
+start a viable prefix — `[` is not a character a placeholder body may contain,
+so any earlier one is already ruled out. Three properties make that safe:
+
+- a viable prefix is bounded by `MAX_PLACEHOLDER_LENGTH` (72), so the buffer is
+  bounded: no deadlock, and no waiting for a byte that never comes;
+- `flush()` always emits whatever is still held, so a stream that dies mid-token
+  still delivers its tail verbatim;
+- substitution is a single left-to-right pass, so a restored value that itself
+  looks like a placeholder is never re-examined.
+
+The **SSE layer** sits on top, because the split is usually not at the byte level
+at all but between events. The stream is parsed into events; each delta field is
+fed to a re-hydrator that remembers across events, keyed by path and block index
+so two concurrent tool calls never mix their buffers; every other string in an
+event is complete by construction and is substituted on the spot. Anything still
+incomplete when a block ends is emitted as one synthetic event modelled on the
+last real one — before `content_block_stop`, before `[DONE]`, and at end of
+stream — so nothing is ever dropped and the client always sees a well-formed
+stream.
+
+The test suite splits a placeholder at **every byte offset**, in two- and
+three-way splits, and one character at a time.
+
+### Cost
+
+Redaction is linear in input size. Measured on an Apple M1 Pro, Node 26, mean of
+200 runs per size, on German prose carrying roughly one finding per 45 bytes:
+
+| Input | Time |
+| ---: | ---: |
+| 1 KiB | 0.15 ms |
+| 4 KiB | 0.51 ms |
+| 16 KiB | 2.04 ms |
+| 66 KiB | 8.9 ms |
+
+Four times the input, four times the work — which is what the
+`does not degrade super-linearly` test guards on every CI run. A typical chat
+request sits in the first row of that table, against a network round trip
+measured in hundreds of milliseconds.
+
+## 8. Reference
+
+### Commands
+
+| Command | Purpose |
+| --- | --- |
+| `hushgate init [--path <p>] [--force]` | Write a commented starter `hushgate.config.json`. |
+| `hushgate serve [options]` | Run the redacting proxy in the foreground. |
+| `hushgate scan [--json] [--show-values] [-q] <file...>` | Find personal data in files. Exits 3 when it finds any. |
+| `hushgate check [-q]` | Redact standard input to standard output, for piping. |
+| `hushgate residency [--json] [--registry]` | Where each route sends data, and on whose authority. |
+| `hushgate doctor [--json] [--allow-warnings]` | Validate config, residency and audit chain. For CI. |
+| `hushgate audit verify [--file <p>] [--json]` | Walk the hash chain, report the first break. |
+| `hushgate audit report [--from <d>] [--to <d>] [--json]` | Article 30 style record of processing. |
+| `hushgate keys new <tenant-id>` / `hushgate keys hash` | Mint a tenant key, or hash an existing one. |
+| `hushgate help [command]`, `hushgate version` | Help, and the version. |
+
+`serve` additionally takes `-H/--host`, `-p/--port`, `--upstream-openai`,
+`--upstream-anthropic`, `--audit <path>` and `--no-audit`. Every command except
+`init` and `keys` takes `-c/--config`.
+
+| Exit code | Meaning |
+| ---: | --- |
+| 0 | Success. |
+| 1 | Failure — a broken chain, a `doctor` finding, a refused configuration. |
+| 2 | Usage error. |
+| 3 | `hushgate scan` found personal data. |
+
+### HTTP surface
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /v1/chat/completions` | OpenAI-compatible. Redacted outbound, re-hydrated inbound, streaming or not. |
+| `POST /v1/messages` | Anthropic-compatible, same treatment. |
+| `GET /healthz` | `{"status":"ok","version":"…"}`. |
+| `GET /metrics` | Prometheus text exposition. |
+
+```console
+$ curl -sS http://127.0.0.1:8787/metrics
+# HELP hushgate_build_info Version of the running hushgate.
+# TYPE hushgate_build_info gauge
+hushgate_build_info{version="0.1.0"} 1
+# HELP hushgate_requests_total Requests handled, by route, outcome and tenant.
+# TYPE hushgate_requests_total counter
+hushgate_requests_total{outcome="blocked",route="openai.chat.completions",status="403",tenant="none"} 1
+hushgate_requests_total{outcome="forwarded",route="openai.chat.completions",status="200",tenant="none"} 2
+# HELP hushgate_findings_total Personal data found, by category and the policy applied.
+# TYPE hushgate_findings_total counter
+hushgate_findings_total{kind="EMAIL",policy="pseudonymize"} 2
+hushgate_findings_total{kind="IBAN",policy="pseudonymize"} 2
+hushgate_findings_total{kind="NAME",policy="pseudonymize"} 2
+hushgate_findings_total{kind="PHONE",policy="pseudonymize"} 1
+hushgate_findings_total{kind="SECRET",policy="block"} 1
+hushgate_findings_total{kind="TERM",policy="pseudonymize"} 1
+# HELP hushgate_blocked_total Requests refused, by what refused them.
+# TYPE hushgate_blocked_total counter
+hushgate_blocked_total{reason="policy",rule="redaction.policies"} 1
+# HELP hushgate_upstream_tokens_total Tokens reported by upstream providers.
+# TYPE hushgate_upstream_tokens_total counter
+hushgate_upstream_tokens_total{route="openai.chat.completions",tenant="none"} 64
+# HELP hushgate_request_duration_seconds Time from request received to response finished.
+# TYPE hushgate_request_duration_seconds histogram
+...
+```
 
 ### Policies
 
 | Policy | Effect | Reversible |
 | --- | --- | --- |
-| `pseudonymize` | `[EMAIL_1]` — stable within the request | yes |
-| `redact` | `[EMAIL_REDACTED]` | no |
-| `hash` | `[EMAIL:9f86d081ab2c]` — HMAC-SHA256, stable across requests with a fixed key | no |
-| `allow` | left untouched | — |
-| `block` | the whole request is refused with 403 before anything is sent | — |
+| `pseudonymize` | `[EMAIL_1]` — stable within the session. The default. | yes |
+| `redact` | `[EMAIL_REDACTED]` — the value is gone. | no |
+| `hash` | `[EMAIL:9f86d081ab2c]` — HMAC-SHA256, stable, comparable. | no |
+| `allow` | Left untouched. | n/a |
+| `block` | The whole request is refused, HTTP 403. | n/a |
 
-Placeholders are stable within a request: the same value always gets the same
-token, two different values never share one, and a token hushgate issues can
-never collide with placeholder-shaped text that was already in your input.
+### Configuration
 
-### Streaming
+File, then `HUSHGATE_*` environment variables, then command-line flags — later
+wins. The file is JSONC: `//` and `/* */` comments are stripped on load.
 
-A model does not emit `[EMAIL_1]` in one piece. It arrives as `[`, `EMAIL`,
-`_1`, `]` in four separate SSE events, and each of those can be cut in half by
-the network. hushgate holds back only the trailing bytes that could still become
-a placeholder — never more than one token's worth — and releases them the
-instant they resolve or are ruled out. If a stream ends mid-token, the partial
-text is still delivered. Comments, event names and ids pass through unchanged.
+| Key | Default | Notes |
+| --- | --- | --- |
+| `host`, `port` | `127.0.0.1`, `8787` | Binding a non-loopback address requires tenants. |
+| `upstreams.openai` / `.anthropic` | the official endpoints | Any OpenAI- or Anthropic-compatible base URL. |
+| `redaction.defaultPolicy` | `pseudonymize` | Applies to kinds without an override. |
+| `redaction.policies` | `{}` | Per-kind overrides. |
+| `redaction.dictionary` | `{}` | `names` and `terms`. |
+| `redaction.custom` | `[]` | `{ "name", "pattern" }`; the name becomes the category. |
+| `redaction.hmacKey` | random per process | Fix it to make `hash` stable across restarts. |
+| `redaction.dobYearRange` | 1900 → this year − 13 | Plausible birth years. |
+| `limits.maxBodyBytes` | 4 MiB | Larger requests are refused. |
+| `limits.upstreamTimeoutMs` | 120000 | Upstream request timeout. |
+| `audit.enabled`, `audit.path` | `true`, `hushgate-audit.jsonl` | |
+| `residency.mode` | `sanitize` | `block` \| `sanitize` \| `warn` \| `allow`. |
+| `residency.routes`, `.categories` | `{}` | Per-route and per-category overrides. |
+| `residency.allow` | `[]` | Non-empty means fail-closed. Every entry needs a `legalBasis`. |
+| `residency.requireDataControls` | `false` | Refuse upstreams that offer no retention control. |
+| `residency.endpoints` | `[]` | Extend or override the registry. |
+| `organisation` | nulls | Heads the Article 30 report. |
+| `tenants` | `[]` | See below. |
 
-## Configuration
+Environment overrides: `HUSHGATE_HOST`, `HUSHGATE_PORT`,
+`HUSHGATE_UPSTREAM_OPENAI`, `HUSHGATE_UPSTREAM_ANTHROPIC`,
+`HUSHGATE_DEFAULT_POLICY`, `HUSHGATE_HMAC_KEY`, `HUSHGATE_MAX_BODY_BYTES`,
+`HUSHGATE_UPSTREAM_TIMEOUT_MS`, `HUSHGATE_AUDIT_PATH`, `HUSHGATE_AUDIT`,
+`HUSHGATE_RESIDENCY_MODE`. A full annotated file is in
+[`hushgate.config.example.json`](hushgate.config.example.json).
 
-`hushgate.config.json` in the working directory, or `--config <path>`. Every key
-is optional; unknown keys are an error rather than a shrug.
+### Multi-tenant operation
 
-```json
-{
-  "host": "127.0.0.1",
-  "port": 8787,
-  "upstreams": {
-    "openai": "https://api.openai.com",
-    "anthropic": "https://api.anthropic.com"
-  },
-  "redaction": {
-    "defaultPolicy": "pseudonymize",
-    "policies": {
-      "SECRET": "block",
-      "IPV4": "allow",
-      "GERMAN_TAX_ID": "hash"
-    },
-    "dictionary": {
-      "names": ["Anna Schmidt", "Johan Becker"],
-      "terms": ["Projekt Nordlicht"]
-    },
-    "custom": [
-      { "name": "employee id", "pattern": "EMP-\\d{5}" }
-    ],
-    "dobYearRange": { "minYear": 1900, "maxYear": 2012 }
-  },
-  "limits": {
-    "maxBodyBytes": 4194304,
-    "upstreamTimeoutMs": 120000,
-    "requestTimeoutMs": 60000,
-    "upstreamRetries": 2,
-    "retryBackoffMs": 250
-  },
-  "audit": {
-    "enabled": true,
-    "path": "hushgate-audit.jsonl"
-  },
-  "organisation": {
-    "name": "Acme GmbH",
-    "contact": "datenschutz@acme.example",
-    "purposes": ["Drafting customer support replies"]
-  }
-}
-```
-
-Two more blocks have chapters of their own: [`residency`](#data-residency) and
-[`tenants`](#multi-tenant-operation). Comments are allowed — `hushgate init`
-writes a fully commented starter file.
-
-Environment variables override the file, and command-line flags override both:
-
-| Variable | Effect |
-| --- | --- |
-| `HUSHGATE_HOST`, `HUSHGATE_PORT` | bind address and port |
-| `HUSHGATE_UPSTREAM_OPENAI`, `HUSHGATE_UPSTREAM_ANTHROPIC` | upstream base URLs |
-| `HUSHGATE_DEFAULT_POLICY` | policy for kinds without an entry |
-| `HUSHGATE_HMAC_KEY` | key for the `hash` policy (prefer this over the file) |
-| `HUSHGATE_MAX_BODY_BYTES`, `HUSHGATE_UPSTREAM_TIMEOUT_MS` | limits |
-| `HUSHGATE_AUDIT`, `HUSHGATE_AUDIT_PATH` | audit trail on/off and location |
-| `HUSHGATE_RESIDENCY_MODE` | enforcement mode: `block`, `sanitize`, `warn`, `allow` |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | upstream credentials, used once a tenant has authenticated |
-
-hushgate binds to `127.0.0.1` by default. It holds the mapping from placeholders
-back to real personal data, so an accidental `0.0.0.0` is an incident, not a
-convenience.
-
-## CLI
-
-```sh
-hushgate serve [--config <path>] [--port <n>] [--host <h>]
-               [--upstream-openai <url>] [--upstream-anthropic <url>]
-               [--audit <path>] [--no-audit]
-
-hushgate scan [--json] [--show-values] [--quiet] <file...>
-hushgate check [--quiet] < input > output
-hushgate residency [--json] [--registry]
-hushgate keys new <tenant-id> | hushgate keys hash < key
-hushgate audit verify [--file <path>] [--json]
-hushgate audit report [--from <date>] [--to <date>] [--json]
-hushgate init [--path <path>] [--force]
-hushgate doctor [--json] [--allow-warnings]
-```
-
-`scan` is built for CI — it exits **3** when it finds personal data:
-
-```console
-$ hushgate scan fixtures/*.json
-fixtures/customer.json
-  12:14  EMAIL  jo••••••om  → pseudonymize
-  18:3   IBAN   DE••••••00  → pseudonymize
-
-2 findings in 1 file: EMAIL 1, IBAN 1
-```
-
-Previews are masked because CI logs are not a place to publish an IBAN; pass
-`--show-values` when you are looking at your own terminal.
-
-`check` is the Unix half:
-
-```sh
-cat notes.md | hushgate check > safe.md
-```
-
-Exit codes: `0` success, `1` failure, `2` usage, `3` `scan` found personal data.
-
-## Data residency
-
-The reason this project exists. You declare which upstreams are permitted, why,
-and what should happen to personal data bound for each of them — and hushgate
-refuses to start if the configuration does not match.
-
-```json
-{
-  "upstreams": {
-    "openai": "https://api.mistral.ai",
-    "anthropic": "https://api.aleph-alpha.com"
-  },
-  "residency": {
-    "mode": "sanitize",
-    "routes": { "anthropic.messages": "warn" },
-    "categories": { "GERMAN_TAX_ID": "block", "SECRET": "block" },
-    "requireDataControls": true,
-    "allow": [
-      {
-        "endpoint": "https://api.mistral.ai",
-        "jurisdiction": "FR",
-        "legalBasis": "Art. 28 DPA signed 2026-01-12; processing in France"
-      },
-      {
-        "endpoint": "https://api.aleph-alpha.com",
-        "jurisdiction": "DE",
-        "legalBasis": "Art. 28 DPA signed 2025-11-03; processing in Germany"
-      }
-    ]
-  }
-}
-```
-
-**Fail-closed.** If an upstream is not on the allowlist, hushgate does not start
-and tells you which rule refused it:
-
-```console
-$ hushgate serve
-hushgate: configuration error
-  residency policy refuses this configuration:
-    upstreams.openai → https://api.openai.com is not on the residency allowlist [residency.allow]
-```
-
-An empty `residency.allow` means "unrestricted", and every report says so out
-loud, because unrestricted is a finding in its own right.
-
-**Enforcement modes**, resolved by specificity — a category rule beats a route
-rule beats the global mode, and the strictest category wins when several apply:
-
-| Mode | Effect |
-| --- | --- |
-| `block` | refuse the request, naming the rule; nothing is sent |
-| `sanitize` | remove the personal data, then forward (default) |
-| `warn` | forward unchanged and record what went out — for staged rollout |
-| `allow` | forward unchanged |
-
-**The registry.** An offline index of well-known endpoints and where they run:
-the US defaults, Azure, every Bedrock region, and the EU-hosted alternatives —
-Mistral (FR), Aleph Alpha (DE), IONOS (DE), OVHcloud (FR), Scaleway (FR) — plus
-local runtimes such as Ollama and vLLM. Data only: no lookups, no network.
-Extend or override it with `residency.endpoints`.
-
-```console
-$ hushgate residency --registry
-```
-
-Azure resolves to `UNKNOWN` on purpose: a custom subdomain does not reveal the
-resource region, and guessing would be worse than asking. Declare it in
-`residency.allow`, which is authoritative over the registry anyway.
-
-**Retention and training controls.** Where a provider exposes an opt-out as a
-header or a body field, hushgate sets it on every request — `store: false` for
-OpenAI — overriding a caller who set it otherwise. Where it is an account
-setting or a contract clause it is reported rather than pretended, and
-`requireDataControls` (implied by `block` mode) refuses to start against an
-endpoint that documents nothing at all.
-
-**The report for your DPO.**
-
-```console
-$ hushgate residency
-hushgate residency
-  config       /srv/hushgate/hushgate.config.json
-
-  route        openai.chat.completions  (POST /v1/chat/completions)
-  upstream     https://api.mistral.ai
-  endpoint     Mistral AI — La Plateforme — Mistral AI SAS
-  jurisdiction FR — France [eea]
-               Inside the EU/EEA: no third-country transfer under GDPR Chapter V.
-  rule         residency.allow[0]
-  legal basis  Art. 28 DPA signed 2026-01-12; processing in France
-  enforcement  sanitize  (residency.mode)
-  controls     no-training (contract) [arranged with the provider]
-  verdict      PERMITTED — permitted by residency.allow[0]: Art. 28 DPA signed 2026-01-12; processing in France
-
-2 of 2 routes permitted.
-```
-
-It exits non-zero when a route is refused, so it doubles as a CI check.
-`--json` gives the same content for machines.
-
-## Multi-tenant operation
-
-One hushgate can serve several teams, departments or applications, each with its
-own key, its own policy profile, its own pseudonym namespace, its own audit
-stream and its own allowance.
+Each tenant gets its own policy profile, its own pseudonym namespace, its own
+audit stream and its own quotas. A placeholder minted for one tenant cannot be
+resolved by another, and there is a test that asserts exactly that. hushgate
+refuses to bind a non-loopback address until at least one tenant exists, so it
+cannot become an open relay on the LAN.
 
 ```console
 $ hushgate keys new support
 tenant key for "support" — copy it now, hushgate does not store it:
 
-  hg_Yz1r0Q8yv3fW7pC2sJhV5nT4kM6xB9dE0aL1uS3gQ7o
+  hg_I-fluM42ZeEGXgVWpmA3XC2QlRtAP3h-SwlOIcBcnxU
 
 add this to hushgate.config.json:
 
@@ -381,251 +777,243 @@ add this to hushgate.config.json:
       {
         "id": "support",
         "name": "support",
-        "keyHash": "sha256:5f2b…"
+        "keyHash": "sha256:3ca843a2a0627a619965ecbfa8b96aeeb75f41402ba99342df5d99cc0a069312"
       }
     ]
   }
+
+The caller sends the key as "Authorization: Bearer <key>" or "x-api-key: <key>".
+Revoke it by removing the hash; rotate it by listing both hashes in keyHashes.
 ```
 
-```json
-{
-  "tenants": [
-    {
-      "id": "support",
-      "name": "Support desk",
-      "keyHash": "sha256:5f2b…",
-      "quotas": { "requestsPerMinute": 120, "tokensPerDay": 2000000 },
-      "audit": { "path": "audit/support.jsonl" },
-      "redaction": { "policies": { "SECRET": "block", "IBAN": "hash" } }
-    },
-    {
-      "id": "research",
-      "keyEnv": "HUSHGATE_KEY_RESEARCH",
-      "upstreamKeyEnv": "OPENAI_API_KEY_RESEARCH",
-      "quotas": { "requestsPerMinute": 30 }
-    }
-  ]
-}
+Add `quotas` (`requestsPerMinute`, `tokensPerDay`), `audit.path` and a
+`redaction` block to the tenant entry to give it its own limits, stream and
+policy profile. Over-quota callers get a 429.
+
+### Library
+
+The proxy is one consumer of a plain library; everything is exported from the
+package root.
+
+```js
+import { Session } from 'hushgate';
+
+const session = new Session({
+  policies: { GERMAN_TAX_ID: 'hash', IPV4: 'allow' },
+  hmacKey: 'a fixed key, so hashes are stable across restarts',
+  dictionary: { names: ['Anna Schmidt'] },
+});
+
+const { text, findings } = session.redact(input);
+// … send `text` somewhere …
+const back = session.restore(text);
 ```
 
-Callers send the key exactly where their SDK already sends one —
-`Authorization: Bearer <key>` or `x-api-key: <key>`.
+Also exported: `detect`, `createDetectors` and every individual detector;
+`isValidIban`, `luhnValid`, `isValidGermanTaxId` and friends; `redactJson` and
+`restoreJson` for structured bodies; `StreamRehydrator` and `SseRehydrator`; the
+audit log and chain verifier; the residency registry and policy engine; the
+tenant registry; the metrics registry.
 
-- **Only hashes are stored.** A config file ends up in a wiki, a ticket and a
-  screenshot. List several in `keyHashes` to rotate without downtime; delete one
-  to revoke it.
-- **The tenant key never reaches the provider.** Once it has authenticated
-  someone, the header carrying it is dropped and replaced with the upstream
-  credential hushgate holds (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, or the
-  tenant's own `upstreamKeyEnv`).
-- **Namespaces are separate.** Placeholder mappings never outlive a request, and
-  each tenant's `hash` policy is keyed by a digest derived from the tenant id —
-  a shared digest would let one tenant confirm another's data by guessing it.
-- **Quotas return a real 429**, with a `retry-after` computed from the sliding
-  minute window or from midnight UTC. Token counts come from the provider's own
-  usage report, so the daily limit takes effect on the request after the one
-  that crossed it. Counters are in-memory and per process.
-- **hushgate refuses to be an open relay.** With no tenants defined it will only
-  bind loopback; ask it to bind anything else and it stops with an explanation.
-  `/healthz` stays open, because probes cannot authenticate.
+## 9. Detection: what it catches, and what it does not
 
-## Audit trail
+hushgate is a deterministic detector, not a model. It is very good at
+identifiers that carry their own proof, and structurally incapable of
+recognising personal data that looks like ordinary prose.
 
-Append-only JSONL, one object per request, each linked to the one before it by
-a SHA-256 hash chain:
-
-```json
-{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","tenant":"support","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"tokens":1841,"upstream":"api.mistral.ai","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"FR","controls":["zero-retention via body store=false"]},"prev":"4f3a…","hash":"9c21…"}
-```
-
-Categories and counts, never values — the record is assembled from a fixed field
-list precisely so it cannot grow one, and a test drives real personal data of
-five kinds through the proxy to prove none of it lands in the file. Blocked and
-rejected requests are recorded too: "nothing was sent" is exactly the fact worth
-writing down.
-
-### Verifying it
+`hushgate scan` over [`examples/ticket.txt`](examples/ticket.txt), whose last
+line contains an IBAN, a card number and a tax ID that are all *shaped* right
+but fail their checksums:
 
 ```console
-$ hushgate audit verify
-audit trail /srv/hushgate/hushgate-audit.jsonl
-  records      12481
-  chain        intact
-  head         9c21f0a4…
+$ hushgate scan -c examples/demo.config.json examples/ticket.txt
+examples/ticket.txt
+  1:8   NAME           An••••••dt  → pseudonymize
+  1:27  DATE_OF_BIRTH  14••••••87  → pseudonymize
+  2:8   EMAIL          an••••••le  → pseudonymize
+  3:8   PHONE          07••••••43  → pseudonymize
+  4:8   IBAN           DE••••••00  → pseudonymize
+  5:8   CREDIT_CARD    41••••••11  → pseudonymize
+  6:12  GERMAN_TAX_ID  86••••••19  → pseudonymize
+  7:8   IPV4           10•••••.7  → pseudonymize
+  7:24  MAC            3c••••••04  → pseudonymize
+  8:8   EMPLOYEE_ID    EM•••••19  → pseudonymize
+  8:44  TERM           Pr••••••ht  → pseudonymize
+  9:23  PHONE          00••••••01  → pseudonymize
 
-Anchor the head hash outside hushgate (a ticket, a signed note, another
-system) if you also need to detect records being dropped from the end.
+12 findings in 1 file: CREDIT_CARD 1, DATE_OF_BIRTH 1, EMAIL 1, EMPLOYEE_ID 1, GERMAN_TAX_ID 1, IBAN 1, IPV4 1, MAC 1, NAME 1, PHONE 2, TERM 1
 ```
 
-A break is reported with the record it starts at and what kind it is — `altered`
-when a record's contents no longer match its own hash, `unlinked` when something
-was inserted or removed at that point. Everything before the break still
-verifies. The command exits non-zero, so it works as a scheduled check.
-
-What a self-contained chain cannot detect is truncation of the tail: dropping
-the last records leaves a shorter but consistent chain. That is why the head
-hash is printed.
-
-### Reporting on it
+Values are masked by default (`An••••••dt`), so scan output is safe to paste
+into a ticket; `--show-values` opts out. Run the invalid line on its own to see
+what the checksums did:
 
 ```console
-$ hushgate audit report --from 2026-03-01 --to 2026-03-31 > march.md
+$ echo 'Ungueltig: DE89 3704 0044 0532 0130 01, 4111 1111 1111 1112, 86095742718' | hushgate check -c examples/demo.config.json
+Ungueltig: DE89 3704 [PHONE_1], 4111 1111 1111 1112, 86095742718
+hushgate: redacted 1 finding (PHONE 1)
 ```
 
-An Article 30 style record of processing: categories of personal data with the
-handling each received, recipients with their jurisdiction and transfer status,
-the safeguard recorded for each, and volumes by outcome, route, enforcement mode
-and tenant. `--json` for a pipeline.
+The card and the tax ID were rejected outright and passed through untouched, and
+so was the IBAN — but part of its digits were then claimed by a different
+detector. `0044 0532 0130 01` really is a well-formed international number in the
+`00` form: country code 44, thirteen subscriber digits. That is a false positive,
+and it is the honest illustration of hushgate's bias: **it prefers a false
+positive to a leak.** A pseudonymised phone number that was never a phone number
+costs the model a little context; the opposite mistake costs you a transfer.
 
-The parts hushgate cannot know, it does not invent. Purposes come from
-`organisation.purposes`; a recipient with no legal basis on the allowlist is
-printed as **none recorded**. Each report carries its own chain verification,
-because a summary that cannot be checked against its source is a claim rather
-than evidence.
+What it does **not** do:
 
-```json
-{
-  "organisation": {
-    "name": "Acme GmbH",
-    "contact": "datenschutz@acme.example",
-    "dpo": "A. Datenschutz",
-    "purposes": ["Drafting customer support replies", "Summarising internal documents"]
-  }
-}
+- **Names in free text.** `NAME` comes from your dictionary. hushgate will not
+  work out that "Frau Özdemir from purchasing" is a person. Add the names you
+  care about, or accept that free-text names go through.
+- **Addresses.** No street or postcode detector ships. Use `redaction.custom`
+  if your data has a regular shape.
+- **Health, religion, union membership and the other Article 9 special
+  categories.** They are prose. A dictionary or a custom rule can catch known
+  terms; nothing catches the general case.
+- **Anything inside images.** Image content parts are skipped by design.
+- **Re-identification by combination.** Removing the name does not stop
+  "the customer in Ravensburg who ordered the ZX-40 on Tuesday" from being
+  exactly one person. Pseudonymisation is not anonymisation.
+- **Cross-restart placeholder stability.** Pseudonyms are per session by design,
+  so `[EMAIL_1]` in yesterday's audit trail means nothing today. `hash` is the
+  policy for stable, comparable, irreversible identifiers.
+
+## 10. Is this legally sufficient?
+
+No — and any tool that claims otherwise is selling something.
+
+Precisely what hushgate does, in the terms the question is usually asked in:
+
+- It is a **technical and organisational measure** in the sense of Art. 32 GDPR,
+  and it implements **pseudonymisation** in the sense of Art. 4(5).
+- Data it replaces with a placeholder is not transmitted to the provider. To the
+  extent a request contains only pseudonymised content after hushgate has run,
+  what reaches the provider is data from which the individual cannot be
+  identified without the mapping — and the mapping never leaves your machine.
+- It produces evidence: a hash-chained record of which categories were
+  processed, in what volume, sent where, under which recorded legal basis.
+
+What it does not do:
+
+- Pseudonymised data remains **personal data** under Recital 26. Sending it to a
+  third country is still a transfer and still needs a legal basis under
+  Chapter V. hushgate reduces what is transferred; it does not remove the
+  question.
+- It cannot assess your provider contracts, your DPA, your SCCs, your transfer
+  impact assessment, or whether the controller's purpose is lawful in the first
+  place.
+- Its jurisdiction registry records what operators publicly document. It is a
+  starting point for a transfer impact assessment, not the conclusion of one,
+  which is why every `residency.allow` entry is required to carry a
+  `legalBasis` written by you.
+- Detection is best-effort (§9). A control that catches most personal data is
+  not a guarantee that none escaped.
+
+hushgate is a technical control that supports compliance. It is not legal
+advice, and it does not by itself make any transfer lawful. Have your DPO review
+the configuration, and treat `hushgate residency` and `hushgate audit report` as
+inputs to that review rather than as its conclusion.
+
+## 11. Deployment
+
+```sh
+docker compose up
 ```
 
-## Deployment
+The image is multi-stage and runs as a non-root user, with a `HEALTHCHECK` on
+`/healthz` that uses `fetch` rather than adding curl to the image. Because
+hushgate has no runtime dependencies, the final layer is Node plus the compiled
+output and nothing else — no package manager, no build toolchain, no transitive
+supply chain to audit.
 
-```console
-$ docker compose up --build
-```
+[`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) is a Deployment, Service,
+ConfigMap and Secret with resource limits, liveness and readiness probes on
+`/healthz`, and a hardened `securityContext`: `runAsNonRoot`, read-only root
+filesystem, `allowPrivilegeEscalation: false`, all capabilities dropped, seccomp
+`RuntimeDefault`.
 
-The image is multi-stage and carries Node plus the compiled output — no package
-manager, no build toolchain, and no runtime dependencies to audit. It runs as
-`node`, with a read-only root filesystem, no capabilities and a healthcheck that
-needs nothing the image does not already have.
-
-```console
-$ kubectl apply -f deploy/kubernetes.yaml
-```
-
-Deployment, Service, ConfigMap, Secret and a PVC for the audit trail, with
-resource limits, probes on `/healthz`, `runAsNonRoot`, `readOnlyRootFilesystem`,
-`allowPrivilegeEscalation: false`, all capabilities dropped and the service
-account token left unmounted. Every value you must replace says `REPLACE ME`,
-and a test parses the embedded config with hushgate's own parser, because a
-manifest that ships a configuration the tool rejects is worse than no manifest.
-
-One replica on purpose: each instance keeps its own hash-chained trail and its
-own in-memory quota counters. Scaling out means one volume and one trail per
-pod, or an aggregator — a decision to take deliberately rather than by editing a
-number.
-
-In a container hushgate binds `0.0.0.0`, which means it insists on tenants. That
-refusal is the feature.
-
-## Operations
-
-```console
-$ hushgate init      # a commented starter config
-$ hushgate doctor    # everything that is unsafe about it
-```
-
-`doctor` is built to be a CI step. It resolves both upstreams against the
-residency policy, looks for enforcement left loose after a rollout, notices a
-hash policy with no stable key, an open relay, tenants without quotas, auditing
-switched off and a broken audit chain — and every line says what to do about it.
-It exits non-zero on warnings as well as failures; `--allow-warnings` is the
-deliberate opt-out.
+Put `hushgate doctor` in the pipeline. It validates the configuration, resolves
+the residency policy, verifies the audit chain and exits non-zero on anything
+unsafe — including `warn` mode left switched on:
 
 ```console
 $ hushgate doctor
 hushgate doctor
 
 configuration
-  ok    config file /srv/hushgate/hushgate.config.json
+  note  no hushgate.config.json found; running on built-in defaults
+        → run "hushgate init" to write one
 residency
-  ok    upstreams.openai → api.mistral.ai [FR, eea] via residency.allow[0]
-  note  upstreams.anthropic → api.anthropic.com [US, third-country] via residency.allow[1]
-enforcement
-  warn  residency.mode is "warn": personal data is forwarded unchanged
-        → set residency.mode to sanitize once the rollout is finished
+  warn  no residency allowlist is configured, so any upstream is permitted
+        → list the endpoints you have assessed in residency.allow, each with its legal basis
+  note  upstreams.openai → api.openai.com [US, third-country] via residency.allow (empty)
+  note  upstreams.anthropic → api.anthropic.com [US, third-country] via residency.allow (empty)
 security
-  ok    2 tenant(s) defined; a key is required
+  ok    bound to 127.0.0.1, so only this machine can reach it
 audit
-  ok    /srv/hushgate/hushgate-audit.jsonl: 12481 record(s), chain intact, head 9c21f0a4e1b2…
+  note  no trail at /Users/johan/Projects/hushgate/hushgate-audit.jsonl yet; it is written on the first request
 
 1 warning. Fix them, or re-run with --allow-warnings to accept the warnings.
+
+$ echo $?
+1
 ```
 
-**Metrics.** `GET /metrics` in Prometheus text format: requests by route,
-outcome, status and tenant; findings by category and the policy applied;
-refusals by the rule that refused them; upstream tokens; and a latency
-histogram. Open on loopback, authenticated once tenants exist — point your
-scraper at it with a tenant key.
+Once the policy is real, it goes quiet:
 
-```text
-hushgate_requests_total{outcome="forwarded",route="openai.chat.completions",status="200",tenant="support"} 1841
-hushgate_findings_total{kind="EMAIL",policy="pseudonymize"} 5122
-hushgate_blocked_total{reason="residency",rule="residency.categories.GERMAN_TAX_ID"} 3
-hushgate_request_duration_seconds_bucket{route="openai.chat.completions",le="2.5"} 1802
+```console
+$ hushgate doctor -c examples/demo.config.json
+hushgate doctor
+
+configuration
+  ok    config file /Users/johan/Projects/hushgate/examples/demo.config.json
+residency
+  ok    upstreams.openai → 127.0.0.1 [LOCAL, local] via residency.allow[0]
+  ok    upstreams.anthropic → 127.0.0.1 [LOCAL, local] via residency.allow[0]
+security
+  ok    bound to 127.0.0.1, so only this machine can reach it
+audit
+  ok    /Users/johan/Projects/hushgate/examples/hushgate-audit.jsonl: 3 record(s), chain intact, head 4c993591f4aa…
+
+Nothing unsafe found.
 ```
 
-**Resilience.** Upstream failures that never produced a response are retried
-with exponential backoff and full jitter. A response is never retried, whatever
-its status: a 429 with a `retry-after` belongs to the caller, and resending a
-request the provider has already seen and charged for would be worse than the
-error. Request and upstream timeouts, the body-size limit and the retry budget
-are all configurable under `limits`.
+Operational behaviour: graceful shutdown, a body-size limit, an upstream
+timeout, and retries with full-jitter exponential backoff for failures that
+happened *before* a response arrived. A response is never retried, whatever its
+status — a 429 with a `retry-after` belongs to the caller, and quietly resending
+a request the provider has already seen and charged for would be worse than the
+error.
 
-**Shutdown** is graceful. `SIGINT` and `SIGTERM` stop the listener, let in-flight
-requests finish, and close the audit trail before the process exits.
-
-**Configuration files may contain comments.** `hushgate init` writes them, and
-the loader strips them, because the config file is where a team records *why* an
-upstream is permitted.
-
-## Is this legally sufficient?
-
-No tool can answer that for you, and any tool that claims otherwise should be
-treated with suspicion.
-
-What hushgate does is technical and specific: it removes categories of personal
-data it can detect from the payloads you send to a third-party API, it records
-what it removed, and it refuses the request outright when you tell it to. Used
-carefully, that is a meaningful technical measure in the sense of GDPR
-Article 32, and it materially reduces what a third-country transfer under
-Chapter V actually contains.
-
-What it is not:
-
-- It is **not legal advice**, and it does not by itself make a transfer lawful.
-- It is **not a guarantee of anonymisation**. Pseudonymisation is explicitly
-  still personal data under Article 4(5). Free text can identify a person
-  without containing a single detectable identifier — "the deputy head of our
-  Karlsruhe office who resigned last Tuesday" survives every detector here.
-- It is **not a substitute** for a lawful basis, a transfer mechanism, a DPA
-  with your provider, a record of processing, or a DPIA where one is required.
-
-Treat it as one control among several, evidence it with the audit trail, and let
-your DPO decide what it is worth in your specific processing context.
-
-## Development
+## 12. Development
 
 ```sh
 npm install
-npm run lint
-npm run build
-npm test
+npm run lint     # oxlint, warnings are errors
+npm run build    # tsc, ESM output to dist/
+npm test         # vitest
 ```
 
-Useful extras: `npm run typecheck` (the build config excludes the tests),
-`npm run verify:package` (checks what npm would actually publish, and runs the
-built CLI).
+`npm run typecheck` also type-checks the tests, which the build config excludes.
+`npm run verify:package` checks what npm would publish: that the tarball carries
+the compiled output and not the sources, and that the `bin` entry actually runs.
 
-The test suite never touches the network: every proxy test runs against a fake
-upstream bound to `127.0.0.1` on an ephemeral port.
+613 tests across 29 files, and **none of them touch the network**. Every proxy
+test runs against a fake upstream bound to `127.0.0.1` that records exactly what
+hushgate sent — which is the only way to assert the actual claim. CI proves the
+suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`
+pointed at a closed port.
 
-## License
+CI is a matrix over Node 20, 22 and 24: install, lint, typecheck, build, test,
+then the no-network run.
 
-MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Johan Becker.
+Before opening a change, read [CONTRIBUTING.md](CONTRIBUTING.md). Report
+vulnerabilities privately per [SECURITY.md](SECURITY.md); participation is
+governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Notable changes are
+recorded in [CHANGELOG.md](CHANGELOG.md).
+
+## 13. License
+
+[MIT](LICENSE), © 2026 Johan Becker.
