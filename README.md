@@ -997,6 +997,9 @@ npm test         # vitest
 ```
 
 `npm run typecheck` also type-checks the tests, which the build config excludes.
+`npm run check:docs` verifies that the banner is well-formed SVG within the
+constraints GitHub's sanitiser imposes, and that every relative link in every
+Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
