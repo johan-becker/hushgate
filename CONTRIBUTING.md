@@ -17,6 +17,7 @@ npm run lint       # oxlint; warnings are errors
 npm run build      # tsc, ESM output to dist/
 npm test           # vitest
 npm run typecheck  # type-checks the tests too, which the build config excludes
+npm run check:docs # banner well-formedness, and every relative link resolves
 ```
 
 That whole chain must pass before a pull request is opened, and CI runs it on
