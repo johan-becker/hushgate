@@ -155,7 +155,9 @@ export function redactJson(
     body,
     (text) => {
       const result = redactor.redact(text);
-      findings.push(...result.findings);
+      // Appended, never spread: see the note in detectors/index.ts — a dense
+      // leaf can hold more findings than an engine accepts as arguments.
+      for (const finding of result.findings) findings.push(finding);
       return result.text;
     },
     { select, maxDepth: options.maxDepth },
