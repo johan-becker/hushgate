@@ -14,6 +14,8 @@ real values back. The provider never receives the personal data.
   telemetry.
 - Streaming-safe: placeholders are restored even when they arrive split across
   SSE chunks or across separate events.
+- Data residency enforcement: a declarative allowlist of permitted upstreams,
+  fail-closed at startup, with an offline registry of EU-hosted alternatives.
 - An append-only audit trail that records categories and counts, never values.
 
 ## The migration is one line
@@ -210,6 +212,7 @@ hushgate serve [--config <path>] [--port <n>] [--host <h>]
 
 hushgate scan [--json] [--show-values] [--quiet] <file...>
 hushgate check [--quiet] < input > output
+hushgate residency [--json] [--registry]
 ```
 
 `scan` is built for CI — it exits **3** when it finds personal data:
@@ -234,12 +237,113 @@ cat notes.md | hushgate check > safe.md
 
 Exit codes: `0` success, `1` failure, `2` usage, `3` `scan` found personal data.
 
+## Data residency
+
+The reason this project exists. You declare which upstreams are permitted, why,
+and what should happen to personal data bound for each of them — and hushgate
+refuses to start if the configuration does not match.
+
+```json
+{
+  "upstreams": {
+    "openai": "https://api.mistral.ai",
+    "anthropic": "https://api.aleph-alpha.com"
+  },
+  "residency": {
+    "mode": "sanitize",
+    "routes": { "anthropic.messages": "warn" },
+    "categories": { "GERMAN_TAX_ID": "block", "SECRET": "block" },
+    "requireDataControls": true,
+    "allow": [
+      {
+        "endpoint": "https://api.mistral.ai",
+        "jurisdiction": "FR",
+        "legalBasis": "Art. 28 DPA signed 2026-01-12; processing in France"
+      },
+      {
+        "endpoint": "https://api.aleph-alpha.com",
+        "jurisdiction": "DE",
+        "legalBasis": "Art. 28 DPA signed 2025-11-03; processing in Germany"
+      }
+    ]
+  }
+}
+```
+
+**Fail-closed.** If an upstream is not on the allowlist, hushgate does not start
+and tells you which rule refused it:
+
+```console
+$ hushgate serve
+hushgate: configuration error
+  residency policy refuses this configuration:
+    upstreams.openai → https://api.openai.com is not on the residency allowlist [residency.allow]
+```
+
+An empty `residency.allow` means "unrestricted", and every report says so out
+loud, because unrestricted is a finding in its own right.
+
+**Enforcement modes**, resolved by specificity — a category rule beats a route
+rule beats the global mode, and the strictest category wins when several apply:
+
+| Mode | Effect |
+| --- | --- |
+| `block` | refuse the request, naming the rule; nothing is sent |
+| `sanitize` | remove the personal data, then forward (default) |
+| `warn` | forward unchanged and record what went out — for staged rollout |
+| `allow` | forward unchanged |
+
+**The registry.** An offline index of well-known endpoints and where they run:
+the US defaults, Azure, every Bedrock region, and the EU-hosted alternatives —
+Mistral (FR), Aleph Alpha (DE), IONOS (DE), OVHcloud (FR), Scaleway (FR) — plus
+local runtimes such as Ollama and vLLM. Data only: no lookups, no network.
+Extend or override it with `residency.endpoints`.
+
+```console
+$ hushgate residency --registry
+```
+
+Azure resolves to `UNKNOWN` on purpose: a custom subdomain does not reveal the
+resource region, and guessing would be worse than asking. Declare it in
+`residency.allow`, which is authoritative over the registry anyway.
+
+**Retention and training controls.** Where a provider exposes an opt-out as a
+header or a body field, hushgate sets it on every request — `store: false` for
+OpenAI — overriding a caller who set it otherwise. Where it is an account
+setting or a contract clause it is reported rather than pretended, and
+`requireDataControls` (implied by `block` mode) refuses to start against an
+endpoint that documents nothing at all.
+
+**The report for your DPO.**
+
+```console
+$ hushgate residency
+hushgate residency
+  config       /srv/hushgate/hushgate.config.json
+
+  route        openai.chat.completions  (POST /v1/chat/completions)
+  upstream     https://api.mistral.ai
+  endpoint     Mistral AI — La Plateforme — Mistral AI SAS
+  jurisdiction FR — France [eea]
+               Inside the EU/EEA: no third-country transfer under GDPR Chapter V.
+  rule         residency.allow[0]
+  legal basis  Art. 28 DPA signed 2026-01-12; processing in France
+  enforcement  sanitize  (residency.mode)
+  controls     no-training (contract) [arranged with the provider]
+  verdict      PERMITTED — permitted by residency.allow[0]: Art. 28 DPA signed 2026-01-12; processing in France
+
+2 of 2 routes permitted.
+```
+
+It exits non-zero when a route is refused, so it doubles as a CI check.
+`--json` gives the same content for machines.
+
 ## Audit trail
 
 Append-only JSONL, one object per request:
 
 ```json
-{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"upstream":"api.openai.com","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"}}
+{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"upstream":"api.openai.com","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"FR","controls":["zero-retention via body store=false"]}}
 ```
 
 Categories and counts, never values — the record is assembled from a fixed field

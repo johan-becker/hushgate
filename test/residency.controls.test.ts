@@ -162,7 +162,7 @@ describe('the proxy applying controls', () => {
   });
 
   it('records the applied controls in the audit trail', async () => {
-    const records: { residency?: { controls: string[] } }[] = [];
+    const records: { residency?: { controls: readonly string[] } }[] = [];
     harness = await startHarness({
       config: (base, origin) => ({
         ...base,
@@ -191,7 +191,7 @@ describe('the proxy applying controls', () => {
       }),
       proxy: {
         audit: {
-          write: (record) => records.push(record as { residency?: { controls: string[] } }),
+          write: (record) => records.push(record as { residency?: { controls: readonly string[] } }),
           close: () => Promise.resolve(),
         },
       },
