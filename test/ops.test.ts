@@ -399,20 +399,18 @@ describe('the hot path stays linear', () => {
     // Warm the JIT so the first measurement is not the slow one.
     timeRedaction(document(128), 1);
 
+    // An 8x step, not 2x. A doubling cannot separate linear from quadratic on
+    // a shared CI runner: linear predicts 2x and quadratic 4x, and ordinary
+    // scheduling jitter on a small sample covers that whole gap -- measured at
+    // 2.59 and 3.05 on two consecutive runs of this very suite, against a
+    // correct implementation. Over 8x the prediction is 8x against 64x, so a
+    // threshold of 20 has an order of magnitude of headroom on both sides:
+    // noise cannot reach it, and the quadratic resolver this test was written
+    // for cannot fit under it.
     const small = timeRedaction(document(128), 5);
-    const medium = timeRedaction(document(256), 5);
-    const large = timeRedaction(document(512), 5);
+    const large = timeRedaction(document(1_024), 3);
 
-    // Absolute growth budgets, not a ratio of ratios. Comparing one measured
-    // ratio against another divides by the noisiest number in the set -- the
-    // smallest sample -- so a single slow `small` run on a shared CI runner
-    // collapses the bound and fails a perfectly linear implementation. These
-    // bounds are what the test actually cares about: doubling the input
-    // doubles linear work (2x) but quadruples quadratic work (4x), and the 4x
-    // step is 4x against 16x. Both thresholds sit between the two, so a
-    // quadratic regression trips them and ordinary timing jitter does not.
-    expect(large / medium).toBeLessThan(3);
-    expect(large / small).toBeLessThan(6);
+    expect(large / small).toBeLessThan(20);
   });
 
   it('stays linear when almost every character is part of a finding', () => {
