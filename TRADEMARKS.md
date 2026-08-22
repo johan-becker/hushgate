@@ -6,8 +6,10 @@ Johan Becker. They are **not** licensed to you.
 The [Business Source License 1.1](LICENSE) that covers this repository grants
 you rights in the **code**. It grants no rights in the name or the logo — the
 licence says so itself, in the Terms: *"This License does not grant you any
-right in any trademark or logo of Licensor."* This file explains what that
-means in practice, so that nobody has to guess.
+right in any trademark or logo of Licensor or its affiliates (provided that you
+may use a trademark or logo of Licensor as expressly required by this
+License)."* This file explains what that means in practice, so that nobody has
+to guess.
 
 ## What you may do
 
