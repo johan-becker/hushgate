@@ -7,6 +7,7 @@ import { ConfigError, HushgateError, UsageError } from '../errors.js';
 import { VERSION } from '../version.js';
 import { formatFlags, type FlagSpecs } from './args.js';
 import { EXIT, type Cli } from './cli.js';
+import { audit, AUDIT_FLAGS, AUDIT_SUMMARY } from './commands/audit.js';
 import { check, CHECK_FLAGS, CHECK_SUMMARY } from './commands/check.js';
 import { keys, KEYS_FLAGS, KEYS_SUMMARY } from './commands/keys.js';
 import { residency, RESIDENCY_FLAGS, RESIDENCY_SUMMARY } from './commands/residency.js';
@@ -38,6 +39,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate residency [--json] [--registry]',
     flags: RESIDENCY_FLAGS,
     run: residency,
+  },
+  audit: {
+    summary: AUDIT_SUMMARY,
+    usage: 'hushgate audit verify | hushgate audit report [--from <date>] [--to <date>]',
+    flags: AUDIT_FLAGS,
+    run: audit,
   },
   keys: {
     summary: KEYS_SUMMARY,

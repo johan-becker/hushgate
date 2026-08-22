@@ -38,6 +38,16 @@
     "path": "hushgate-audit.jsonl"
   },
 
+  "organisation": {
+    "name": "Acme GmbH",
+    "contact": "datenschutz@acme.example",
+    "dpo": "A. Datenschutz",
+    "purposes": [
+      "Drafting customer support replies",
+      "Summarising internal documents"
+    ]
+  },
+
   "tenants": [
     {
       "id": "support",
