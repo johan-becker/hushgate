@@ -38,7 +38,9 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "COMMERCIAL.md",
+    "TRADEMARKS.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
