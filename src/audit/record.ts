@@ -26,6 +26,8 @@ export interface AuditResidency {
   readonly rule: string;
   /** Jurisdiction the upstream is operated in, as decided at startup. */
   readonly jurisdiction: string;
+  /** Retention and training controls hushgate set on the outbound request. */
+  readonly controls: readonly string[];
 }
 
 /** What a caller reports. Timestamp and id are stamped by the log itself. */
@@ -80,6 +82,7 @@ export function toRecord(event: AuditEvent, ts: string, id: string): AuditRecord
             mode: event.residency.mode,
             rule: String(event.residency.rule),
             jurisdiction: String(event.residency.jurisdiction),
+            controls: event.residency.controls.map(String),
           },
   };
 }

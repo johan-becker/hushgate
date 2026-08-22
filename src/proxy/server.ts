@@ -17,6 +17,7 @@ import {
   TraversalDepthError,
   UpstreamError,
 } from '../errors.js';
+import { applyDataControls } from '../residency/controls.js';
 import {
   assertNotBlocked,
   assertUpstreamsPermitted,
@@ -161,6 +162,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         mode: decision.mode,
         rule: decision.rule,
         jurisdiction: verdict.jurisdiction.code,
+        controls: [],
       };
 
       // Refuses before serialisation: in `block` mode nothing leaves at all.
@@ -175,12 +177,18 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         );
       }
 
+      // Retention and training opt-outs are set here, not left to each caller:
+      // one application forgetting `store: false` should not opt the whole
+      // organisation back into retention.
+      const controlled = applyDataControls(verdict.dataControls, outbound as JsonValue);
+      residency = { ...residency, controls: controlled.applied };
+
       reached = hostOf(base);
       const upstreamResponse = await upstream({
         url: `${base}${route.path}`,
         method: 'POST',
-        headers: forwardRequestHeaders(request.headers),
-        body: JSON.stringify(outbound),
+        headers: { ...forwardRequestHeaders(request.headers), ...controlled.headers },
+        body: JSON.stringify(controlled.body),
         timeoutMs: config.limits.upstreamTimeoutMs,
       });
 

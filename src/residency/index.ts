@@ -7,6 +7,8 @@ export {
   lookupEndpoint,
 } from './registry.js';
 export type { DataControl, EndpointEntry, EndpointMatch } from './registry.js';
+export { applyDataControls, setPath } from './controls.js';
+export type { AppliedControls } from './controls.js';
 export {
   assertNotBlocked,
   assertUpstreamsPermitted,
