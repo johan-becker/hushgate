@@ -90,6 +90,13 @@ describe('PHONE', () => {
     expect(phoneDetector.find('+4972112345678901234')).toEqual([]);
   });
 
+  it.each(['0721 / 123 456', '+49 721 / 123456', '0721 - 123456'])(
+    'accepts the spaced separator %s',
+    (text) => {
+      expect(values(`Tel: ${text}`, phoneDetector)).toEqual([text]);
+    },
+  );
+
   it('does not glue two numbers separated by a double space', () => {
     expect(values('0721 1234567  0721 7654321', phoneDetector)).toEqual([
       '0721 1234567',
@@ -117,6 +124,20 @@ describe('IPV4', () => {
 
   it('does not match a fragment of a five-part dotted string', () => {
     expect(ipv4Detector.find('1.2.3.4.5')).toEqual([]);
+  });
+
+  it.each([
+    ['Der Server 10.0.0.42. Danke', '10.0.0.42'],
+    ['Server 10.0.0.5.', '10.0.0.5'],
+    ['ip=192.168.1.1.', '192.168.1.1'],
+    ['hosts: 10.0.0.1, 10.0.0.2.', '10.0.0.1'],
+  ])('finds an address at the end of a sentence in %s', (text, ip) => {
+    expect(values(text, ipv4Detector)).toContain(ip);
+  });
+
+  it('still rejects a dotted run that continues with digits', () => {
+    expect(ipv4Detector.find('1.2.3.4.56')).toEqual([]);
+    expect(ipv4Detector.find('192.168.1.1.7')).toEqual([]);
   });
 });
 
@@ -225,5 +246,14 @@ describe('DATE_OF_BIRTH', () => {
 
   it('does not match a fragment of a longer dotted number', () => {
     expect(detector.find('1.2.1990.4')).toEqual([]);
+    expect(detector.find('1.2.1990.5')).toEqual([]);
+  });
+
+  it.each([
+    ['geboren am 01.02.1990.', '01.02.1990'],
+    ['Geburtsdatum: 1.2.1990.', '1.2.1990'],
+    ['geboren am 01.02.1990. Wohnhaft in Kiel.', '01.02.1990'],
+  ])('finds a birth date at the end of a sentence in %s', (text, date) => {
+    expect(values(text, detector)).toEqual([date]);
   });
 });
