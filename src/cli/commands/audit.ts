@@ -11,7 +11,7 @@ import { parseAuditLines } from '../../audit/log.js';
 import { buildReport, renderMarkdown } from '../../audit/report.js';
 import { verifyChain, type AuditRecord } from '../../audit/record.js';
 import { loadConfig, type HushgateConfig } from '../../config.js';
-import { HushgateError } from '../../errors.js';
+import { HushgateError, UsageError } from '../../errors.js';
 import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 
@@ -51,7 +51,7 @@ export function audit(cli: Cli, argv: readonly string[]): Promise<number> {
       );
     }
     default: {
-      throw new HushgateError(
+      throw new UsageError(
         'hushgate audit needs a subcommand: "verify" to check the hash chain, or "report" for an Article 30 summary',
       );
     }
@@ -134,7 +134,7 @@ function resolveTrail(cli: Cli, config: HushgateConfig, override: string | undef
 function day(value: string | undefined, flag: string): string | null {
   if (value === undefined) return null;
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
-    throw new HushgateError(`${flag} needs a date as YYYY-MM-DD, got "${value}"`);
+    throw new UsageError(`${flag} needs a date as YYYY-MM-DD, got "${value}"`);
   }
   return value;
 }

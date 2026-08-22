@@ -13,7 +13,15 @@ export function isValidIpv4(value: string): boolean {
   });
 }
 
-const IPV4_PATTERN = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])/gu;
+/**
+ * The trailing guard rejects a dot only when a digit follows it, so
+ * `1.2.3.4.5` is still refused as a fragment of a longer dotted run while
+ * `Der Server 10.0.0.42.` — an address at the end of a sentence, which is where
+ * most of them sit in prose — is found. Excluding every following dot would
+ * silently drop the whole address, because the lookbehind then blocks any
+ * shorter re-match too.
+ */
+const IPV4_PATTERN = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\.?\d)/gu;
 
 export const ipv4Detector: Detector = {
   name: 'ipv4',

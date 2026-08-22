@@ -47,9 +47,20 @@ export function hasIssuerPrefix(digits: string): boolean {
   if (/^5[1-5]/u.test(digits)) return n === 16; // Mastercard
   if (/^2(?:2[2-9]|[3-6]\d|7[01]|720)/u.test(digits)) return n === 16; // Mastercard 2-series
   if (/^3(?:0[0-5]|[68]\d)/u.test(digits)) return n === 14; // Diners Club
+  // Diners Club 3095 and the 39 range, in the 14-digit form and the 16-digit
+  // one they carry when co-badged with Discover.
+  if (/^(?:3095|39)/u.test(digits)) return n === 14 || n === 16;
   if (/^35(?:2[89]|[3-8]\d)/u.test(digits)) return n >= 16 && n <= 19; // JCB
   if (/^(?:6011|64[4-9]|65)/u.test(digits)) return n === 16 || n === 19; // Discover
   if (digits.startsWith('62')) return n >= 16 && n <= 19; // UnionPay
+  // Maestro, Dankort and the other Mastercard-operated debit brands. These
+  // dominate the German, Austrian, Danish and Dutch market this proxy is aimed
+  // at, and a support ticket is far likelier to carry one than a Visa. The
+  // ranges are the ones actually issued — 50 and 56-58, and the 63/67 blocks —
+  // rather than the whole 5x and 6x space, so the length discipline that keeps
+  // long order numbers from being read as cards still holds.
+  if (/^5[0678]/u.test(digits)) return n >= 16 && n <= 19;
+  if (/^(?:6304|6759|676[1-3])/u.test(digits)) return n >= 16 && n <= 19;
 
   return false;
 }

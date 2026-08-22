@@ -334,7 +334,8 @@ describe('hushgate audit', () => {
     await writeTrail(dir, [{ at: '2026-03-02T08:00:00.000Z', event: event() }]);
 
     const c = capture(['audit', 'report', '--from', 'March'], dir);
-    expect(await run(c.cli)).toBe(EXIT.failure);
+    // A malformed flag value is a usage error: exit 2, not 1.
+    expect(await run(c.cli)).toBe(EXIT.usage);
     expect(c.err()).toContain('YYYY-MM-DD');
   });
 
@@ -343,7 +344,7 @@ describe('hushgate audit', () => {
     await writeTrail(dir, [{ at: '2026-03-02T08:00:00.000Z', event: event() }]);
 
     const c = capture(['audit'], dir);
-    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(await run(c.cli)).toBe(EXIT.usage);
     expect(c.err()).toContain('verify');
     expect(c.err()).toContain('report');
   });

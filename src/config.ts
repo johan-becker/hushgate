@@ -114,6 +114,16 @@ export interface UpstreamConfig {
 export interface LimitsConfig {
   /** Largest request body hushgate will read, in bytes. */
   readonly maxBodyBytes: number;
+  /**
+   * Largest upstream response hushgate will buffer, in bytes.
+   *
+   * The request side has had a limit from the start; this is its counterpart.
+   * A response is parsed, cloned and re-serialised, so several times its own
+   * size is resident at once, and a compromised, misbehaving or simply
+   * very chatty provider must not be able to push the process past its
+   * memory limit and take every tenant down with it.
+   */
+  readonly maxResponseBytes: number;
   /** How long an upstream request may take before it is aborted. */
   readonly upstreamTimeoutMs: number;
   /** How long a client may take to deliver its request. */
@@ -227,6 +237,7 @@ export function defaultConfig(): HushgateConfig {
     },
     limits: {
       maxBodyBytes: 4 * 1024 * 1024,
+      maxResponseBytes: 16 * 1024 * 1024,
       upstreamTimeoutMs: 120_000,
       requestTimeoutMs: 60_000,
       upstreamRetries: 2,
@@ -262,6 +273,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
     limits,
     new Set([
       'maxBodyBytes',
+      'maxResponseBytes',
       'upstreamTimeoutMs',
       'requestTimeoutMs',
       'upstreamRetries',
@@ -290,6 +302,9 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       maxBodyBytes:
         optionalPositiveInt(limits['maxBodyBytes'], `${where}: "limits.maxBodyBytes"`) ??
         base.limits.maxBodyBytes,
+      maxResponseBytes:
+        optionalPositiveInt(limits['maxResponseBytes'], `${where}: "limits.maxResponseBytes"`) ??
+        base.limits.maxResponseBytes,
       upstreamTimeoutMs:
         optionalPositiveInt(limits['upstreamTimeoutMs'], `${where}: "limits.upstreamTimeoutMs"`) ??
         base.limits.upstreamTimeoutMs,
@@ -608,15 +623,57 @@ function parseRedaction(raw: unknown, where: string, base: RedactionConfig): Red
     scope,
   );
 
+  // Every field is folded *over* the base rather than replacing it. A tenant
+  // block is an override, not a fresh start: an organisation's blocked kinds,
+  // name dictionary and custom rules must keep applying to a tenant that never
+  // mentioned them, and the common case — a tenant with no redaction block at
+  // all — has to behave exactly like the global profile.
   return {
     defaultPolicy: optionalPolicy(node['defaultPolicy'], `${scope}.defaultPolicy`) ??
       base.defaultPolicy,
-    policies: parsePolicies(node['policies'], `${scope}.policies`),
-    dictionary: parseDictionary(node['dictionary'], `${scope}.dictionary`),
-    custom: parseCustomRules(node['custom'], `${scope}.custom`),
-    dobYearRange: parseDobYearRange(node['dobYearRange'], `${scope}.dobYearRange`),
+    policies: { ...base.policies, ...parsePolicies(node['policies'], `${scope}.policies`) },
+    dictionary: mergeDictionaries(
+      base.dictionary,
+      parseDictionary(node['dictionary'], `${scope}.dictionary`),
+    ),
+    custom: mergeCustomRules(base.custom, parseCustomRules(node['custom'], `${scope}.custom`)),
+    dobYearRange:
+      parseDobYearRange(node['dobYearRange'], `${scope}.dobYearRange`) ?? base.dobYearRange,
     hmacKey: optionalString(node['hmacKey'], `${scope}.hmacKey`) ?? base.hmacKey,
   };
+}
+
+/**
+ * Union of two dictionaries, in base-then-override order.
+ *
+ * Adding rather than replacing is the safe direction: a tenant that wants to
+ * protect one more name must not be able to stop protecting the ones the
+ * organisation listed.
+ */
+function mergeDictionaries(base: DictionaryInput, override: DictionaryInput): DictionaryInput {
+  return {
+    names: dedupeStrings([...(base.names ?? []), ...(override.names ?? [])]),
+    terms: dedupeStrings([...(base.terms ?? []), ...(override.terms ?? [])]),
+    entries: [...(base.entries ?? []), ...(override.entries ?? [])],
+  };
+}
+
+function dedupeStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/**
+ * Union of two custom-rule lists, keyed by name. A tenant rule of the same
+ * name replaces the global one — it is an override of that rule, not a second
+ * detector reporting the same category twice.
+ */
+function mergeCustomRules(
+  base: readonly CustomRule[],
+  override: readonly CustomRule[],
+): CustomRule[] {
+  const byName = new Map(base.map((rule) => [rule.name, rule]));
+  for (const rule of override) byName.set(rule.name, rule);
+  return [...byName.values()];
 }
 
 function parsePolicies(raw: unknown, where: string): Record<string, Policy> {
@@ -722,6 +779,7 @@ export function applyEnv(
   const defaultPolicy = env['HUSHGATE_DEFAULT_POLICY'];
   const hmacKey = env['HUSHGATE_HMAC_KEY'];
   const maxBodyBytes = env['HUSHGATE_MAX_BODY_BYTES'];
+  const maxResponseBytes = env['HUSHGATE_MAX_RESPONSE_BYTES'];
   const upstreamTimeoutMs = env['HUSHGATE_UPSTREAM_TIMEOUT_MS'];
   const auditPath = env['HUSHGATE_AUDIT_PATH'];
   const auditEnabled = env['HUSHGATE_AUDIT'];
@@ -755,6 +813,10 @@ export function applyEnv(
         maxBodyBytes === undefined
           ? config.limits.maxBodyBytes
           : envPositiveInt(maxBodyBytes, 'HUSHGATE_MAX_BODY_BYTES'),
+      maxResponseBytes:
+        maxResponseBytes === undefined
+          ? config.limits.maxResponseBytes
+          : envPositiveInt(maxResponseBytes, 'HUSHGATE_MAX_RESPONSE_BYTES'),
       upstreamTimeoutMs:
         upstreamTimeoutMs === undefined
           ? config.limits.upstreamTimeoutMs

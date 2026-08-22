@@ -52,11 +52,24 @@ function document(sizeKb: number): string {
   return text.slice(0, target);
 }
 
-/** Milliseconds to redact `text` in a fresh session. */
-function timeRedaction(text: string): number {
-  const started = performance.now();
-  new Session().redact(text);
-  return performance.now() - started;
+/** Milliseconds to redact `text` in a fresh session, best of `runs`. */
+function timeRedaction(text: string, runs = 3): number {
+  let best = Infinity;
+  for (let run = 0; run < runs; run++) {
+    const started = performance.now();
+    new Session().redact(text);
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+/**
+ * Text with a finding roughly every eight characters, which is what makes the
+ * *resolution* phase rather than the regex phase decide the runtime. Ordinary
+ * prose dilutes a quadratic resolver enough to hide it completely.
+ */
+function dense(count: number): string {
+  return '1.1.1.1 '.repeat(count);
 }
 
 describe('withRetry', () => {
@@ -217,6 +230,39 @@ describe('metrics', () => {
     expect(metrics.render()).toContain('tenant="none"');
   });
 
+  it('renders every sample value as a parsable number', () => {
+    const metrics = new Metrics();
+    // 1000 x 10 ms accumulates to 9.999999999999831 seconds, not an integer,
+    // which rounds to "10.000000" at six decimals. Trimming the zeros without
+    // the separator would emit the bare "10." — tolerated by Go's ParseFloat,
+    // rejected by the OpenMetrics grammar.
+    for (let i = 0; i < 1000; i++) {
+      metrics.observeRequest({
+        route: 'r',
+        outcome: 'forwarded',
+        tenant: null,
+        status: 200,
+        latencyMs: 10,
+        tokens: 0,
+        findings: {},
+        policies: {},
+      });
+    }
+
+    const sum = /^hushgate_request_duration_seconds_sum\{route="r"\} (.+)$/mu.exec(
+      metrics.render(),
+    );
+    expect(sum).not.toBeNull();
+    expect(sum![1]).toBe('10');
+    expect(Number.isFinite(Number(sum![1]))).toBe(true);
+
+    for (const line of metrics.render().split('\n')) {
+      if (line.length === 0 || line.startsWith('#')) continue;
+      const value = line.slice(line.lastIndexOf(' ') + 1);
+      expect(value).toMatch(/^-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?$/u);
+    }
+  });
+
   it('counts refusals by the rule that refused them', () => {
     const metrics = new Metrics();
     metrics.observeBlocked('residency', 'residency.categories.IBAN');
@@ -343,22 +389,52 @@ describe('the hot path stays linear', () => {
 
     expect(findings.length).toBeGreaterThan(1000);
     expect(redacted).not.toContain('anna.schmidt@example.de');
-    // Generous, because CI machines are not benchmarking rigs — but a
-    // quadratic regression would blow straight through it.
-    expect(elapsed).toBeLessThan(10_000);
+    // Generous, because CI machines are not benchmarking rigs — but tight
+    // enough that a real regression trips it. 512 KiB of this prose costs a
+    // few hundred milliseconds.
+    expect(elapsed).toBeLessThan(2_000);
   });
 
   it('does not degrade super-linearly as the input grows', () => {
-    const small = document(64);
-    const large = document(256);
-
     // Warm the JIT so the first measurement is not the slow one.
-    timeRedaction(small);
+    timeRedaction(document(128), 1);
 
-    const smallMs = Math.max(timeRedaction(small), 1);
-    const largeMs = timeRedaction(large);
+    const small = timeRedaction(document(128));
+    const medium = timeRedaction(document(256));
+    const large = timeRedaction(document(512));
 
-    // Four times the input, well under ten times the work.
-    expect(largeMs / smallMs).toBeLessThan(10);
+    // Scale-free: compare how the growth factor itself grows. Linear work
+    // holds the ratio steady across both doublings; quadratic work doubles it.
+    // Timing the ratio of ratios rather than one ratio keeps this meaningful
+    // whatever the absolute speed of the machine happens to be.
+    expect(large / medium).toBeLessThan(1.6 * (medium / small));
+    // And an outright budget on the 4x step, which a quadratic term (16x)
+    // cannot fit inside.
+    expect(large / small).toBeLessThan(6);
+  });
+
+  it('stays linear when almost every character is part of a finding', () => {
+    // The prose fixture above carries one finding per ~45 bytes, which lets the
+    // linear regex phase mask a quadratic resolver. This one carries one per 8.
+    timeRedaction(dense(4_000), 1);
+
+    const small = timeRedaction(dense(8_000));
+    const large = timeRedaction(dense(32_000));
+
+    expect(new Session().redact(dense(8_000)).findings.length).toBe(8_000);
+    // Four times the findings, well under six times the work.
+    expect(large / small).toBeLessThan(6);
+  });
+
+  it('resolves a body at the default size limit in a sane time', () => {
+    // 4 MiB is limits.maxBodyBytes, so this is a request readBody accepts. The
+    // proxy is single-threaded: whatever this costs, every other tenant waits.
+    const text = dense(512_000);
+    const started = performance.now();
+    const { findings } = new Session().redact(text);
+    const elapsed = performance.now() - started;
+
+    expect(findings.length).toBe(512_000);
+    expect(elapsed).toBeLessThan(10_000);
   });
 });

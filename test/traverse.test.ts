@@ -252,3 +252,66 @@ describe('restoreJson', () => {
     expect(restoreJson({ a: '[EMAIL_9]' } as JsonValue, s)).toEqual({ a: '[EMAIL_9]' });
   });
 });
+
+// Roughly 126k IPv4 addresses in one string: 1 MB, a quarter of the default
+// limits.maxBodyBytes, so readBody accepts it without comment.
+const dense = (count: number): JsonValue =>
+  ({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: '1.1.1.1 '.repeat(count) }],
+  }) as JsonValue;
+
+describe('a body with very many findings', () => {
+  it('redacts it instead of blowing the call stack', () => {
+    const s = new Session();
+    const result = redactJson(dense(126_000), s, ['messages.*.content']);
+
+    expect(result.findings.length).toBe(126_000);
+    const content = (result.body as { messages: { content: string }[] }).messages[0]!.content;
+    expect(content).not.toContain('1.1.1.1');
+    expect(content).toContain('[IPV4_1]');
+  });
+
+  it('re-hydrates it as well', () => {
+    const s = new Session();
+    const { body } = redactJson(dense(126_000), s, ['messages.*.content']);
+    const restored = restoreJson(body, s) as { messages: { content: string }[] };
+    expect(restored.messages[0]!.content).toBe('1.1.1.1 '.repeat(126_000));
+  });
+});
+
+describe('a __proto__ member', () => {
+  const body = JSON.parse(
+    '{"model":"gpt-4o","__proto__":{"note":"anna@example.de"},"messages":[{"role":"user","content":"anna@example.de"}]}',
+  ) as JsonValue;
+
+  it('survives redaction instead of being silently dropped', () => {
+    const { body: out } = redactJson(body, session(), ['messages.*.content']);
+    // Assigning `__proto__` on a plain object literal invokes the accessor on
+    // Object.prototype, so the member would vanish from what is forwarded.
+    expect(Object.keys(out as object)).toEqual(['model', '__proto__', 'messages']);
+    expect(JSON.parse(JSON.stringify(out)) as Record<string, unknown>).toHaveProperty(
+      '__proto__',
+    );
+  });
+
+  it('survives a string-valued __proto__ too', () => {
+    const literal = JSON.parse('{"__proto__":"anna@example.de"}') as JsonValue;
+    expect(mapStrings(literal, (t) => t.toUpperCase())).toEqual(
+      JSON.parse('{"__proto__":"ANNA@EXAMPLE.DE"}') as JsonValue,
+    );
+  });
+
+  it('does not pollute Object.prototype', () => {
+    redactJson(body, session(), ['messages.*.content']);
+    expect(({} as Record<string, unknown>)['note']).toBeUndefined();
+  });
+
+  it('round-trips through restoreJson', () => {
+    const s = session();
+    const { body: redacted } = redactJson(body, s, ['messages.*.content']);
+    const restored = restoreJson(redacted, s) as { messages: { content: string }[] };
+    expect(restored.messages[0]!.content).toBe('anna@example.de');
+    expect(Object.keys(restored as object)).toContain('__proto__');
+  });
+});

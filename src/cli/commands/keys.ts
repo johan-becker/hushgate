@@ -5,7 +5,7 @@
  * identifies a team, carries that team's policy profile and quota, and can be
  * revoked without touching anyone else. Only the hash is ever written down.
  */
-import { HushgateError } from '../../errors.js';
+import { HushgateError, UsageError } from '../../errors.js';
 import { hashKey, issueKey, KEY_PREFIX } from '../../tenants/tenant.js';
 import { boolFlag, parseFlags, type FlagSpecs } from '../args.js';
 import { EXIT, readAll, type Cli } from '../cli.js';
@@ -28,7 +28,7 @@ export async function keys(cli: Cli, argv: readonly string[]): Promise<number> {
       return hashFromStdin(cli, boolFlag(parsed, 'json'));
     }
     default: {
-      throw new HushgateError(
+      throw new UsageError(
         `hushgate keys needs a subcommand: "new <tenant-id>" to mint a key, or "hash" to hash one from standard input`,
       );
     }
@@ -37,10 +37,10 @@ export async function keys(cli: Cli, argv: readonly string[]): Promise<number> {
 
 function mint(cli: Cli, tenantId: string | undefined, json: boolean): number {
   if (tenantId === undefined) {
-    throw new HushgateError('hushgate keys new needs a tenant id, for example: hushgate keys new support');
+    throw new UsageError('hushgate keys new needs a tenant id, for example: hushgate keys new support');
   }
   if (!/^[a-z0-9][a-z0-9._-]*$/iu.test(tenantId)) {
-    throw new HushgateError(
+    throw new UsageError(
       `"${tenantId}" is not a usable tenant id; use letters, digits, dots, dashes or underscores`,
     );
   }

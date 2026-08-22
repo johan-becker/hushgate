@@ -187,6 +187,49 @@ describe('enforcementFor', () => {
     );
   });
 
+  it('never lets a permissive category relax the rest of the request', () => {
+    // Marking IPs as not-personal-data is an ordinary configuration. It must
+    // make IPV4 alone permissive, never the whole request.
+    const config = residency({ mode: 'block', categories: { IPV4: 'allow' } });
+
+    expect(enforcementFor(config, 'openai.chat.completions', ['IBAN']).mode).toBe('block');
+    expect(enforcementFor(config, 'openai.chat.completions', ['IBAN', 'IPV4'])).toEqual({
+      mode: 'block',
+      rule: 'residency.mode',
+    });
+    // With nothing but the exempt category present, the rule does apply.
+    expect(enforcementFor(config, 'openai.chat.completions', ['IPV4'])).toEqual({
+      mode: 'allow',
+      rule: 'residency.categories.IPV4',
+    });
+  });
+
+  it('does not let a category rule downgrade a stricter route rule', () => {
+    const config = residency({
+      mode: 'sanitize',
+      routes: { 'openai.chat.completions': 'block' },
+      categories: { IPV4: 'warn' },
+    });
+
+    expect(enforcementFor(config, 'openai.chat.completions', ['IBAN', 'IPV4'])).toEqual({
+      mode: 'block',
+      rule: 'residency.routes.openai.chat.completions',
+    });
+  });
+
+  it('lets an unmatched kind fall back to the route rule, not the global mode', () => {
+    const config = residency({ mode: 'allow', routes: { 'openai.chat.completions': 'sanitize' } });
+    expect(enforcementFor(config, 'openai.chat.completions', ['IBAN'])).toEqual({
+      mode: 'sanitize',
+      rule: 'residency.routes.openai.chat.completions',
+    });
+  });
+
+  it('prefers the more specific rule when a category ties with the fallback', () => {
+    const config = residency({ mode: 'block', categories: { IBAN: 'block' } });
+    expect(enforcementFor(config, 'r', ['IBAN', 'EMAIL']).rule).toBe('residency.categories.IBAN');
+  });
+
   it('orders modes from strictest to loosest', () => {
     expect(strictest('warn', 'block')).toBe('block');
     expect(strictest('sanitize', 'allow')).toBe('sanitize');

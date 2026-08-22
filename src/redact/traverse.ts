@@ -67,7 +67,12 @@ export function mapStrings(
     }
 
     if (node !== null && typeof node === 'object') {
-      const out: Record<string, JsonValue> = {};
+      // A null prototype, so that assigning the key `__proto__` creates an own
+      // property instead of invoking Object.prototype's accessor. With a plain
+      // object literal that member is silently dropped from the rewritten body
+      // — data loss in a proxy whose contract is to change only content-bearing
+      // leaves. JSON.stringify serialises a null-prototype object unchanged.
+      const out = Object.create(null) as Record<string, JsonValue>;
       for (const [key, item] of Object.entries(node)) {
         path.push(key);
         out[key] = walk(item, path, depth + 1);
@@ -155,7 +160,9 @@ export function redactJson(
     body,
     (text) => {
       const result = redactor.redact(text);
-      findings.push(...result.findings);
+      // Appended, never spread: see the note in detectors/index.ts — a dense
+      // leaf can hold more findings than an engine accepts as arguments.
+      for (const finding of result.findings) findings.push(finding);
       return result.text;
     },
     { select, maxDepth: options.maxDepth },

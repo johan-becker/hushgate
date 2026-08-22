@@ -138,3 +138,57 @@ describe('the registry as data', () => {
     expect(eu.length).toBeGreaterThan(3);
   });
 });
+
+describe('the jurisdiction table', () => {
+  // The EU 27 plus the three EEA-EFTA states. An operator who correctly
+  // declares any of these must not be told their endpoint is undeclared.
+  const EEA_MEMBERS = [
+    'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR',
+    'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL',
+    'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
+    'IS', 'LI', 'NO',
+  ];
+
+  it.each(EEA_MEMBERS)('resolves %s as an EEA member', (code) => {
+    expect(jurisdiction(code).status).toBe('eea');
+    expect(leavesTheEea(code)).toBe(false);
+    expect(jurisdiction(code).name).not.toBe(code);
+  });
+
+  it('has all thirty of them', () => {
+    expect(EEA_MEMBERS).toHaveLength(30);
+    expect(new Set(EEA_MEMBERS).size).toBe(30);
+  });
+
+  it.each(['CH', 'GB', 'JP', 'KR', 'NZ', 'IL', 'UY', 'AR', 'CA', 'AD', 'FO', 'GG', 'IM', 'JE'])(
+    'resolves %s as an adequacy country outside the EEA',
+    (code) => {
+      expect(jurisdiction(code).status).toBe('adequate');
+      expect(leavesTheEea(code)).toBe(true);
+    },
+  );
+
+  it('still treats the United States as a third country', () => {
+    expect(jurisdiction('US').status).toBe('third-country');
+    expect(leavesTheEea('US')).toBe(true);
+  });
+
+  it('still reports a code it does not know as undeclared', () => {
+    expect(jurisdiction('ZZ').status).toBe('unknown');
+    expect(leavesTheEea('ZZ')).toBe(true);
+  });
+
+  it('knows every jurisdiction the built-in registry refers to', () => {
+    for (const entry of BUILTIN_ENDPOINTS) {
+      // UNKNOWN is the registry's own sentinel for "the host name does not
+      // reveal the region"; every real code must resolve to a real status.
+      if (entry.jurisdiction === 'UNKNOWN') continue;
+      expect(jurisdiction(entry.jurisdiction).status).not.toBe('unknown');
+    }
+  });
+
+  it('is case-insensitive, as ISO codes are written both ways', () => {
+    expect(jurisdiction('at').code).toBe('AT');
+    expect(leavesTheEea('at')).toBe(false);
+  });
+});

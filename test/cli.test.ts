@@ -246,3 +246,42 @@ describe('hushgate serve', () => {
     expect(await run(c.cli)).toBe(EXIT.usage);
   });
 });
+
+describe('usage errors exit 2, failures exit 1', () => {
+  // README §8 documents 1 as "a real failure" and 2 as "usage error", and a CI
+  // wrapper is invited to branch on that. A missing operand is the second kind.
+  it.each([
+    [['scan'], /at least one file/u],
+    [['audit'], /needs a subcommand/u],
+    [['audit', 'sink'], /needs a subcommand/u],
+    [['keys'], /needs a subcommand/u],
+    [['keys', 'sink'], /needs a subcommand/u],
+    [['keys', 'new'], /needs a tenant id/u],
+    [['keys', 'new', 'not a tenant id'], /not a usable tenant id/u],
+  ])('exits 2 for %j', async (argv, message) => {
+    const c = capture(argv);
+    expect(await run(c.cli)).toBe(EXIT.usage);
+    expect(c.err()).toMatch(message);
+  });
+
+  it('exits 2 for a malformed date flag', async () => {
+    const dir = workspace({ 'hushgate.config.json': '{}' });
+    const c = capture(['audit', 'report', '--from', 'bogus'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.usage);
+    expect(c.err()).toMatch(/--from needs a date as YYYY-MM-DD/u);
+  });
+
+  it('still exits 1 when a file it was told to read is missing', async () => {
+    const dir = workspace();
+    const c = capture(['scan', join(dir, 'nothing.txt')], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.err()).toMatch(/cannot read/u);
+  });
+
+  it('still exits 1 when the audit trail is missing', async () => {
+    const dir = workspace({ 'hushgate.config.json': '{}' });
+    const c = capture(['audit', 'verify'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.err()).toMatch(/cannot read the audit trail/u);
+  });
+});
