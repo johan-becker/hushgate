@@ -48,6 +48,8 @@ export interface AuditEvent {
   readonly findings: Readonly<Record<string, number>>;
   /** Which policy was applied to each kind. */
   readonly policies: Readonly<Record<string, Policy>>;
+  /** Tokens the upstream reported, or 0 when it reported none. */
+  readonly tokens: number;
   /** The residency decision, when the request got as far as one. */
   readonly residency: AuditResidency | null;
 }
@@ -76,6 +78,7 @@ export function toRecord(event: AuditEvent, ts: string, id: string): AuditRecord
     latencyMs: Number(event.latencyMs),
     stream: Boolean(event.stream),
     upstream: event.upstream === null ? null : String(event.upstream),
+    tokens: Number(event.tokens),
     findings: countsOnly(event.findings),
     policies: policiesOnly(event.policies),
     residency:

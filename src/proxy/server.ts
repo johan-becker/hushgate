@@ -20,6 +20,7 @@ import {
   UpstreamError,
 } from '../errors.js';
 import { applyDataControls } from '../residency/controls.js';
+import { QuotaTracker } from '../tenants/quota.js';
 import {
   assertNotOpenRelay,
   createTenantRegistry,
@@ -27,6 +28,7 @@ import {
   presentedKey,
   type Tenant,
 } from '../tenants/tenant.js';
+import { tokensFrom } from './usage.js';
 import {
   assertNotBlocked,
   assertUpstreamsPermitted,
@@ -64,6 +66,8 @@ export interface ProxyOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Audit sink per tenant. Falls back to `audit`. */
   readonly auditFor?: (tenant: Tenant | null) => AuditSink;
+  /** Quota state. Injected so tests can drive the clock. */
+  readonly quotas?: QuotaTracker;
   /** Where request records go. Defaults to discarding them. */
   readonly audit?: AuditSink;
   /** Sink for internal failures. Defaults to `console.error`. */
@@ -116,6 +120,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
 
   const audit = options.audit ?? nullAuditLog;
   const auditFor = options.auditFor ?? ((): AuditSink => audit);
+  const quotas = options.quotas ?? new QuotaTracker();
   const onInternalError = options.onInternalError ?? ((error): void => console.error(error));
   const onWarning = options.onWarning ?? ((message): void => console.warn(message));
 
@@ -156,6 +161,10 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     // Authentication happens before the body is read: an unauthenticated
     // caller must not get as far as spending memory on their payload.
     const tenant = authenticate(request);
+    // Refused before the body is read: an over-quota caller should not be able
+    // to make hushgate buffer four megabytes on their behalf.
+    if (tenant !== null) quotas.admit(tenant);
+
     await proxy(route, tenant, request, response);
   }
 
@@ -227,6 +236,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     let findings: readonly Finding[] = [];
     let blockedCounts: Record<string, number> | null = null;
     let residency: AuditResidency | null = null;
+    let tokens = 0;
 
     try {
       const body = await readBody(request, config.limits.maxBodyBytes);
@@ -281,15 +291,19 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       outcome = 'forwarded';
       status = upstreamResponse.status;
 
+      const countTokens = (json: JsonValue): void => {
+        tokens += tokensFrom(json);
+      };
+
       const contentType = upstreamResponse.headers['content-type'] ?? '';
       if (contentType.includes('text/event-stream')) {
         stream = true;
-        await pipeEventStream(route, session, upstreamResponse, response);
+        await pipeEventStream(route, session, upstreamResponse, response, countTokens);
         return;
       }
 
       const raw = await collect(upstreamResponse.body);
-      const restored = rehydrate(raw, contentType, session);
+      const restored = rehydrate(raw, contentType, session, countTokens);
       const payload = Buffer.from(restored, 'utf8');
 
       if (response.writableEnded) return;
@@ -312,6 +326,8 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       }
       throw error;
     } finally {
+      if (tenant !== null && tokens > 0) quotas.recordTokens(tenant.id, tokens);
+
       auditFor(tenant).write({
         tenant: tenant?.id ?? null,
         route: route.label,
@@ -320,6 +336,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         latencyMs: Date.now() - started,
         stream,
         upstream: reached,
+        tokens,
         findings: blockedCounts ?? countByKind(findings),
         policies: blockedCounts === null ? policiesOf(findings) : policiesForBlock(blockedCounts),
         residency,
@@ -381,10 +398,12 @@ async function pipeEventStream(
   session: Session,
   upstreamResponse: UpstreamResponse,
   response: ServerResponse,
+  onEvent: (json: JsonValue) => void,
 ): Promise<void> {
   const rehydrator = new SseRehydrator({
     deltaRules: route.streamRules,
     resolve: (token) => session.lookup(token),
+    onEvent,
   });
   // A multi-byte character can straddle two TCP segments just as easily as a
   // placeholder can; a per-chunk toString would corrupt it.
@@ -444,12 +463,19 @@ function writeChunk(response: ServerResponse, text: string): Promise<void> {
  * from a corporate proxy — is treated as text. Both are safe: only tokens this
  * session issued are ever replaced.
  */
-function rehydrate(raw: string, contentType: string, session: Session): string {
+function rehydrate(
+  raw: string,
+  contentType: string,
+  session: Session,
+  onJson: (json: JsonValue) => void,
+): string {
   if (raw.length === 0) return raw;
 
   if (contentType.includes('json')) {
     try {
-      return JSON.stringify(restoreJson(JSON.parse(raw) as JsonValue, session));
+      const parsed = JSON.parse(raw) as JsonValue;
+      onJson(parsed);
+      return JSON.stringify(restoreJson(parsed, session));
     } catch {
       // A body that claims to be JSON but is not still has to reach the caller.
       return session.restore(raw);
