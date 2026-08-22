@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../src/config.js';
+import { createProxyServer } from '../src/proxy/server.js';
+import { assertUpstreamsPermitted } from '../src/residency/policy.js';
 
 const root = join(import.meta.dirname, '..');
 const read = (name: string): string => readFileSync(join(root, name), 'utf8');
@@ -131,6 +133,44 @@ describe('the Kubernetes manifest', () => {
       // Binding 0.0.0.0 is only allowed because a tenant is defined.
       expect(config.tenants[0]!.keyHashes).toHaveLength(1);
       expect(config.residency.allow[0]!.jurisdiction).toBe('FR');
+    } finally {
+      delete process.env['HUSHGATE_TENANT_KEY'];
+    }
+  });
+
+  it('embeds a configuration hushgate can actually start on', () => {
+    // parseConfig alone is not enough: the residency allowlist is fail-closed
+    // and is checked against every configured upstream at construction time,
+    // which is what "kubectl apply" hits on the first pod. A manifest that
+    // parses but CrashLoopBackOffs is exactly as unusable as one that does not
+    // parse.
+    process.env['HUSHGATE_TENANT_KEY'] = 'hg_placeholder_for_the_test';
+    try {
+      const config = parseConfig(JSON.parse(embeddedConfig()), 'deploy/kubernetes.yaml');
+      const proxy = createProxyServer({ config });
+      expect(proxy.origin).toBeNull();
+    } finally {
+      delete process.env['HUSHGATE_TENANT_KEY'];
+    }
+  });
+
+  it('declares every configured upstream on the allowlist', () => {
+    process.env['HUSHGATE_TENANT_KEY'] = 'hg_placeholder_for_the_test';
+    try {
+      const config = parseConfig(JSON.parse(embeddedConfig()), 'deploy/kubernetes.yaml');
+      // Both upstreams are always configured, defaulted when the file omits
+      // them, and assertUpstreamsPermitted checks both — so both need an entry
+      // with a legal basis whether or not the operator uses both routes.
+      expect(() =>
+        assertUpstreamsPermitted(
+          { openai: config.upstreams.openai, anthropic: config.upstreams.anthropic },
+          config.residency,
+        ),
+      ).not.toThrow();
+
+      for (const entry of config.residency.allow) {
+        expect(entry.legalBasis.length).toBeGreaterThan(0);
+      }
     } finally {
       delete process.env['HUSHGATE_TENANT_KEY'];
     }
