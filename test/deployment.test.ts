@@ -113,9 +113,12 @@ describe('the Kubernetes manifest', () => {
     expect(manifest).toContain('limits:\n              cpu:');
   });
 
-  it('exposes metrics to a scraper', () => {
+  it('exposes metrics to a scraper, and says how to authenticate one', () => {
     expect(manifest).toContain('prometheus.io/scrape');
     expect(manifest).toContain('prometheus.io/path: /metrics');
+    // The ConfigMap defines a tenant, which makes /metrics key-protected, so a
+    // bare annotation scrape gets 401. The manifest has to say so.
+    expect(manifest).toContain('bearerTokenSecret');
   });
 
   it('runs a single replica, because the chain and the quotas are per process', () => {
