@@ -13,6 +13,7 @@ import {
   AuthenticationError,
   BlockedContentError,
   ConfigError,
+  HushgateError,
   QuotaExceededError,
   RequestError,
   ResidencyBlockedError,
@@ -75,7 +76,7 @@ export interface ProxyOptions {
   readonly metrics?: Metrics;
   /** Where request records go. Defaults to discarding them. */
   readonly audit?: AuditSink;
-  /** Sink for internal failures. Defaults to `console.error`. */
+  /** Sink for failures the handler threw. Defaults to {@link reportFailure}. */
   readonly onInternalError?: (error: unknown) => void;
   /** Sink for residency warnings. Defaults to `console.warn`. */
   readonly onWarning?: (message: string) => void;
@@ -138,7 +139,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   const auditFor = options.auditFor ?? ((): AuditSink => audit);
   const quotas = options.quotas ?? new QuotaTracker();
   const metrics = options.metrics ?? new Metrics();
-  const onInternalError = options.onInternalError ?? ((error): void => console.error(error));
+  const onInternalError = options.onInternalError ?? ((error: unknown): void => reportFailure(error));
 
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
@@ -578,6 +579,31 @@ function describeCounts(counts: Readonly<Record<string, number>>): string {
   return Object.entries(counts)
     .map(([kind, count]) => `${kind} (${count})`)
     .join(', ');
+}
+
+/**
+ * Default sink for a failure the request handler threw.
+ *
+ * A refusal hushgate itself decided on — a blocked category, a residency rule,
+ * a rejected key, an exhausted quota, an oversized body — is an expected
+ * outcome, not a crash. It already carries an HTTP status, a metrics label and
+ * an audit record, and its message is built from kinds and counts rather than
+ * values, so one line says everything there is to say. Printing a stack trace
+ * for it would bury the case that really is a bug: an error nothing mapped,
+ * which still gets the full object.
+ *
+ * An upstream failure keeps the full object too. hushgate did not decide it,
+ * and the `cause` is usually the only thing that explains it.
+ */
+export function reportFailure(
+  error: unknown,
+  log: (value: unknown) => void = console.error,
+): void {
+  if (error instanceof HushgateError && statusOf(error) < 500) {
+    log(`hushgate: ${error.message}`);
+    return;
+  }
+  log(error);
 }
 
 /** The status a failure maps to, shared by the responder and the audit trail. */

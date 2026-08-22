@@ -51,6 +51,11 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Check the banner and the documentation links
+        # Neither tsc nor the tests notice a renamed file behind a README link
+        # or a banner that stopped being valid SVG. This does.
+        run: npm run check:docs
+
       - name: Prove the suite needs no network
         # Every test binds to 127.0.0.1 and talks to a fake upstream. If that
         # ever stops being true, this step is where it shows up.

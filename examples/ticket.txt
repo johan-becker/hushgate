@@ -1,0 +1,9 @@
+Kunde: Anna Schmidt, geb. 14.03.1987
+Mail:  anna.schmidt@nordlicht.example
+Tel:   0721 9876543
+IBAN:  DE89 3704 0044 0532 0130 00
+Karte: 4111 1111 1111 1111
+Steuer-ID: 86095742719
+Host:  10.14.2.7  (MAC 3c:22:fb:1a:9e:04)
+Notiz: EMP-40219 hat den Fall uebernommen, Projekt Nordlicht.
+Nicht echt: DE89 3704 0044 0532 0130 01, 4111 1111 1111 1112, 86095742718

@@ -29,3 +29,6 @@ hushgate.config.json
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Artefacts of running the README walkthrough in examples/
+examples/upstream-received.log

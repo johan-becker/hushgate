@@ -1,0 +1,52 @@
+{
+  // The configuration behind every transcript in the README.
+  //
+  //   node examples/upstream.mjs
+  //   hushgate serve -c examples/demo.config.json
+  //
+  // The upstream is a local OpenAI-compatible runtime, which the offline
+  // registry classifies as LOCAL, so the residency allowlist below is honest:
+  // nothing is transferred anywhere.
+  "host": "127.0.0.1",
+  "port": 8787,
+
+  "upstreams": {
+    "openai": "http://127.0.0.1:9099",
+    "anthropic": "http://127.0.0.1:9099"
+  },
+
+  "redaction": {
+    "defaultPolicy": "pseudonymize",
+    "policies": { "SECRET": "block" },
+    "dictionary": {
+      "names": ["Anna Schmidt"],
+      "terms": ["Projekt Nordlicht"]
+    },
+    "custom": [{ "name": "employee id", "pattern": "EMP-\\d{5}" }]
+  },
+
+  "residency": {
+    "mode": "sanitize",
+    "categories": { "GERMAN_TAX_ID": "block" },
+    "allow": [
+      {
+        "endpoint": "http://127.0.0.1:9099",
+        "jurisdiction": "LOCAL",
+        "legalBasis": "Processing on our own hardware; no transfer occurs.",
+        "note": "Ollama-compatible runtime in the Frankfurt rack"
+      }
+    ]
+  },
+
+  "audit": {
+    "enabled": true,
+    "path": "examples/hushgate-audit.jsonl"
+  },
+
+  "organisation": {
+    "name": "Nordlicht GmbH",
+    "contact": "datenschutz@nordlicht.example",
+    "dpo": "A. Datenschutz",
+    "purposes": ["Drafting customer support replies"]
+  }
+}
