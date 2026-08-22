@@ -252,3 +252,30 @@ describe('restoreJson', () => {
     expect(restoreJson({ a: '[EMAIL_9]' } as JsonValue, s)).toEqual({ a: '[EMAIL_9]' });
   });
 });
+
+// Roughly 126k IPv4 addresses in one string: 1 MB, a quarter of the default
+// limits.maxBodyBytes, so readBody accepts it without comment.
+const dense = (count: number): JsonValue =>
+  ({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: '1.1.1.1 '.repeat(count) }],
+  }) as JsonValue;
+
+describe('a body with very many findings', () => {
+  it('redacts it instead of blowing the call stack', () => {
+    const s = new Session();
+    const result = redactJson(dense(126_000), s, ['messages.*.content']);
+
+    expect(result.findings.length).toBe(126_000);
+    const content = (result.body as { messages: { content: string }[] }).messages[0]!.content;
+    expect(content).not.toContain('1.1.1.1');
+    expect(content).toContain('[IPV4_1]');
+  });
+
+  it('re-hydrates it as well', () => {
+    const s = new Session();
+    const { body } = redactJson(dense(126_000), s, ['messages.*.content']);
+    const restored = restoreJson(body, s) as { messages: { content: string }[] };
+    expect(restored.messages[0]!.content).toBe('1.1.1.1 '.repeat(126_000));
+  });
+});
