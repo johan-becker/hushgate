@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/johan-becker/hushgate/security/advisories/new
+    about: >
+      Personal data reaching an upstream it should not have, a placeholder
+      resolvable across tenants, a forged audit chain — report these privately,
+      never as a public issue.
+  - name: Is hushgate legally sufficient?
+    url: https://github.com/johan-becker/hushgate#10-is-this-legally-sufficient
+    about: >
+      Short answer, no. hushgate is a technical control, not legal advice.
+      README §10 says what it does and does not do.
