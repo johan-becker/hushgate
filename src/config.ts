@@ -81,7 +81,17 @@ export interface ConfigOverrides {
   readonly audit?: Partial<AuditConfig>;
 }
 
-const KNOWN_KEYS = new Set(['host', 'port', 'upstreams', 'redaction', 'limits', 'audit']);
+// `$schema` is accepted and ignored so editors can be pointed at a schema
+// without the file being rejected for it.
+const KNOWN_KEYS = new Set([
+  '$schema',
+  'host',
+  'port',
+  'upstreams',
+  'redaction',
+  'limits',
+  'audit',
+]);
 
 /** Default audit trail, relative to the working directory. */
 export const DEFAULT_AUDIT_PATH = 'hushgate-audit.jsonl';
