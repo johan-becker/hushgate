@@ -12,7 +12,7 @@ import {
   presentedKey,
   type Tenant,
 } from '../src/tenants/tenant.js';
-import { startHarness, type Harness } from './helpers/proxy-harness.js';
+import { startHarness, type Harness, type HarnessOptions } from './helpers/proxy-harness.js';
 import { replyJson } from './helpers/fake-upstream.js';
 
 let harness: Harness | undefined;
@@ -146,8 +146,9 @@ describe('the tenants config block', () => {
     expect(entry!.keyHashes).toEqual([hashKey('hg_x')]);
     expect(entry!.quotas).toEqual({ requestsPerMinute: 60, tokensPerDay: 100000 });
     expect(entry!.auditPath).toBe('audit/support.jsonl');
-    expect(entry!.redaction.policies).toEqual({ SECRET: 'block' });
-    // The profile inherits everything it did not override.
+    // The profile inherits everything it did not override, so the global
+    // EMAIL rule survives alongside the tenant's own SECRET rule.
+    expect(entry!.redaction.policies).toEqual({ EMAIL: 'redact', SECRET: 'block' });
     expect(entry!.redaction.defaultPolicy).toBe('pseudonymize');
   });
 
@@ -295,5 +296,146 @@ describe('authentication at the proxy', () => {
       { authorization: 'Bearer sk-caller' },
     );
     expect(harness.upstream.lastRequest!.headers['authorization']).toBe('Bearer sk-caller');
+  });
+});
+
+/** Point a fully-formed config at the harness's fake upstream. */
+const served = (config: HushgateConfig): HarnessOptions => ({
+  handler: replyJson({ choices: [{ message: { content: 'ok' } }] }),
+  config: (base) => ({
+    ...config,
+    port: 0,
+    upstreams: base.upstreams,
+    limits: base.limits,
+    residency: base.residency,
+  }),
+});
+
+describe('a tenant redaction profile inherits the global one', () => {
+  const globalRedaction = {
+    defaultPolicy: 'pseudonymize',
+    policies: { SECRET: 'block', GERMAN_TAX_ID: 'hash', IPV4: 'allow' },
+    dictionary: { names: ['Anna Schmidt'], terms: ['Projekt Nordlicht'] },
+    custom: [{ name: 'employee-id', pattern: String.raw`EMP-\d{5}` }],
+    dobYearRange: { minYear: 1940, maxYear: 2005 },
+  };
+
+  const withTenant = (redaction?: unknown): HushgateConfig =>
+    parseConfig({
+      redaction: globalRedaction,
+      tenants: [
+        {
+          id: 'support',
+          keyHash: `sha256:${hashKey('hg_x')}`,
+          ...(redaction === undefined ? {} : { redaction }),
+        },
+      ],
+    });
+
+  it('gives a tenant with no redaction block the full global profile', () => {
+    const config = withTenant();
+    const profile = config.tenants[0]!.redaction;
+
+    expect(profile.policies).toEqual(globalRedaction.policies);
+    expect(profile.dictionary).toEqual({
+      names: ['Anna Schmidt'],
+      terms: ['Projekt Nordlicht'],
+      entries: [],
+    });
+    expect(profile.custom).toEqual(globalRedaction.custom);
+    expect(profile.dobYearRange).toEqual(globalRedaction.dobYearRange);
+    expect(profile.defaultPolicy).toBe('pseudonymize');
+  });
+
+  it('keeps the global dictionary and custom rules when only policies are overridden', () => {
+    const profile = withTenant({ policies: { SECRET: 'block' } }).tenants[0]!.redaction;
+
+    // The override is folded over the global set, not substituted for it.
+    expect(profile.policies).toEqual({
+      SECRET: 'block',
+      GERMAN_TAX_ID: 'hash',
+      IPV4: 'allow',
+    });
+    expect(profile.dictionary.names).toEqual(['Anna Schmidt']);
+    expect(profile.custom).toEqual(globalRedaction.custom);
+  });
+
+  it('lets a tenant override one kind without losing the others', () => {
+    const profile = withTenant({ policies: { GERMAN_TAX_ID: 'redact' } }).tenants[0]!.redaction;
+    expect(profile.policies['GERMAN_TAX_ID']).toBe('redact');
+    expect(profile.policies['SECRET']).toBe('block');
+  });
+
+  it('adds a tenant dictionary to the global one rather than replacing it', () => {
+    const profile = withTenant({
+      dictionary: { names: ['Bob Meier'], entries: [{ value: 'Zeta', kind: 'TERM' }] },
+    }).tenants[0]!.redaction;
+
+    expect(profile.dictionary.names).toEqual(['Anna Schmidt', 'Bob Meier']);
+    expect(profile.dictionary.terms).toEqual(['Projekt Nordlicht']);
+    expect(profile.dictionary.entries).toEqual([{ value: 'Zeta', kind: 'TERM' }]);
+  });
+
+  it('lets a tenant custom rule of the same name replace the global one', () => {
+    const profile = withTenant({
+      custom: [{ name: 'employee-id', pattern: String.raw`E\d{7}` }],
+    }).tenants[0]!.redaction;
+
+    expect(profile.custom).toEqual([{ name: 'employee-id', pattern: String.raw`E\d{7}` }]);
+  });
+
+  it('inherits the global birth-year window unless the tenant sets its own', () => {
+    expect(withTenant({ policies: {} }).tenants[0]!.redaction.dobYearRange).toEqual({
+      minYear: 1940,
+      maxYear: 2005,
+    });
+    expect(
+      withTenant({ dobYearRange: { minYear: 1950, maxYear: 2000 } }).tenants[0]!.redaction
+        .dobYearRange,
+    ).toEqual({ minYear: 1950, maxYear: 2000 });
+  });
+
+  it('redacts a tenant request exactly as the global profile would', async () => {
+    harness = await startHarness(served(withTenant({ policies: { EMAIL: 'redact' } })));
+
+    const response = await harness.post(
+      '/v1/chat/completions',
+      {
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'Anna Schmidt arbeitet an Projekt Nordlicht, EMP-12345' },
+        ],
+      },
+      { authorization: 'Bearer hg_x' },
+    );
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(harness.upstream.lastRequest!.body) as {
+      messages: { content: string }[];
+    };
+    expect(sent.messages[0]!.content).not.toContain('Anna Schmidt');
+    expect(sent.messages[0]!.content).not.toContain('Projekt Nordlicht');
+    expect(sent.messages[0]!.content).not.toContain('EMP-12345');
+  });
+
+  it('still applies a globally blocked kind to a tenant that never mentioned it', async () => {
+    harness = await startHarness(served(withTenant()));
+
+    const response = await harness.post(
+      '/v1/chat/completions',
+      {
+        model: 'm',
+        messages: [
+          {
+            role: 'user',
+            content: 'key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+          },
+        ],
+      },
+      { authorization: 'Bearer hg_x' },
+    );
+
+    expect(response.status).toBe(403);
+    expect(harness.upstream.lastRequest).toBeUndefined();
   });
 });

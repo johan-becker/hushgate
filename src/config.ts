@@ -608,15 +608,57 @@ function parseRedaction(raw: unknown, where: string, base: RedactionConfig): Red
     scope,
   );
 
+  // Every field is folded *over* the base rather than replacing it. A tenant
+  // block is an override, not a fresh start: an organisation's blocked kinds,
+  // name dictionary and custom rules must keep applying to a tenant that never
+  // mentioned them, and the common case — a tenant with no redaction block at
+  // all — has to behave exactly like the global profile.
   return {
     defaultPolicy: optionalPolicy(node['defaultPolicy'], `${scope}.defaultPolicy`) ??
       base.defaultPolicy,
-    policies: parsePolicies(node['policies'], `${scope}.policies`),
-    dictionary: parseDictionary(node['dictionary'], `${scope}.dictionary`),
-    custom: parseCustomRules(node['custom'], `${scope}.custom`),
-    dobYearRange: parseDobYearRange(node['dobYearRange'], `${scope}.dobYearRange`),
+    policies: { ...base.policies, ...parsePolicies(node['policies'], `${scope}.policies`) },
+    dictionary: mergeDictionaries(
+      base.dictionary,
+      parseDictionary(node['dictionary'], `${scope}.dictionary`),
+    ),
+    custom: mergeCustomRules(base.custom, parseCustomRules(node['custom'], `${scope}.custom`)),
+    dobYearRange:
+      parseDobYearRange(node['dobYearRange'], `${scope}.dobYearRange`) ?? base.dobYearRange,
     hmacKey: optionalString(node['hmacKey'], `${scope}.hmacKey`) ?? base.hmacKey,
   };
+}
+
+/**
+ * Union of two dictionaries, in base-then-override order.
+ *
+ * Adding rather than replacing is the safe direction: a tenant that wants to
+ * protect one more name must not be able to stop protecting the ones the
+ * organisation listed.
+ */
+function mergeDictionaries(base: DictionaryInput, override: DictionaryInput): DictionaryInput {
+  return {
+    names: dedupeStrings([...(base.names ?? []), ...(override.names ?? [])]),
+    terms: dedupeStrings([...(base.terms ?? []), ...(override.terms ?? [])]),
+    entries: [...(base.entries ?? []), ...(override.entries ?? [])],
+  };
+}
+
+function dedupeStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/**
+ * Union of two custom-rule lists, keyed by name. A tenant rule of the same
+ * name replaces the global one — it is an override of that rule, not a second
+ * detector reporting the same category twice.
+ */
+function mergeCustomRules(
+  base: readonly CustomRule[],
+  override: readonly CustomRule[],
+): CustomRule[] {
+  const byName = new Map(base.map((rule) => [rule.name, rule]));
+  for (const rule of override) byName.set(rule.name, rule);
+  return [...byName.values()];
 }
 
 function parsePolicies(raw: unknown, where: string): Record<string, Policy> {
