@@ -1093,28 +1093,42 @@ recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## 13. License
 
+hushgate is **source-available**, not open source. It is licensed under the
+[Business Source License 1.1](LICENSE) — the standard, unmodified BUSL text,
+the same one used by MariaDB, Terraform and Materialize, with only the
+Parameters filled in.
 
-hushgate is **source-available**, not open source.
+**Free, no licence needed, no registration, nothing to phone home to:**
 
-It is licensed under the [Business Source License 1.1](LICENSE) — the same
-unmodified licence text used by MariaDB, Terraform and Materialize.
+- any **non-production** use, at any organisation size — evaluation,
+  development, staging, CI, security review;
+- **production** use by an organisation of **10 or fewer** people, counting
+  employees and independent contractors across all entities under common
+  control;
+- **production** use by an individual, personally;
+- **production** use by non-profits, registered charities and accredited
+  educational institutions, whatever their size.
 
-**Free, no licence needed:**
+**Needs a commercial licence:**
 
-- any non-production use, at any company size — evaluation, development, testing, CI;
-- production use by an organisation of **10 or fewer** people (employees and
-  contractors, counted across affiliates);
-- production use by an individual, personally;
-- production use by non-profits, registered charities and accredited educational
-  institutions.
+- production use by an organisation larger than that; and
+- offering hushgate, or a product or service built on it, to third parties on a
+  hosted, managed, embedded or resold basis — at any size, including a
+  two-person company.
 
-**Needs a commercial licence:** production use by a larger organisation, and any
-offering of hushgate to third parties on a hosted, managed, embedded or resold
-basis. See [COMMERCIAL.md](COMMERCIAL.md) or mail **jo_becker@mailbox.org**.
+[COMMERCIAL.md](COMMERCIAL.md) works through the concrete cases (a 40-person
+company using it internally, a 6-person agency, a hosting provider, a
+university, a freelancer) and says what to put in the mail. Or write directly:
+**jo_becker@mailbox.org**.
 
-**It becomes open source on its own.** Four years after each version is
-published, that version converts automatically to the
+**It turns into open source by itself.** Four years after a version is
+published, that version converts automatically and permanently to the
 [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+Nothing needs to be renegotiated for that to happen; it is in the licence.
 
-Copyright © 2026 Johan Becker. "hushgate" is a trade mark — see
+Contributions are taken under the [DCO](DCO) — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+Copyright © 2026 Johan Becker. The licence covers the code; "hushgate" and its
+logo are trade marks and are not licensed with it — see
 [TRADEMARKS.md](TRADEMARKS.md).
