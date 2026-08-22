@@ -54,34 +54,39 @@ and the re-hydration mappings that already exist.
   bounding the upstream response the way `maxBodyBytes` bounds the request.
   The streamed path caps a single unterminated event the same way.
 
-### Changed
-
-- hushgate is published under the [Business Source License 1.1](LICENSE).
-  Non-production use is free at any size; production use is free for
-  organisations of 10 or fewer people, for individuals personally, and for
-  non-profits, registered charities and accredited educational institutions —
-  in every case provided the work is not offered to third parties on a hosted,
-  managed, embedded or resold basis. Anything beyond that needs a commercial
-  licence. Each published version converts automatically to the Apache License,
-  Version 2.0 four years after it is published.
-- `COMMERCIAL.md` explains who needs a commercial licence, with worked
-  examples, and what to send to jo_becker@mailbox.org.
-- `TRADEMARKS.md` records that the name and logo are unregistered trade marks
-  of Johan Becker and are not licensed by the code licence. Nominative use
-  ("uses hushgate", "a fork of hushgate") is fine; shipping something *under*
-  the name is not.
-- `CONTRIBUTING.md` §6 states the contributor terms: sign-off under the
-  Developer Certificate of Origin 1.1 (`DCO`, added verbatim), plus the grant
-  that lets a contribution be licensed under both the BUSL and a commercial
-  licence. Contributors keep their copyright.
-
 ## [0.1.0] — 2026-08-22
 
 First release. The proxy, the detectors, the residency policy, the audit chain
 and the CLI are complete and exercised end to end by 739 tests, none of which
 touch the network.
 
+Released under the [Business Source License 1.1](LICENSE). This is the licence
+hushgate has carried from its first published version; there is no earlier
+version under different terms.
+
 ### Added
+
+#### Licensing
+
+- [`LICENSE`](LICENSE) — the standard, unmodified BUSL 1.1 text with only the
+  Parameters filled in. Non-production use is free at any size; production use
+  is free for organisations of 10 or fewer people, for individuals personally,
+  and for non-profits, registered charities and accredited educational
+  institutions — in every case provided the work is not offered to third
+  parties on a hosted, managed, embedded or resold basis. Anything beyond that
+  needs a commercial licence. Each published version converts automatically to
+  the Apache License, Version 2.0 four years after it is published.
+- [`COMMERCIAL.md`](COMMERCIAL.md) — who needs a commercial licence, with
+  worked examples, what to send to jo_becker@mailbox.org, and the statement
+  that evaluation is always free.
+- [`TRADEMARKS.md`](TRADEMARKS.md) — the name and logo are unregistered trade
+  marks of Johan Becker and are not licensed by the code licence. Nominative
+  use ("uses hushgate", "a fork of hushgate") is fine; shipping something
+  *under* the name is not.
+- [`DCO`](DCO) — the Developer Certificate of Origin 1.1, verbatim.
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) §6 requires a `Signed-off-by` line and
+  states the grant that lets a contribution be licensed under both the BUSL and
+  a commercial licence. Contributors keep their copyright.
 
 #### Detection
 
