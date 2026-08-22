@@ -1,0 +1,57 @@
+{
+  "name": "hushgate",
+  "version": "0.1.0",
+  "description": "Local-first PII firewall between your app and a cloud LLM API. Nothing personal leaves the machine.",
+  "keywords": [
+    "pii",
+    "gdpr",
+    "llm",
+    "proxy",
+    "redaction",
+    "pseudonymization",
+    "privacy",
+    "openai",
+    "anthropic"
+  ],
+  "license": "BUSL-1.1",
+  "author": "Johan Becker",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "hushgate": "./dist/cli/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/main.d.ts",
+      "import": "./dist/cli/main.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "lint": "oxlint --deny-warnings src test scripts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "oxlint": "^1.79.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
