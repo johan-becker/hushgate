@@ -279,3 +279,39 @@ describe('a body with very many findings', () => {
     expect(restored.messages[0]!.content).toBe('1.1.1.1 '.repeat(126_000));
   });
 });
+
+describe('a __proto__ member', () => {
+  const body = JSON.parse(
+    '{"model":"gpt-4o","__proto__":{"note":"anna@example.de"},"messages":[{"role":"user","content":"anna@example.de"}]}',
+  ) as JsonValue;
+
+  it('survives redaction instead of being silently dropped', () => {
+    const { body: out } = redactJson(body, session(), ['messages.*.content']);
+    // Assigning `__proto__` on a plain object literal invokes the accessor on
+    // Object.prototype, so the member would vanish from what is forwarded.
+    expect(Object.keys(out as object)).toEqual(['model', '__proto__', 'messages']);
+    expect(JSON.parse(JSON.stringify(out)) as Record<string, unknown>).toHaveProperty(
+      '__proto__',
+    );
+  });
+
+  it('survives a string-valued __proto__ too', () => {
+    const literal = JSON.parse('{"__proto__":"anna@example.de"}') as JsonValue;
+    expect(mapStrings(literal, (t) => t.toUpperCase())).toEqual(
+      JSON.parse('{"__proto__":"ANNA@EXAMPLE.DE"}') as JsonValue,
+    );
+  });
+
+  it('does not pollute Object.prototype', () => {
+    redactJson(body, session(), ['messages.*.content']);
+    expect(({} as Record<string, unknown>)['note']).toBeUndefined();
+  });
+
+  it('round-trips through restoreJson', () => {
+    const s = session();
+    const { body: redacted } = redactJson(body, s, ['messages.*.content']);
+    const restored = restoreJson(redacted, s) as { messages: { content: string }[] };
+    expect(restored.messages[0]!.content).toBe('anna@example.de');
+    expect(Object.keys(restored as object)).toContain('__proto__');
+  });
+});
