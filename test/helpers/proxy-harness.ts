@@ -29,6 +29,9 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     ...defaultConfig(),
     port: 0,
     upstreams: { openai: upstream.origin, anthropic: upstream.origin },
+    // Retries are exercised deliberately in the retry tests; leaving them on
+    // here would only make every failure case take a second longer.
+    limits: { ...defaultConfig().limits, upstreamRetries: 0 },
     redaction: {
       ...defaultConfig().redaction,
       // Fix the birth-year window so the suite does not drift with the clock.

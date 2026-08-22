@@ -1,0 +1,46 @@
+# A single hushgate in front of your applications.
+#
+#   docker compose up --build
+#
+# The port is published on loopback only. hushgate holds the mapping from
+# placeholders back to real personal data, so exposing it to the network is a
+# decision to be taken deliberately — and then only with tenants defined.
+
+services:
+  hushgate:
+    build: .
+    image: hushgate:0.1.0
+    restart: unless-stopped
+
+    ports:
+      - '127.0.0.1:8787:8787'
+
+    environment:
+      # Credentials belong in the environment, never in the config file.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      HUSHGATE_HMAC_KEY: ${HUSHGATE_HMAC_KEY:-}
+
+    volumes:
+      # Your policy, read-only: the container has no business rewriting it.
+      - ./hushgate.config.json:/app/hushgate.config.json:ro
+      # The audit trail has to outlive the container.
+      - hushgate-audit:/var/lib/hushgate
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  hushgate-audit:

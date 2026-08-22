@@ -9,6 +9,8 @@ import { formatFlags, type FlagSpecs } from './args.js';
 import { EXIT, type Cli } from './cli.js';
 import { audit, AUDIT_FLAGS, AUDIT_SUMMARY } from './commands/audit.js';
 import { check, CHECK_FLAGS, CHECK_SUMMARY } from './commands/check.js';
+import { doctor, DOCTOR_FLAGS, DOCTOR_SUMMARY } from './commands/doctor.js';
+import { init, INIT_FLAGS, INIT_SUMMARY } from './commands/init.js';
 import { keys, KEYS_FLAGS, KEYS_SUMMARY } from './commands/keys.js';
 import { residency, RESIDENCY_FLAGS, RESIDENCY_SUMMARY } from './commands/residency.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
@@ -22,6 +24,12 @@ interface Command {
 }
 
 const COMMANDS: Readonly<Record<string, Command>> = {
+  init: {
+    summary: INIT_SUMMARY,
+    usage: 'hushgate init [--path <path>] [--force]',
+    flags: INIT_FLAGS,
+    run: init,
+  },
   serve: {
     summary: SERVE_SUMMARY,
     usage: 'hushgate serve [options]',
@@ -39,6 +47,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate residency [--json] [--registry]',
     flags: RESIDENCY_FLAGS,
     run: residency,
+  },
+  doctor: {
+    summary: DOCTOR_SUMMARY,
+    usage: 'hushgate doctor [--json] [--allow-warnings]',
+    flags: DOCTOR_FLAGS,
+    run: doctor,
   },
   audit: {
     summary: AUDIT_SUMMARY,

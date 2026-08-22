@@ -177,6 +177,22 @@ export function errorPayload(
   return { error: { type, message, ...extra } };
 }
 
+/** Write a text response (used by /metrics), unless the client gave up. */
+export function sendText(
+  response: ServerResponse,
+  status: number,
+  text: string,
+  contentType: string,
+): void {
+  if (response.writableEnded) return;
+  const body = Buffer.from(text, 'utf8');
+  response.writeHead(status, {
+    'content-type': contentType,
+    'content-length': String(body.length),
+  });
+  response.end(body);
+}
+
 /** Write a JSON response, unless the client already gave up. */
 export function sendJson(
   response: ServerResponse,
