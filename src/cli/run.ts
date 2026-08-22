@@ -8,6 +8,7 @@ import { VERSION } from '../version.js';
 import { formatFlags, type FlagSpecs } from './args.js';
 import { EXIT, type Cli } from './cli.js';
 import { check, CHECK_FLAGS, CHECK_SUMMARY } from './commands/check.js';
+import { residency, RESIDENCY_FLAGS, RESIDENCY_SUMMARY } from './commands/residency.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
 
@@ -30,6 +31,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate scan [options] <file...>',
     flags: SCAN_FLAGS,
     run: scan,
+  },
+  residency: {
+    summary: RESIDENCY_SUMMARY,
+    usage: 'hushgate residency [--json] [--registry]',
+    flags: RESIDENCY_FLAGS,
+    run: residency,
   },
   check: {
     summary: CHECK_SUMMARY,

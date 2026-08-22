@@ -36,5 +36,28 @@
   "audit": {
     "enabled": true,
     "path": "hushgate-audit.jsonl"
+  },
+
+  "residency": {
+    "mode": "sanitize",
+    "routes": {},
+    "categories": {
+      "GERMAN_TAX_ID": "block"
+    },
+    "requireDataControls": false,
+    "allow": [
+      {
+        "endpoint": "https://api.openai.com",
+        "jurisdiction": "US",
+        "legalBasis": "EU-US DPF certified; SCCs in the DPA of 2026-01-12",
+        "note": "reviewed by the DPO; replace with an EU endpoint when feasible"
+      },
+      {
+        "endpoint": "https://api.anthropic.com",
+        "jurisdiction": "US",
+        "legalBasis": "SCCs in the commercial agreement of 2026-01-12"
+      }
+    ],
+    "endpoints": []
   }
 }
