@@ -8,5 +8,6 @@ export * from './types.js';
 export * from './errors.js';
 export * from './detectors/index.js';
 export * from './redact/index.js';
+export * from './stream/index.js';
 export * from './proxy/index.js';
 export * from './config.js';
