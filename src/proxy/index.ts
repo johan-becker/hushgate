@@ -12,5 +12,6 @@ export {
   readBody,
   sendJson,
 } from './http.js';
+export { tokensFrom } from './usage.js';
 export { collect, nodeUpstreamClient } from './upstream.js';
 export type { UpstreamClient, UpstreamRequest, UpstreamResponse } from './upstream.js';

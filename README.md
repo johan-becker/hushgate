@@ -16,6 +16,8 @@ real values back. The provider never receives the personal data.
   SSE chunks or across separate events.
 - Data residency enforcement: a declarative allowlist of permitted upstreams,
   fail-closed at startup, with an offline registry of EU-hosted alternatives.
+- Multi-tenant: per-team keys, policy profiles, pseudonym namespaces, audit
+  streams and quotas.
 - An append-only audit trail that records categories and counts, never values.
 
 ## The migration is one line
@@ -213,6 +215,7 @@ hushgate serve [--config <path>] [--port <n>] [--host <h>]
 hushgate scan [--json] [--show-values] [--quiet] <file...>
 hushgate check [--quiet] < input > output
 hushgate residency [--json] [--registry]
+hushgate keys new <tenant-id> | hushgate keys hash < key
 ```
 
 `scan` is built for CI — it exits **3** when it finds personal data:
@@ -338,12 +341,79 @@ hushgate residency
 It exits non-zero when a route is refused, so it doubles as a CI check.
 `--json` gives the same content for machines.
 
+## Multi-tenant operation
+
+One hushgate can serve several teams, departments or applications, each with its
+own key, its own policy profile, its own pseudonym namespace, its own audit
+stream and its own allowance.
+
+```console
+$ hushgate keys new support
+tenant key for "support" — copy it now, hushgate does not store it:
+
+  hg_Yz1r0Q8yv3fW7pC2sJhV5nT4kM6xB9dE0aL1uS3gQ7o
+
+add this to hushgate.config.json:
+
+  {
+    "tenants": [
+      {
+        "id": "support",
+        "name": "support",
+        "keyHash": "sha256:5f2b…"
+      }
+    ]
+  }
+```
+
+```json
+{
+  "tenants": [
+    {
+      "id": "support",
+      "name": "Support desk",
+      "keyHash": "sha256:5f2b…",
+      "quotas": { "requestsPerMinute": 120, "tokensPerDay": 2000000 },
+      "audit": { "path": "audit/support.jsonl" },
+      "redaction": { "policies": { "SECRET": "block", "IBAN": "hash" } }
+    },
+    {
+      "id": "research",
+      "keyEnv": "HUSHGATE_KEY_RESEARCH",
+      "upstreamKeyEnv": "OPENAI_API_KEY_RESEARCH",
+      "quotas": { "requestsPerMinute": 30 }
+    }
+  ]
+}
+```
+
+Callers send the key exactly where their SDK already sends one —
+`Authorization: Bearer <key>` or `x-api-key: <key>`.
+
+- **Only hashes are stored.** A config file ends up in a wiki, a ticket and a
+  screenshot. List several in `keyHashes` to rotate without downtime; delete one
+  to revoke it.
+- **The tenant key never reaches the provider.** Once it has authenticated
+  someone, the header carrying it is dropped and replaced with the upstream
+  credential hushgate holds (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, or the
+  tenant's own `upstreamKeyEnv`).
+- **Namespaces are separate.** Placeholder mappings never outlive a request, and
+  each tenant's `hash` policy is keyed by a digest derived from the tenant id —
+  a shared digest would let one tenant confirm another's data by guessing it.
+- **Quotas return a real 429**, with a `retry-after` computed from the sliding
+  minute window or from midnight UTC. Token counts come from the provider's own
+  usage report, so the daily limit takes effect on the request after the one
+  that crossed it. Counters are in-memory and per process.
+- **hushgate refuses to be an open relay.** With no tenants defined it will only
+  bind loopback; ask it to bind anything else and it stops with an explanation.
+  `/healthz` stays open, because probes cannot authenticate.
+
 ## Audit trail
 
 Append-only JSONL, one object per request:
 
 ```json
-{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"upstream":"api.openai.com","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"FR","controls":["zero-retention via body store=false"]}}
+{"ts":"2026-03-04T09:12:44.117Z","id":"6b1c…","tenant":"support","route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":812,"stream":true,"tokens":1841,"upstream":"api.openai.com","findings":{"EMAIL":2,"IBAN":1},"policies":{"EMAIL":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"FR","controls":["zero-retention via body store=false"]}}
 ```
 
 Categories and counts, never values — the record is assembled from a fixed field
