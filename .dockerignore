@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.git
+.github
+*.jsonl
+hushgate.config.json
+.env
+.env.*
+*.log
+.DS_Store

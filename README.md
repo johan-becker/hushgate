@@ -20,6 +20,8 @@ real values back. The provider never receives the personal data.
   streams and quotas.
 - A tamper-evident append-only audit trail that records categories and counts,
   never values, and an Article 30 style report generated from it.
+- Ships to run: hardened Docker and Kubernetes manifests, Prometheus metrics,
+  and a `doctor` command that fails your pipeline on an unsafe configuration.
 
 ## The migration is one line
 
@@ -182,14 +184,26 @@ is optional; unknown keys are an error rather than a shrug.
   },
   "limits": {
     "maxBodyBytes": 4194304,
-    "upstreamTimeoutMs": 120000
+    "upstreamTimeoutMs": 120000,
+    "requestTimeoutMs": 60000,
+    "upstreamRetries": 2,
+    "retryBackoffMs": 250
   },
   "audit": {
     "enabled": true,
     "path": "hushgate-audit.jsonl"
+  },
+  "organisation": {
+    "name": "Acme GmbH",
+    "contact": "datenschutz@acme.example",
+    "purposes": ["Drafting customer support replies"]
   }
 }
 ```
+
+Two more blocks have chapters of their own: [`residency`](#data-residency) and
+[`tenants`](#multi-tenant-operation). Comments are allowed — `hushgate init`
+writes a fully commented starter file.
 
 Environment variables override the file, and command-line flags override both:
 
@@ -201,6 +215,8 @@ Environment variables override the file, and command-line flags override both:
 | `HUSHGATE_HMAC_KEY` | key for the `hash` policy (prefer this over the file) |
 | `HUSHGATE_MAX_BODY_BYTES`, `HUSHGATE_UPSTREAM_TIMEOUT_MS` | limits |
 | `HUSHGATE_AUDIT`, `HUSHGATE_AUDIT_PATH` | audit trail on/off and location |
+| `HUSHGATE_RESIDENCY_MODE` | enforcement mode: `block`, `sanitize`, `warn`, `allow` |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | upstream credentials, used once a tenant has authenticated |
 
 hushgate binds to `127.0.0.1` by default. It holds the mapping from placeholders
 back to real personal data, so an accidental `0.0.0.0` is an incident, not a
@@ -219,6 +235,8 @@ hushgate residency [--json] [--registry]
 hushgate keys new <tenant-id> | hushgate keys hash < key
 hushgate audit verify [--file <path>] [--json]
 hushgate audit report [--from <date>] [--to <date>] [--json]
+hushgate init [--path <path>] [--force]
+hushgate doctor [--json] [--allow-warnings]
 ```
 
 `scan` is built for CI — it exits **3** when it finds personal data:
@@ -476,6 +494,97 @@ than evidence.
 }
 ```
 
+## Deployment
+
+```console
+$ docker compose up --build
+```
+
+The image is multi-stage and carries Node plus the compiled output — no package
+manager, no build toolchain, and no runtime dependencies to audit. It runs as
+`node`, with a read-only root filesystem, no capabilities and a healthcheck that
+needs nothing the image does not already have.
+
+```console
+$ kubectl apply -f deploy/kubernetes.yaml
+```
+
+Deployment, Service, ConfigMap, Secret and a PVC for the audit trail, with
+resource limits, probes on `/healthz`, `runAsNonRoot`, `readOnlyRootFilesystem`,
+`allowPrivilegeEscalation: false`, all capabilities dropped and the service
+account token left unmounted. Every value you must replace says `REPLACE ME`,
+and a test parses the embedded config with hushgate's own parser, because a
+manifest that ships a configuration the tool rejects is worse than no manifest.
+
+One replica on purpose: each instance keeps its own hash-chained trail and its
+own in-memory quota counters. Scaling out means one volume and one trail per
+pod, or an aggregator — a decision to take deliberately rather than by editing a
+number.
+
+In a container hushgate binds `0.0.0.0`, which means it insists on tenants. That
+refusal is the feature.
+
+## Operations
+
+```console
+$ hushgate init      # a commented starter config
+$ hushgate doctor    # everything that is unsafe about it
+```
+
+`doctor` is built to be a CI step. It resolves both upstreams against the
+residency policy, looks for enforcement left loose after a rollout, notices a
+hash policy with no stable key, an open relay, tenants without quotas, auditing
+switched off and a broken audit chain — and every line says what to do about it.
+It exits non-zero on warnings as well as failures; `--allow-warnings` is the
+deliberate opt-out.
+
+```console
+$ hushgate doctor
+hushgate doctor
+
+configuration
+  ok    config file /srv/hushgate/hushgate.config.json
+residency
+  ok    upstreams.openai → api.mistral.ai [FR, eea] via residency.allow[0]
+  note  upstreams.anthropic → api.anthropic.com [US, third-country] via residency.allow[1]
+enforcement
+  warn  residency.mode is "warn": personal data is forwarded unchanged
+        → set residency.mode to sanitize once the rollout is finished
+security
+  ok    2 tenant(s) defined; a key is required
+audit
+  ok    /srv/hushgate/hushgate-audit.jsonl: 12481 record(s), chain intact, head 9c21f0a4e1b2…
+
+1 warning. Fix them, or re-run with --allow-warnings to accept the warnings.
+```
+
+**Metrics.** `GET /metrics` in Prometheus text format: requests by route,
+outcome, status and tenant; findings by category and the policy applied;
+refusals by the rule that refused them; upstream tokens; and a latency
+histogram. Open on loopback, authenticated once tenants exist — point your
+scraper at it with a tenant key.
+
+```text
+hushgate_requests_total{outcome="forwarded",route="openai.chat.completions",status="200",tenant="support"} 1841
+hushgate_findings_total{kind="EMAIL",policy="pseudonymize"} 5122
+hushgate_blocked_total{reason="residency",rule="residency.categories.GERMAN_TAX_ID"} 3
+hushgate_request_duration_seconds_bucket{route="openai.chat.completions",le="2.5"} 1802
+```
+
+**Resilience.** Upstream failures that never produced a response are retried
+with exponential backoff and full jitter. A response is never retried, whatever
+its status: a 429 with a `retry-after` belongs to the caller, and resending a
+request the provider has already seen and charged for would be worse than the
+error. Request and upstream timeouts, the body-size limit and the retry budget
+are all configurable under `limits`.
+
+**Shutdown** is graceful. `SIGINT` and `SIGTERM` stop the listener, let in-flight
+requests finish, and close the audit trail before the process exits.
+
+**Configuration files may contain comments.** `hushgate init` writes them, and
+the loader strips them, because the config file is where a team records *why* an
+upstream is permitted.
+
 ## Is this legally sufficient?
 
 No tool can answer that for you, and any tool that claims otherwise should be
@@ -509,6 +618,10 @@ npm run lint
 npm run build
 npm test
 ```
+
+Useful extras: `npm run typecheck` (the build config excludes the tests),
+`npm run verify:package` (checks what npm would actually publish, and runs the
+built CLI).
 
 The test suite never touches the network: every proxy test runs against a fake
 upstream bound to `127.0.0.1` on an ephemeral port.

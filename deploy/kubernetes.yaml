@@ -1,0 +1,194 @@
+# hushgate on Kubernetes.
+#
+#   kubectl apply -f deploy/kubernetes.yaml
+#
+# One replica on purpose. Each instance keeps its own hash-chained audit trail
+# and its own in-memory quota counters, so scaling out means either one volume
+# and one trail per pod, or an external aggregator. Decide that deliberately
+# rather than by editing a number here.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hushgate-config
+  labels:
+    app.kubernetes.io/name: hushgate
+data:
+  hushgate.config.json: |
+    {
+      "host": "0.0.0.0",
+      "port": 8787,
+
+      "upstreams": {
+        "openai": "https://api.mistral.ai",
+        "anthropic": "https://api.anthropic.com"
+      },
+
+      "redaction": {
+        "defaultPolicy": "pseudonymize",
+        "policies": { "SECRET": "block" }
+      },
+
+      "residency": {
+        "mode": "sanitize",
+        "allow": [
+          {
+            "endpoint": "https://api.mistral.ai",
+            "jurisdiction": "FR",
+            "legalBasis": "REPLACE ME: the DPA and transfer basis you actually rely on"
+          }
+        ]
+      },
+
+      "audit": {
+        "enabled": true,
+        "path": "/var/lib/hushgate/hushgate-audit.jsonl"
+      },
+
+      "organisation": {
+        "name": "REPLACE ME",
+        "contact": "REPLACE ME",
+        "purposes": ["REPLACE ME"]
+      },
+
+      "tenants": [
+        {
+          "id": "default",
+          "name": "Default tenant",
+          "keyEnv": "HUSHGATE_TENANT_KEY",
+          "quotas": { "requestsPerMinute": 600 }
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hushgate-secrets
+  labels:
+    app.kubernetes.io/name: hushgate
+type: Opaque
+stringData:
+  # Mint this with: hushgate keys new default
+  HUSHGATE_TENANT_KEY: 'REPLACE ME'
+  # The provider credential hushgate uses upstream. Callers never see it.
+  OPENAI_API_KEY: 'REPLACE ME'
+  ANTHROPIC_API_KEY: 'REPLACE ME'
+  # Keeps hashed values stable across restarts.
+  HUSHGATE_HMAC_KEY: 'REPLACE ME'
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hushgate-audit
+  labels:
+    app.kubernetes.io/name: hushgate
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hushgate
+  labels:
+    app.kubernetes.io/name: hushgate
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hushgate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hushgate
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/path: /metrics
+        prometheus.io/port: '8787'
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hushgate
+          image: hushgate:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ['serve']
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - secretRef:
+                name: hushgate-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: config
+              mountPath: /app/hushgate.config.json
+              subPath: hushgate.config.json
+              readOnly: true
+            - name: audit
+              mountPath: /var/lib/hushgate
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: hushgate-config
+        - name: audit
+          persistentVolumeClaim:
+            claimName: hushgate-audit
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hushgate
+  labels:
+    app.kubernetes.io/name: hushgate
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hushgate
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
