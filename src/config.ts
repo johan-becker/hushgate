@@ -24,6 +24,75 @@ import type { DataControl, EndpointEntry } from './residency/registry.js';
 import { hashKey, type Tenant, type TenantQuotas } from './tenants/tenant.js';
 import { isPolicy, type Policy } from './types.js';
 
+/**
+ * Remove `//` and block comments from JSON text.
+ *
+ * `hushgate init` writes a commented config, because the config file is where a
+ * team records *why* an upstream is permitted, and a format that cannot hold an
+ * explanation invites the explanation to be dropped. Newlines are preserved so
+ * a parse error still points at the right line.
+ */
+export function stripJsonComments(text: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    const next = text[index + 1];
+
+    if (inLineComment) {
+      if (char === '\n') {
+        inLineComment = false;
+        out += char;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (char === '*' && next === '/') {
+        inBlockComment = false;
+        index += 1;
+      } else if (char === '\n') {
+        out += char;
+      }
+      continue;
+    }
+
+    if (inString) {
+      out += char;
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      out += char;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      inLineComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      inBlockComment = true;
+      index += 1;
+      continue;
+    }
+
+    out += char;
+  }
+
+  return out;
+}
+
 /** File name looked up in the working directory when no path is given. */
 export const CONFIG_FILENAME = 'hushgate.config.json';
 
@@ -766,7 +835,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   if (text !== null) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(stripJsonComments(text));
     } catch (cause) {
       throw new ConfigError(`${path} is not valid JSON: ${(cause as Error).message}`, { cause });
     }
