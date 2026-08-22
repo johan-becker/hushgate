@@ -19,6 +19,7 @@ import {
   TraversalDepthError,
   UpstreamError,
 } from '../errors.js';
+import { Metrics } from '../metrics/registry.js';
 import { applyDataControls } from '../residency/controls.js';
 import { QuotaTracker } from '../tenants/quota.js';
 import {
@@ -47,8 +48,10 @@ import {
   parseJsonObject,
   readBody,
   sendJson,
+  sendText,
 } from './http.js';
 import { findRoute, type ProviderId, type Route } from './routes.js';
+import { withRetry } from './retry.js';
 import { collect, nodeUpstreamClient, type UpstreamClient, type UpstreamResponse } from './upstream.js';
 
 export interface ProxyOptions {
@@ -68,6 +71,8 @@ export interface ProxyOptions {
   readonly auditFor?: (tenant: Tenant | null) => AuditSink;
   /** Quota state. Injected so tests can drive the clock. */
   readonly quotas?: QuotaTracker;
+  /** Metrics registry served at /metrics. One is created when omitted. */
+  readonly metrics?: Metrics;
   /** Where request records go. Defaults to discarding them. */
   readonly audit?: AuditSink;
   /** Sink for internal failures. Defaults to `console.error`. */
@@ -78,6 +83,8 @@ export interface ProxyOptions {
 
 export interface ProxyServer {
   readonly server: Server;
+  /** The metrics this server is recording into. */
+  readonly metrics: Metrics;
   /** Start listening on the configured host and port. */
   listen(): Promise<AddressInfo>;
   /** Stop accepting connections and wait for in-flight requests to finish. */
@@ -100,7 +107,16 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     openai: verdicts[0]!,
     anthropic: verdicts[1]!,
   };
-  const upstream = options.upstream ?? nodeUpstreamClient;
+  const onWarning = options.onWarning ?? ((message): void => console.warn(message));
+
+  const upstream = withRetry(options.upstream ?? nodeUpstreamClient, {
+    retries: config.limits.upstreamRetries,
+    backoffMs: config.limits.retryBackoffMs,
+    onRetry: (attempt, delayMs, error) =>
+      onWarning(
+        `hushgate: upstream attempt ${attempt} failed (${error.reason}), retrying in ${delayMs} ms`,
+      ),
+  });
   const env = options.env ?? process.env;
 
   const registry = createTenantRegistry(config.tenants);
@@ -121,8 +137,8 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   const audit = options.audit ?? nullAuditLog;
   const auditFor = options.auditFor ?? ((): AuditSink => audit);
   const quotas = options.quotas ?? new QuotaTracker();
+  const metrics = options.metrics ?? new Metrics();
   const onInternalError = options.onInternalError ?? ((error): void => console.error(error));
-  const onWarning = options.onWarning ?? ((message): void => console.warn(message));
 
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
@@ -140,6 +156,18 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         return;
       }
       sendJson(response, 200, { status: 'ok', version: VERSION });
+      return;
+    }
+
+    if (pathname === '/metrics') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        methodNotAllowed(response, 'GET');
+        return;
+      }
+      // Scraped like any other endpoint: open on loopback, authenticated once
+      // tenants exist. The numbers are counts, but counts are still telemetry.
+      authenticate(request);
+      sendText(response, 200, metrics.render(), 'text/plain; version=0.0.4; charset=utf-8');
       return;
     }
 
@@ -319,6 +347,10 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         blockedCounts = { ...error.counts };
         // Nothing was sent, so nothing was reached.
         reached = null;
+        metrics.observeBlocked(
+          error instanceof ResidencyBlockedError ? 'residency' : 'policy',
+          error instanceof ResidencyBlockedError ? error.rule : 'redaction.policies',
+        );
       } else if (error instanceof UpstreamError) {
         outcome = 'failed';
       } else if (outcome === 'forwarded') {
@@ -328,12 +360,24 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     } finally {
       if (tenant !== null && tokens > 0) quotas.recordTokens(tenant.id, tokens);
 
+      const latencyMs = Date.now() - started;
+      metrics.observeRequest({
+        route: route.label,
+        outcome,
+        tenant: tenant?.id ?? null,
+        status,
+        latencyMs,
+        tokens,
+        findings: blockedCounts ?? countByKind(findings),
+        policies: blockedCounts === null ? policiesOf(findings) : policiesForBlock(blockedCounts),
+      });
+
       auditFor(tenant).write({
         tenant: tenant?.id ?? null,
         route: route.label,
         outcome,
         status,
-        latencyMs: Date.now() - started,
+        latencyMs,
         stream,
         upstream: reached,
         tokens,
@@ -344,8 +388,13 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     }
   }
 
+  // Bound so a slow or stalled client cannot hold a connection open forever.
+  server.requestTimeout = config.limits.requestTimeoutMs;
+  server.headersTimeout = Math.min(config.limits.requestTimeoutMs, 60_000);
+
   return {
     server,
+    metrics,
 
     listen(): Promise<AddressInfo> {
       return new Promise((resolve, reject) => {

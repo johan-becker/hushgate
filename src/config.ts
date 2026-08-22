@@ -47,6 +47,12 @@ export interface LimitsConfig {
   readonly maxBodyBytes: number;
   /** How long an upstream request may take before it is aborted. */
   readonly upstreamTimeoutMs: number;
+  /** How long a client may take to deliver its request. */
+  readonly requestTimeoutMs: number;
+  /** How many times to retry an upstream that never answered. */
+  readonly upstreamRetries: number;
+  /** Base delay for the retry backoff, doubled each attempt. */
+  readonly retryBackoffMs: number;
 }
 
 export interface RedactionConfig {
@@ -153,6 +159,9 @@ export function defaultConfig(): HushgateConfig {
     limits: {
       maxBodyBytes: 4 * 1024 * 1024,
       upstreamTimeoutMs: 120_000,
+      requestTimeoutMs: 60_000,
+      upstreamRetries: 2,
+      retryBackoffMs: 250,
     },
     // On by default: a privacy control nobody can evidence is a claim, not a
     // control. The trail holds categories and counts only, never values.
@@ -180,7 +189,17 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
   rejectUnknownKeys(upstreams, new Set(['openai', 'anthropic']), `${where}: "upstreams"`);
 
   const limits = asObject(root['limits'] ?? {}, `${where}: "limits"`);
-  rejectUnknownKeys(limits, new Set(['maxBodyBytes', 'upstreamTimeoutMs']), `${where}: "limits"`);
+  rejectUnknownKeys(
+    limits,
+    new Set([
+      'maxBodyBytes',
+      'upstreamTimeoutMs',
+      'requestTimeoutMs',
+      'upstreamRetries',
+      'retryBackoffMs',
+    ]),
+    `${where}: "limits"`,
+  );
 
   const audit = asObject(root['audit'] ?? {}, `${where}: "audit"`);
   rejectUnknownKeys(audit, new Set(['enabled', 'path']), `${where}: "audit"`);
@@ -205,6 +224,15 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       upstreamTimeoutMs:
         optionalPositiveInt(limits['upstreamTimeoutMs'], `${where}: "limits.upstreamTimeoutMs"`) ??
         base.limits.upstreamTimeoutMs,
+      requestTimeoutMs:
+        optionalPositiveInt(limits['requestTimeoutMs'], `${where}: "limits.requestTimeoutMs"`) ??
+        base.limits.requestTimeoutMs,
+      upstreamRetries:
+        optionalCount(limits['upstreamRetries'], `${where}: "limits.upstreamRetries"`) ??
+        base.limits.upstreamRetries,
+      retryBackoffMs:
+        optionalPositiveInt(limits['retryBackoffMs'], `${where}: "limits.retryBackoffMs"`) ??
+        base.limits.retryBackoffMs,
     },
     audit: {
       enabled: optionalBoolean(audit['enabled'], `${where}: "audit.enabled"`) ?? base.audit.enabled,
@@ -653,6 +681,7 @@ export function applyEnv(
       hmacKey: hmacKey ?? config.redaction.hmacKey,
     },
     limits: {
+      ...config.limits,
       maxBodyBytes:
         maxBodyBytes === undefined
           ? config.limits.maxBodyBytes
@@ -809,6 +838,15 @@ function optionalPositiveInt(value: unknown, where: string): number | undefined 
 
 /** Port 0 is allowed on purpose: it binds an ephemeral port, which is what the
  * test suite and supervised sidecars want. The chosen port is printed at start. */
+/** A non-negative integer: zero is meaningful for a retry count. */
+function optionalCount(value: unknown, where: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new ConfigError(`${where} must be a non-negative integer, got ${describe(value)}`);
+  }
+  return value;
+}
+
 function optionalPort(value: unknown, where: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 65_535) {

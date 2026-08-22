@@ -11,7 +11,10 @@ export {
   parseJsonObject,
   readBody,
   sendJson,
+  sendText,
 } from './http.js';
+export { withRetry } from './retry.js';
+export type { RetryOptions } from './retry.js';
 export { tokensFrom } from './usage.js';
 export { collect, nodeUpstreamClient } from './upstream.js';
 export type { UpstreamClient, UpstreamRequest, UpstreamResponse } from './upstream.js';
