@@ -230,6 +230,39 @@ describe('metrics', () => {
     expect(metrics.render()).toContain('tenant="none"');
   });
 
+  it('renders every sample value as a parsable number', () => {
+    const metrics = new Metrics();
+    // 1000 x 10 ms accumulates to 9.999999999999831 seconds, not an integer,
+    // which rounds to "10.000000" at six decimals. Trimming the zeros without
+    // the separator would emit the bare "10." — tolerated by Go's ParseFloat,
+    // rejected by the OpenMetrics grammar.
+    for (let i = 0; i < 1000; i++) {
+      metrics.observeRequest({
+        route: 'r',
+        outcome: 'forwarded',
+        tenant: null,
+        status: 200,
+        latencyMs: 10,
+        tokens: 0,
+        findings: {},
+        policies: {},
+      });
+    }
+
+    const sum = /^hushgate_request_duration_seconds_sum\{route="r"\} (.+)$/mu.exec(
+      metrics.render(),
+    );
+    expect(sum).not.toBeNull();
+    expect(sum![1]).toBe('10');
+    expect(Number.isFinite(Number(sum![1]))).toBe(true);
+
+    for (const line of metrics.render().split('\n')) {
+      if (line.length === 0 || line.startsWith('#')) continue;
+      const value = line.slice(line.lastIndexOf(' ') + 1);
+      expect(value).toMatch(/^-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?$/u);
+    }
+  });
+
   it('counts refusals by the rule that refused them', () => {
     const metrics = new Metrics();
     metrics.observeBlocked('residency', 'residency.categories.IBAN');

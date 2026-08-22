@@ -175,6 +175,16 @@ function escapeValue(value: string): string {
   return value.replaceAll('\\', String.raw`\\`).replaceAll('"', String.raw`\"`).replaceAll('\n', String.raw`\n`);
 }
 
+/**
+ * A sample value in the exposition format.
+ *
+ * Trailing zeros are trimmed, but so is the separator they leave behind: a sum
+ * of 9.999999999999831 — what a thousand 10 ms latencies actually accumulate to
+ * in binary floating point — is not an integer, rounds to "10.000000" at six
+ * decimals, and would otherwise be rendered as the bare "10.". Go's ParseFloat
+ * tolerates that; the OpenMetrics number grammar does not.
+ */
 function formatNumber(value: number): string {
-  return Number.isInteger(value) ? value.toString() : value.toFixed(6).replace(/0+$/u, '');
+  if (Number.isInteger(value)) return value.toString();
+  return value.toFixed(6).replace(/\.?0+$/u, '');
 }
