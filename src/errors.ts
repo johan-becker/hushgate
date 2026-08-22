@@ -69,3 +69,28 @@ export class UpstreamError extends HushgateError {
 
 /** The command line was not understood. Reported with usage, and exit code 2. */
 export class UsageError extends HushgateError {}
+
+/**
+ * A residency rule refused the configuration. Thrown at startup, before the
+ * listener is bound: a misconfigured upstream must never silently leak.
+ */
+export class ResidencyError extends ConfigError {}
+
+/**
+ * A residency rule refused a request. Like {@link BlockedContentError} it
+ * carries kinds and counts, never values, so it is safe to log verbatim.
+ */
+export class ResidencyBlockedError extends HushgateError {
+  constructor(
+    message: string,
+    readonly rule: string,
+    readonly jurisdiction: string,
+    readonly counts: Readonly<Record<string, number>>,
+  ) {
+    super(message);
+  }
+
+  get kinds(): string[] {
+    return Object.keys(this.counts).toSorted();
+  }
+}

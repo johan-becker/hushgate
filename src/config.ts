@@ -13,6 +13,14 @@ import type { DictionaryInput } from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
 import { ConfigError } from './errors.js';
 import type { SessionOptions } from './redact/session.js';
+import {
+  defaultResidencyConfig,
+  isEnforcementMode,
+  type AllowEntry,
+  type EnforcementMode,
+  type ResidencyConfig,
+} from './residency/policy.js';
+import type { DataControl, EndpointEntry } from './residency/registry.js';
 import { isPolicy, type Policy } from './types.js';
 
 /** File name looked up in the working directory when no path is given. */
@@ -64,6 +72,7 @@ export interface HushgateConfig {
   readonly redaction: RedactionConfig;
   readonly limits: LimitsConfig;
   readonly audit: AuditConfig;
+  readonly residency: ResidencyConfig;
 }
 
 export interface LoadedConfig {
@@ -79,6 +88,7 @@ export interface ConfigOverrides {
   readonly limits?: Partial<LimitsConfig>;
   readonly redaction?: Partial<RedactionConfig>;
   readonly audit?: Partial<AuditConfig>;
+  readonly residency?: Partial<ResidencyConfig>;
 }
 
 // `$schema` is accepted and ignored so editors can be pointed at a schema
@@ -91,6 +101,7 @@ const KNOWN_KEYS = new Set([
   'redaction',
   'limits',
   'audit',
+  'residency',
 ]);
 
 /** Default audit trail, relative to the working directory. */
@@ -127,6 +138,7 @@ export function defaultConfig(): HushgateConfig {
       enabled: true,
       path: DEFAULT_AUDIT_PATH,
     },
+    residency: defaultResidencyConfig(),
   };
 }
 
@@ -172,7 +184,163 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       enabled: optionalBoolean(audit['enabled'], `${where}: "audit.enabled"`) ?? base.audit.enabled,
       path: optionalString(audit['path'], `${where}: "audit.path"`) ?? base.audit.path,
     },
+    residency: parseResidency(root['residency'], where, base.residency),
   };
+}
+
+function parseResidency(raw: unknown, where: string, base: ResidencyConfig): ResidencyConfig {
+  const scope = `${where}: "residency"`;
+  const node = asObject(raw ?? {}, scope);
+  rejectUnknownKeys(
+    node,
+    new Set(['mode', 'routes', 'categories', 'allow', 'requireDataControls', 'endpoints']),
+    scope,
+  );
+
+  return {
+    mode: optionalMode(node['mode'], `${scope}.mode`) ?? base.mode,
+    routes: parseModeMap(node['routes'], `${scope}.routes`),
+    categories: parseModeMap(node['categories'], `${scope}.categories`),
+    allow: parseAllowList(node['allow'], `${scope}.allow`),
+    requireDataControls:
+      optionalBoolean(node['requireDataControls'], `${scope}.requireDataControls`) ??
+      base.requireDataControls,
+    endpoints: parseEndpoints(node['endpoints'], `${scope}.endpoints`),
+  };
+}
+
+function parseModeMap(raw: unknown, where: string): Record<string, EnforcementMode> {
+  if (raw === undefined || raw === null) return {};
+  const node = asObject(raw, where);
+  const out: Record<string, EnforcementMode> = {};
+
+  for (const [key, value] of Object.entries(node)) {
+    const mode = optionalMode(value, `${where}.${key}`);
+    if (mode !== undefined) out[key] = mode;
+  }
+
+  return out;
+}
+
+function parseAllowList(raw: unknown, where: string): AllowEntry[] {
+  if (raw === undefined || raw === null) return [];
+
+  return asArray(raw, where).map((item, index) => {
+    const scope = `${where}[${index}]`;
+    const node = asObject(item, scope);
+    rejectUnknownKeys(node, new Set(['endpoint', 'jurisdiction', 'legalBasis', 'note']), scope);
+
+    return {
+      endpoint: normaliseUrl(requiredString(node['endpoint'], `${scope}.endpoint`), `${scope}.endpoint`),
+      jurisdiction: optionalString(node['jurisdiction'], `${scope}.jurisdiction`) ?? null,
+      // Required on purpose: an allowlist without reasons is a wish list, and
+      // the reason is what the operator will be asked for.
+      legalBasis: requiredString(node['legalBasis'], `${scope}.legalBasis`),
+      note: optionalString(node['note'], `${scope}.note`) ?? null,
+    };
+  });
+}
+
+function parseEndpoints(raw: unknown, where: string): EndpointEntry[] {
+  if (raw === undefined || raw === null) return [];
+
+  return asArray(raw, where).map((item, index) => {
+    const scope = `${where}[${index}]`;
+    const node = asObject(item, scope);
+    rejectUnknownKeys(
+      node,
+      new Set(['id', 'label', 'operator', 'hosts', 'jurisdiction', 'dataControls', 'note']),
+      scope,
+    );
+
+    const hosts = optionalStringArray(node['hosts'], `${scope}.hosts`) ?? [];
+    if (hosts.length === 0) {
+      throw new ConfigError(`${scope}.hosts must list at least one host`);
+    }
+
+    return {
+      id: requiredString(node['id'], `${scope}.id`),
+      label: optionalString(node['label'], `${scope}.label`) ?? requiredString(node['id'], `${scope}.id`),
+      operator: optionalString(node['operator'], `${scope}.operator`) ?? 'undeclared',
+      hosts,
+      jurisdiction: requiredString(node['jurisdiction'], `${scope}.jurisdiction`).toUpperCase(),
+      dataControls: parseDataControls(node['dataControls'], `${scope}.dataControls`),
+      note: optionalString(node['note'], `${scope}.note`) ?? '',
+    };
+  });
+}
+
+function parseDataControls(raw: unknown, where: string): DataControl[] {
+  if (raw === undefined || raw === null) return [];
+
+  return asArray(raw, where).map((item, index) => {
+    const scope = `${where}[${index}]`;
+    const node = asObject(item, scope);
+    rejectUnknownKeys(node, new Set(['kind', 'mechanism', 'header', 'body', 'note']), scope);
+
+    const kind = requiredString(node['kind'], `${scope}.kind`);
+    if (kind !== 'zero-retention' && kind !== 'no-training') {
+      throw new ConfigError(`${scope}.kind must be "zero-retention" or "no-training", got "${kind}"`);
+    }
+
+    const mechanism = requiredString(node['mechanism'], `${scope}.mechanism`);
+    const known = new Set(['header', 'body', 'account', 'contract', 'inherent']);
+    if (!known.has(mechanism)) {
+      throw new ConfigError(
+        `${scope}.mechanism must be one of ${[...known].join(', ')}, got "${mechanism}"`,
+      );
+    }
+
+    const control: {
+      kind: 'zero-retention' | 'no-training';
+      mechanism: DataControl['mechanism'];
+      header?: { name: string; value: string };
+      body?: { path: string; value: boolean | string | number };
+      note: string;
+    } = {
+      kind,
+      mechanism: mechanism as DataControl['mechanism'],
+      note: optionalString(node['note'], `${scope}.note`) ?? '',
+    };
+
+    if (node['header'] !== undefined) {
+      const header = asObject(node['header'], `${scope}.header`);
+      rejectUnknownKeys(header, new Set(['name', 'value']), `${scope}.header`);
+      control.header = {
+        name: requiredString(header['name'], `${scope}.header.name`),
+        value: requiredString(header['value'], `${scope}.header.value`),
+      };
+    }
+
+    if (node['body'] !== undefined) {
+      const body = asObject(node['body'], `${scope}.body`);
+      rejectUnknownKeys(body, new Set(['path', 'value']), `${scope}.body`);
+      const value = body['value'];
+      if (typeof value !== 'boolean' && typeof value !== 'string' && typeof value !== 'number') {
+        throw new ConfigError(`${scope}.body.value must be a boolean, string or number`);
+      }
+      control.body = { path: requiredString(body['path'], `${scope}.body.path`), value };
+    }
+
+    if (mechanism === 'header' && control.header === undefined) {
+      throw new ConfigError(`${scope}: a header control needs a "header" object`);
+    }
+    if (mechanism === 'body' && control.body === undefined) {
+      throw new ConfigError(`${scope}: a body control needs a "body" object`);
+    }
+
+    return control satisfies DataControl;
+  });
+}
+
+function optionalMode(value: unknown, where: string): EnforcementMode | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isEnforcementMode(value)) {
+    throw new ConfigError(
+      `${where}: "${String(value)}" is not an enforcement mode; use block, sanitize, warn or allow`,
+    );
+  }
+  return value;
 }
 
 function parseRedaction(raw: unknown, where: string, base: RedactionConfig): RedactionConfig {
@@ -301,6 +469,7 @@ export function applyEnv(
   const upstreamTimeoutMs = env['HUSHGATE_UPSTREAM_TIMEOUT_MS'];
   const auditPath = env['HUSHGATE_AUDIT_PATH'];
   const auditEnabled = env['HUSHGATE_AUDIT'];
+  const residencyMode = env['HUSHGATE_RESIDENCY_MODE'];
 
   return {
     ...config,
@@ -341,6 +510,13 @@ export function applyEnv(
           : envBoolean(auditEnabled, 'HUSHGATE_AUDIT'),
       path: auditPath ?? config.audit.path,
     },
+    residency: {
+      ...config.residency,
+      mode:
+        residencyMode === undefined
+          ? config.residency.mode
+          : envMode(residencyMode, 'HUSHGATE_RESIDENCY_MODE'),
+    },
   };
 }
 
@@ -357,6 +533,7 @@ export function applyOverrides(
     redaction: { ...config.redaction, ...overrides.redaction },
     limits: { ...config.limits, ...overrides.limits },
     audit: { ...config.audit, ...overrides.audit },
+    residency: { ...config.residency, ...overrides.residency },
   };
 }
 
@@ -552,6 +729,15 @@ function envBoolean(value: string, name: string): boolean {
   if (TRUE_VALUES.has(normalised)) return true;
   if (FALSE_VALUES.has(normalised)) return false;
   throw new ConfigError(`${name} must be one of true/false/1/0/yes/no/on/off, got "${value}"`);
+}
+
+function envMode(value: string, name: string): EnforcementMode {
+  if (!isEnforcementMode(value)) {
+    throw new ConfigError(
+      `${name}: "${value}" is not an enforcement mode; use block, sanitize, warn or allow`,
+    );
+  }
+  return value;
 }
 
 function envUrl(value: string, name: string): string {
