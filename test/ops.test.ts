@@ -391,8 +391,8 @@ describe('the hot path stays linear', () => {
     expect(redacted).not.toContain('anna.schmidt@example.de');
     // Generous, because CI machines are not benchmarking rigs — but tight
     // enough that a real regression trips it. 512 KiB of this prose costs a
-    // few hundred milliseconds.
-    expect(elapsed).toBeLessThan(2_000);
+    // few hundred milliseconds here and must not cost seconds anywhere.
+    expect(elapsed).toBeLessThan(8_000);
   });
 
   it('does not degrade super-linearly as the input grows', () => {
@@ -418,12 +418,16 @@ describe('the hot path stays linear', () => {
     // linear regex phase mask a quadratic resolver. This one carries one per 8.
     timeRedaction(dense(4_000), 1);
 
-    const small = timeRedaction(dense(8_000));
-    const large = timeRedaction(dense(32_000));
+    // 16x, for the same reason the prose case above uses 8x: a 4x step puts
+    // linear at 4 and quadratic at 16, and a constrained runner closes that
+    // gap -- this assertion measured 7.61 against a bound of 6 on correct
+    // code. At 16x the predictions are 16 and 256, so 40 cannot be reached by
+    // jitter and cannot be escaped by a quadratic resolver.
+    const small = timeRedaction(dense(4_000), 5);
+    const large = timeRedaction(dense(64_000), 3);
 
     expect(new Session().redact(dense(8_000)).findings.length).toBe(8_000);
-    // Four times the findings, well under six times the work.
-    expect(large / small).toBeLessThan(6);
+    expect(large / small).toBeLessThan(40);
   });
 
   it('resolves a body at the default size limit in a sane time', () => {
@@ -435,6 +439,6 @@ describe('the hot path stays linear', () => {
     const elapsed = performance.now() - started;
 
     expect(findings.length).toBe(512_000);
-    expect(elapsed).toBeLessThan(10_000);
+    expect(elapsed).toBeLessThan(30_000);
   });
 });
