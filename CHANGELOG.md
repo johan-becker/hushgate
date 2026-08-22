@@ -15,7 +15,7 @@ and the re-hydration mappings that already exist.
 ## [0.1.0] — 2026-08-22
 
 First release. The proxy, the detectors, the residency policy, the audit chain
-and the CLI are complete and exercised end to end by 613 tests, none of which
+and the CLI are complete and exercised end to end by 619 tests, none of which
 touch the network.
 
 ### Added
@@ -59,6 +59,10 @@ touch the network.
   and three-way splits, and one character at a time.
 - Graceful shutdown, body-size limit, upstream timeout, and full-jitter
   exponential backoff for failures that happened before a response arrived.
+- A refusal hushgate itself decided on — a blocked category, a residency rule,
+  a rejected key, an exhausted quota, an oversized body — is logged as one line
+  rather than a stack trace. Only a failure nothing mapped, or an upstream one
+  whose cause is the point, gets the full object.
 
 #### Compliance
 
