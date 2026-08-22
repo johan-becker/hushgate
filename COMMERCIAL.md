@@ -14,16 +14,24 @@ Read on only if you are taking it to production.
 
 hushgate is **source-available**, not open source. The
 [Business Source License 1.1](LICENSE) lets a lot of people use it in
-production for free. Two groups it does not cover:
+production for free. This page paraphrases it; [LICENSE](LICENSE) is what
+actually governs, and where the two differ the licence wins.
+
+Two groups the free grant does not cover:
 
 1. **Larger organisations in production.** More than 10 people, counting
    employees and independent contractors across all entities under common
    control.
-2. **Anyone offering hushgate to third parties** as a hosted, managed, embedded
-   or resold offering — at any size, including a two-person company.
+2. **Anyone offering hushgate to third parties** as a hosted, managed or
+   embedded **commercial offering** — at any size, including a two-person
+   company. Reselling copies of hushgate is not this: redistribution is granted
+   by the licence outright.
 
 Everything else is free, forever, with no registration and no phoning home:
 
+- **copying, modifying, forking and redistributing** hushgate, at any size —
+  the licence grants those outright and the two conditions above limit
+  production use only, never these;
 - any **non-production** use at any size — evaluation, development, staging,
   CI, security review, a proof of concept for your board;
 - **production** use by an organisation of 10 or fewer people;
@@ -35,18 +43,70 @@ And each published version converts automatically to the
 [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 four years after it is published.
 
+## How the 10 are counted
+
+You count as one individual each, regardless of hours worked: every
+**employee, officer, independent contractor, freelancer, intern, working
+student, apprentice**, and every individual supplied to you by a **staffing or
+temporary-employment agency** (Zeitarbeit). You do **not** count non-executive
+directors, or shareholders who perform no work for the organisation.
+
+"Your organisation" is the legal entity you work for plus every organisation
+that controls it, that it controls, or that is under common control with it —
+so a 4-person subsidiary of a 900-person group counts the group.
+
+The count is taken **on the first day of each calendar quarter**. Hiring your
+eleventh person on 5 February does not end your free grant mid-quarter.
+
+**And there is a 90-day grace period.** When your count first exceeds 10, the
+free grant continues to apply to you for a further **90 days** from that date,
+so that you can obtain a commercial licence or wind down production use without
+being out of compliance on the day the offer letter is signed. Mail me inside
+that window and you will not be chased.
+
+## What counts as "offering it to third parties"
+
+Condition (2) is about selling hushgate's functionality to people outside your
+organisation. The licence draws the line explicitly, and most of the cases
+people worry about fall on the free side of it:
+
+- **Your own employees and independent contractors are not third parties.**
+  Running one shared hushgate for your own staff and freelancers is not an
+  offering.
+- **Running hushgate for your organisation's own internal purposes is not an
+  offering.** It does not matter how many customers your organisation has, or
+  that its product makes LLM calls through hushgate — your customers are not
+  being offered hushgate.
+- **Using hushgate as an internal component of a product whose value to your
+  customers does not consist substantially of hushgate's functionality is not
+  an offering.** If they are buying a scheduling tool, a support desk or a CRM
+  and hushgate happens to sanitise the prompts inside it, that is not the case
+  this condition is for.
+
+What it *is* for: hushgate, or its functionality, being the thing the customer
+is paying for — "PII filtering, powered by hushgate", a managed hushgate
+instance per client, an appliance whose selling point is the gateway.
+
+If your product sits near that line, mail me rather than guess. This is exactly
+the nuance a plain-language summary cannot settle on its own; the wording that
+decides it is in [LICENSE](LICENSE).
+
 ## Worked examples
 
 | Situation | Licence needed? |
 | --- | --- |
-| **A 40-person SaaS company** runs hushgate in its own request path, in production, for its own product's LLM calls. Nobody outside the company touches it. | **Yes.** Over 10 people, in production. The use is internal, which is exactly what the commercial licence is for — it is not a competitor problem, it is a headcount threshold. |
+| **A 40-person SaaS company** runs hushgate in its own request path, in production, for its own product's LLM calls. Nobody outside the company touches it. | **Yes** — on headcount alone. The use is purely internal and is *not* an offering to third parties; it is over 10 people, and that is the whole reason. It is not a competitor problem, it is a threshold. |
+| **An 8-person SaaS company** embeds hushgate inside its scheduling product to sanitise prompts before its own LLM calls. Its customers are buying scheduling. | **No.** 10 or fewer people, and an internal component of a product whose value is not substantially hushgate's functionality is explicitly not an offering to third parties. |
 | **A 6-person agency** runs hushgate in production on its own infrastructure to sanitise prompts for its own internal tooling. | **No.** 10 or fewer people, and it is not being offered to anyone else. |
-| **The same 6-person agency** now runs a hushgate instance per client, as a managed service the clients pay for. | **Yes.** Size stops mattering the moment the software is offered to third parties on a hosted or managed basis. |
-| **A hosting provider** offers "PII filtering, powered by hushgate" as a product to its customers. | **Yes**, at any size. This is the case the licence exists for. |
-| **A university** deploys hushgate for a 900-person department, in production. | **No.** Accredited educational institutions are free regardless of headcount — as long as they are not offering it on to third parties as a service. |
+| **The same 6-person agency** now runs a hushgate instance per client, as a managed service the clients pay for. | **Yes.** Size stops mattering the moment hushgate itself is offered to third parties on a hosted or managed basis. |
+| **A 7-person company** runs one shared hushgate that its employees and its two freelancers use. | **No.** Your own employees and independent contractors are not third parties. |
+| **A hosting provider** offers "PII filtering, powered by hushgate" as a product to its customers. | **Yes**, at any size. Here hushgate's functionality *is* what the customer is buying. This is the case the licence exists for. |
+| **A university** deploys hushgate for a 900-person department, in production. | **No.** Accredited educational institutions are free regardless of headcount — as long as they are not offering it on to third parties as a commercial offering. |
 | **A solo freelancer** runs hushgate in production for her own consultancy's work. | **No.** An individual, or an organisation of one. |
-| **The same freelancer** builds a client a product with hushgate embedded, and the client is a 300-person insurer who will run it in their own production. | **The client needs a licence**, not the freelancer. The licence follows the organisation that runs it in production. Tell them early; it is a bad surprise at go-live. |
+| **The same freelancer** builds a client a product with hushgate embedded, and the client is a 300-person insurer who will run it in their own production. | **The client needs one; she probably does not.** Delivering a bespoke product in which hushgate is an internal component is not an offering, provided the product's value to the client is not substantially hushgate's functionality — if she is selling them a PII gateway, it is. The insurer needs a licence for its own production use, on headcount. Tell them early; it is a bad surprise at go-live. |
+| **A 9-person startup** hires four people; on 1 April the count is 13. | **Yes, but not yet.** The count is taken on the first day of the quarter, and the free grant then runs for 90 more days. You have until roughly the end of June to license or to stop. |
 | **A 2,000-person bank** evaluates hushgate for six months in a lab, against real traffic captures, never in production. | **No.** Non-production use is free at any size. Come back when it goes live. |
+| **A 500-person company** forks hushgate, patches a detector, and publishes the fork under its own name. It does not run it in production. | **No.** Copying, modifying and redistributing are granted outright; the size and offering conditions limit production use only. (The name is a separate matter — see [TRADEMARKS.md](TRADEMARKS.md).) |
 
 If your case is not on that list and you genuinely cannot tell, mail me and
 ask. Asking costs nothing and I would rather answer than have you guess.
@@ -119,6 +179,25 @@ this repository. Nothing is withheld from the free tier.
 
 **"We are over 10 people but only using it in staging."** Then you need
 nothing. Non-production use is free at any size.
+
+**"We embed hushgate inside our own product. Is that an 'embedded commercial
+offering'?"** Not on its own. The licence says in as many words that using
+hushgate as an internal component of a product whose value to your customers
+does not consist substantially of hushgate's functionality is *not* an offering
+to third parties. If you are under the size grant, that is free. It becomes an
+offering when hushgate's functionality is what your customers are buying.
+
+**"We just went over 10 people."** You have 90 days from the day the count
+first exceeded 10, and the count is only taken on the first day of each
+calendar quarter. Nothing breaks, nothing phones home, and there is no
+retroactive claim for the window. Mail me inside it.
+
+**"Can we resell hushgate?"** Redistribution is granted by the licence
+outright, so passing copies on is not what the commercial licence is about.
+What needs one is offering it to third parties as a hosted, managed or embedded
+commercial offering — and whoever ends up running it in production still needs
+to be inside the grant themselves. The name is separate: see
+[TRADEMARKS.md](TRADEMARKS.md).
 
 **"Can we get a perpetual licence rather than a subscription?"** Ask. It is a
 reasonable thing to want for on-premises infrastructure software and I would
