@@ -18,7 +18,7 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 979 tests
+network calls of its own beyond the upstream you configure, and its 993 tests
 pass with the cable pulled out.
 
 Attachments go through the same door: a PDF or a Word file in a request is
@@ -409,10 +409,28 @@ anything that only checks the exit status.
 
 So every extraction is asked a second question before it is believed: enough
 characters overall, enough per page, few enough replacement characters, few
-enough control characters, and — in any passage of it, not merely on average —
-words that are not overwhelmingly one and two letters long. Failing any of
-those makes the document unreadable, and `attachments.onUnreadable` decides
-what happens:
+enough control characters, and words that are not overwhelmingly one and two
+letters long.
+
+Those are all measures of the wrong thing, though — they ask how the text
+*looks* rather than whether anything is hidden in it, and ordinary typesetting
+walks straight past them. A PDF whose address block carries normal kerning
+comes out of `pdftotext` as
+
+```
+E-M ail : a nna .sc hmi dt@ nor dli cht .ex amp le
+```
+
+which has no short words at all, reads as fluent to every ratio, and matches no
+detector. So the last check asks the question directly: run the detectors over a
+window of the text, then over the same window with its spacing closed up, and
+see whether closing the gaps reveals something that was not visible before. If
+it does, the gaps were what hid it, and the document is refused. A column of
+country codes closes up into `DEATCHFRIT`, which reveals nothing — so a table is
+not mistaken for a shredded address.
+
+Failing any of these makes the document unreadable, and
+`attachments.onUnreadable` decides what happens:
 
 | Setting | Behaviour |
 | --- | --- |
@@ -1139,15 +1157,13 @@ What it does **not** do:
 - **Anything inside images.** There is no OCR, so a photograph or a scanned
   page has no text hushgate can read. It is refused rather than forwarded —
   see §4 — but refusing it is all hushgate can do.
-- **Every way an extractor can mangle a document.** The check described in §4
-  catches the failure that was actually measured: text shredded into one- and
-  two-character fragments, which is what splitting on glyph advance widths
-  produces. An extractor that instead broke a document into four- or
-  five-character pieces would defeat the detectors and hushgate would not
-  notice — it has no short words to count. Such a document is also unreadable
-  to the model, so the failure is visible rather than silent, and the audit
-  trail names the extractor that produced it. But the guarantee is "gross
-  fragmentation is caught", not "no mangling can ever hide an identifier".
+- **Every way an extractor can mangle a document.** The checks in §4 catch a
+  document that is fragmented throughout, and — by asking whether closing up
+  the spacing reveals an identifier that was not visible before — a passage of
+  shredding inside an otherwise clean page. What that second check can see is
+  bounded by what the detectors can see: an identifier hushgate would not have
+  recognised in the first place, such as a street address, is not one it can
+  notice the loss of.
 - **Re-identification by combination.** Removing the name does not stop
   "the customer in Ravensburg who ordered the ZX-40 on Tuesday" from being
   exactly one person. Pseudonymisation is not anonymisation.
@@ -1289,7 +1305,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-979 tests across 36 files, and **none of them touch the network**. Every proxy
+993 tests across 36 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`

@@ -46,22 +46,30 @@ describe('trusting extracted text', () => {
   });
 });
 
-describe('fragmentation that hides inside good prose', () => {
+describe('fragmentation across a whole document', () => {
   const prose =
     'Sehr geehrte Damen und Herren, hiermit bestaetigen wir den Eingang Ihrer ' +
     'Unterlagen und melden uns nach Pruefung des Vorgangs erneut bei Ihnen. ' +
     'Mit freundlichen Gruessen, die Sachbearbeitung des Hauses Nordlicht. ';
 
-  it('rejects a shredded contact block surrounded by clean paragraphs', () => {
-    // The document-wide average is fine; the block that carries the name and
-    // the address is not, and that is the part a detector has to read.
-    const shredded = 'S a c h b e a r b e i t e r i n : A n n a S c h m i d t\n';
-    const verdict = assessText(prose + shredded + prose, 1);
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) expect(verdict.reason).toContain('fragmented');
+  it('rejects a document that is shredded throughout', () => {
+    expect(assessText([...prose].join(' '), 1).ok).toBe(false);
   });
 
   it('still accepts a document that is simply prose', () => {
     expect(assessText(prose.repeat(3), 1).ok).toBe(true);
+  });
+
+  it('accepts a letter containing a table of short codes', () => {
+    // The reason this check is document-wide. A window small enough to catch a
+    // shredded address block sits entirely inside this table, and a country
+    // code list is an ordinary thing for a business document to contain.
+    const table = 'Umsatz nach Land\nDE AT CH FR IT ES NL BE PL CZ\nDK SE NO FI PT IE GR HU RO BG\n';
+    expect(assessText(prose + table + prose, 1).ok).toBe(true);
+  });
+
+  it('accepts a bibliography, which is mostly initials and abbreviations', () => {
+    const bib = 'Meyer, H. u. a. (2019), S. 4 f.\na. a. O., Bd. 3, Nr. 7, S. 12 ff.\n';
+    expect(assessText(prose + bib + prose, 1).ok).toBe(true);
   });
 });

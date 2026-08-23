@@ -166,8 +166,11 @@ function anthropicSource(
     const blocks = part['source'] === undefined ? null : source['content'];
     if (!Array.isArray(blocks)) return null;
 
+    // The blocks are usually `{type:"text", text}` objects, but a bare string
+    // is accepted by the API too, and reading only the objects would forward
+    // the string form verbatim — the same leak, one shape along.
     const text = blocks
-      .map((block) => asString(asObject(block)?.['text'] ?? null))
+      .map((block) => asString(block) ?? asString(asObject(block)?.['text'] ?? null))
       .filter((value): value is string => value !== null)
       .join('\n');
 

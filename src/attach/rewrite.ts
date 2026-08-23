@@ -50,6 +50,14 @@ export interface RewriteOptions {
    * place the redactor will actually visit. See {@link rewriteAttachments}.
    */
   readonly rules: readonly PathRule[];
+  /**
+   * How many findings the detectors make in a piece of text, changing nothing.
+   *
+   * Supplied by the caller because this module must not own a detector set.
+   * Drives {@link hidesIdentifiers}, the one check here that asks the question
+   * that actually matters rather than a proxy for it.
+   */
+  readonly countFindings?: (text: string) => number;
 }
 
 export interface RewriteResult {
@@ -171,6 +179,7 @@ async function handleSite(
       'this attachment sits where redaction does not reach, so its text could not be pseudonymised',
       limits.onUnreadable,
       soFar,
+      false,
     );
   }
 
@@ -215,9 +224,19 @@ async function handleSite(
       continue;
     }
 
+    if (hidesIdentifiers(readable, options.countFindings)) {
+      lastReason =
+        'the spacing in this document splits identifiers, so they would not be recognised';
+      continue;
+    }
+
+    // Measured against what the extractor produced, not against what `tidy`
+    // left: tidy strips trailing spaces and collapses blank lines, and can
+    // easily spend more than the one character of headroom, which would record
+    // a document cut to a quarter of itself as having been read in full.
+    const truncated = readable.length > limits.maxTextChars;
     const cleaned = tidy(readable);
-    const truncated = cleaned.length > limits.maxTextChars;
-    const text = truncated ? cleaned.slice(0, limits.maxTextChars) : cleaned;
+    const text = cleaned.length > limits.maxTextChars ? cleaned.slice(0, limits.maxTextChars) : cleaned;
 
     return {
       report: {
@@ -257,6 +276,7 @@ function refuse(
   reason: string,
   action: UnreadableAction,
   soFar: readonly AttachmentReport[],
+  redactable = true,
 ): SiteOutcome {
   if (action === 'block') {
     // The attachments already handled travel with the error. Without them the
@@ -275,10 +295,16 @@ function refuse(
     return { report: { ...report, outcome: 'forwarded' as const }, replacement: null };
   }
 
+  // The note names the file, and a filename is personal data as often as the
+  // contents are. That is normally safe because the note goes where the
+  // redactor will pseudonymise it — but the one refusal that fires *because*
+  // the redactor cannot reach this path must not then write a name into it.
+  const describe = redactable ? describeFile(site.filename, mediaType) : mediaType;
+
   return {
     report: { ...report, outcome: 'withheld' as const },
     replacement: textPart(
-      `--- attachment withheld: ${describeFile(site.filename, mediaType)}, ${formatBytes(bytes)} — hushgate could not read its text (${reason}) ---`,
+      `--- attachment withheld: ${describe}, ${formatBytes(bytes)} — hushgate could not read its text (${reason}) ---`,
       '',
     ),
   };
@@ -318,6 +344,50 @@ function describeFile(filename: string | null, mediaType: string): string {
  * same character is just a page break, and leaving a run of them in the middle
  * of a prompt spends the model's attention on nothing.
  */
+/** Characters of context per probe, and how far the probe advances each time. */
+const PROBE_WINDOW = 240;
+const PROBE_STEP = 120;
+
+/**
+ * Does this text's spacing hide an identifier that is really in the document?
+ *
+ * The ratios in `quality.ts` measure a proxy for the thing that matters — how
+ * short the words are — and every proxy can be walked around. Real kerning is
+ * enough to do it: a PDF whose address block carries ordinary `TJ` offsets
+ * comes out of `pdftotext` as `E-M ail : a nna .sc hmi dt@ nor dli cht`, which
+ * has no one- or two-letter words at all, reads as fluent to every ratio, and
+ * leaves the address matching nothing.
+ *
+ * So this asks the question directly. Run the detectors over a window of the
+ * text, then over the same window with its spacing closed up, and see whether
+ * closing the gaps reveals something that was not visible before. If it does,
+ * the gaps were what hid it.
+ *
+ * A window rather than the whole document, because closing every gap in a page
+ * of prose runs the words together and destroys the boundaries the detectors
+ * need — done globally the check finds nothing and quietly never fires. A
+ * window also keeps the honest cases honest: a column of country codes closes
+ * up into `DEATCHFRIT`, which is not an identifier and reveals nothing, so a
+ * table is not mistaken for a shredded address.
+ *
+ * It errs towards refusing, which is the direction this product errs in
+ * everywhere else, and the operator is told which document and why.
+ */
+function hidesIdentifiers(text: string, count: RewriteOptions['countFindings']): boolean {
+  if (count === undefined) return false;
+
+  for (let start = 0; start < text.length; start += PROBE_STEP) {
+    const window = text.slice(start, start + PROBE_WINDOW);
+    // Horizontal space only, and blank-line runs collapsed rather than removed:
+    // a line break is a boundary a detector may legitimately rely on.
+    const closed = window.replaceAll(/[^\S\n]+/gu, '').replaceAll(/\n+/gu, '\n');
+    if (closed.length === window.length) continue;
+    if (count(closed) > count(window)) return true;
+  }
+
+  return false;
+}
+
 /**
  * Remove the characters that are invisible to a reader and fatal to a detector.
  *
@@ -333,12 +403,15 @@ function describeFile(filename: string | null, mediaType: string): string {
  * what will be scanned.
  */
 function stripInvisible(text: string): string {
-  // Soft hyphen, zero-width space/non-joiner/joiner, LTR/RTL marks and
-  // embeddings, word joiner, invisible operators, and the byte-order mark.
-  return text.replaceAll(
-    /\u00AD|\u034F|[\u200B-\u200F]|[\u2060-\u2064]|[\u206A-\u206F]|\uFEFF/gu,
-    '',
-  );
+  // The whole Default_Ignorable_Code_Point property rather than a hand-picked
+  // list: hand-picked lists of this leave gaps, and every gap is a working
+  // separator. Variation selectors, the Mongolian free variation selectors,
+  // Hangul filler, the tag plane and the musical controls are all in it.
+  //
+  // The bidi embeddings and overrides are added on top. They are not
+  // default-ignorable — a renderer acts on them — but they are invisible in
+  // extracted text and serve the same purpose here.
+  return text.replaceAll(/\p{Default_Ignorable_Code_Point}|[\u202A-\u202E]|\u0605/gu, '');
 }
 
 function tidy(text: string): string {

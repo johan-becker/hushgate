@@ -301,6 +301,9 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         // The route's own rules, so the rewrite can check that the text it is
         // about to insert lands somewhere redaction will visit.
         rules: route.rules,
+        // The same detectors that will run over the text a moment later, so the
+        // rewrite can ask whether the extraction hid anything from them.
+        countFindings: (text) => session.countFindings(text),
       });
       const parsed = rewritten.body;
       attachments = rewritten.reports;

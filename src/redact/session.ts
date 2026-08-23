@@ -187,6 +187,18 @@ export class Session {
     this.literals.clear();
   }
 
+  /**
+   * How many findings this session's detectors make in `text`, changing
+   * nothing and allocating no placeholders.
+   *
+   * A question about the text rather than a decision about it. The attachment
+   * stage uses it to compare what the detectors can see in a document as
+   * extracted against what they can see once its spacing is closed up.
+   */
+  countFindings(text: string): number {
+    return resolveSpans(detect(text, this.detectors)).length;
+  }
+
   /** Detect, then merge in placeholder-shaped literals, then resolve overlaps. */
   private resolveWithLiterals(text: string): Span[] {
     const detected = detect(text, this.detectors);

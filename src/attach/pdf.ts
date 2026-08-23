@@ -97,12 +97,31 @@ const readVersion = (head: string, header: number): string | null => {
  * Preferred over counting page objects because it is one number the producer
  * wrote deliberately, and because it stays right when the objects themselves
  * are spread beyond the scanned windows. `/Count` also appears in outline
- * dictionaries, so only occurrences near a `/Type /Pages` are believed, and the
- * largest of those is the root of the tree.
+ * dictionaries, so only occurrences near a `/Type /Pages` are believed.
+ *
+ * Which of them to believe is the interesting part. The root of the tree is the
+ * `/Pages` node with no `/Parent`, and a well-formed file has exactly one, so
+ * the usual case is unambiguous. A file that has been edited by appending an
+ * incremental update, or spliced together, carries the previous revision's root
+ * as well, and then there is no way to tell from bytes alone which is live.
+ *
+ * Where it cannot tell, it takes the **smallest** count, and that choice is
+ * deliberate. The two errors are not equal. Over-counting divides the extracted
+ * text by pages that are not there and refuses a perfectly readable document —
+ * a one-page letter spliced onto an old ninety-six-page draft would be rejected
+ * outright. Under-counting only makes the per-page floor lenient, and a
+ * document with no text left to find still fails the overall character floor,
+ * which does not depend on this number at all. So the failure that stays is the
+ * recoverable one.
+ *
+ * This is a heuristic over bytes, not a parse of the cross-reference table. It
+ * decides only whether a document has too little text for its length, and the
+ * honest answer when it cannot tell is `0`, which turns the floor off.
  */
 const pageTreeCount = (text: string): number => {
   const nodes = /\/Type\s*\/Pages\b/gu;
-  let best = 0;
+  const roots: number[] = [];
+  const others: number[] = [];
   let seen = 0;
   let match: RegExpExecArray | null;
 
@@ -110,10 +129,16 @@ const pageTreeCount = (text: string): number => {
     seen += 1;
     const window = text.slice(Math.max(0, match.index - COUNT_RADIUS), match.index + COUNT_RADIUS);
     const count = /\/Count\s+(\d{1,9})/u.exec(window);
-    if (count !== null) best = Math.max(best, Number(count[1] ?? 0));
+    if (count === null) continue;
+
+    const value = Number(count[1] ?? 0);
+    if (value <= 0) continue;
+    if (/\/Parent\b/u.test(window)) others.push(value);
+    else roots.push(value);
   }
 
-  return best;
+  const candidates = roots.length > 0 ? roots : others;
+  return candidates.length === 0 ? 0 : Math.min(...candidates);
 };
 
 /** Page objects, for files whose page tree says nothing. */
@@ -125,7 +150,12 @@ const countPageObjects = (text: string): number => {
 };
 
 const readPageCount = (head: string, tail: string, complete: boolean): number | null => {
-  const declared = Math.max(pageTreeCount(head), pageTreeCount(tail));
+  const fromHead = pageTreeCount(head);
+  const fromTail = pageTreeCount(tail);
+  // Same reasoning as within a window: where the two halves disagree, the
+  // smaller number is the one whose error is recoverable.
+  const declared =
+    fromHead > 0 && fromTail > 0 ? Math.min(fromHead, fromTail) : Math.max(fromHead, fromTail);
   if (declared > 0) return declared;
   // Counting objects in the part of a file we chose not to read would produce a
   // number that looks authoritative and is not. `null` is the honest answer.

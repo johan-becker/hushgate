@@ -332,3 +332,26 @@ describe('shapes the review found hushgate was blind to', () => {
     expect(() => findAttachmentSites({ messages: [deep] })).toThrow(/deeper than/u);
   });
 });
+
+describe('the shapes a second look found', () => {
+  it('reads a custom-content document whose blocks are bare strings', () => {
+    // The API accepts both, and reading only the object form forwarded the
+    // string form verbatim — the same leak, one shape along.
+    const sites = findAttachmentSites({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'content', content: ['Kundin Anna Schmidt, IBAN DE89370400440532013000'] },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(sites).toHaveLength(1);
+    expect(Buffer.from(sites[0]?.data ?? '', 'base64').toString('utf8')).toContain('Anna Schmidt');
+  });
+});

@@ -51,6 +51,8 @@ export const ANTHROPIC_MESSAGES_RULES: readonly PathRule[] = [
   // document body is forwarded verbatim — and it is a document, so it is
   // exactly the kind of text that carries names and account numbers.
   'messages.*.content.*.source.content',
+  // Both shapes the blocks come in: a bare string, and a text block.
+  'messages.*.content.*.source.content.*',
   'messages.*.content.*.source.content.*.text',
   'messages.*.content.*.content',
   'messages.*.content.*.content.*.text',

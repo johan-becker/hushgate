@@ -296,6 +296,76 @@ describe('a document hushgate cannot read', () => {
   });
 });
 
+const asAttachment = (text: string): unknown => ({
+  model: 'gpt-4o',
+  messages: [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'file',
+          file: {
+            filename: 'brief.txt',
+            file_data: `data:text/plain;base64,${Buffer.from(text, 'utf8').toString('base64')}`,
+          },
+        },
+      ],
+    },
+  ],
+});
+
+describe('a document whose spacing splits its identifiers', () => {
+  /**
+   * What ordinary PDF kerning does to an address block. A `TJ` array with an
+   * offset every three glyphs is normal typesetting, and pdftotext turns it
+   * into `E-M ail : a nna .sc hmi dt@ nor dli cht` — text with no short words
+   * at all, fluent to every ratio, and matching no detector.
+   *
+   * The extractor here is a stub, so the test needs no poppler; the input is
+   * the output poppler was measured producing.
+   */
+  const shredded =
+    'Sac hbe arb eit eri n: Ann a S chm idt\n' +
+    'E-M ail : a nna .sc hmi dt@ nor dli cht .ex amp le\n' +
+    'IBA N: DE8 937 040 044 053 201 300 0';
+
+  it('is refused, rather than forwarded with the address in clear', async () => {
+    harness = await startHarness({ handler: reply, config: withAttachments() });
+
+    const response = await harness.post('/v1/chat/completions', asAttachment(shredded));
+
+    expect(response.status).toBe(422);
+    expect(harness.upstream.requests).toHaveLength(0);
+  });
+
+  it('does not refuse the same letter set properly', async () => {
+    harness = await startHarness({ handler: reply, config: withAttachments() });
+
+    const clean =
+      'Sachbearbeiterin: Anna Schmidt\n' +
+      'E-Mail: anna.schmidt@nordlicht.example\n' +
+      'IBAN: DE89370400440532013000';
+    const response = await harness.post('/v1/chat/completions', asAttachment(clean));
+
+    expect(response.status).toBe(200);
+    const sent = harness.upstream.requests[0]?.body ?? '';
+    expect(sent).toContain('[EMAIL_1]');
+    expect(sent).not.toContain('anna.schmidt@nordlicht.example');
+  });
+
+  it('does not refuse a letter that merely contains a table of short codes', async () => {
+    harness = await startHarness({ handler: reply, config: withAttachments() });
+
+    const table =
+      'Sehr geehrte Damen und Herren, anbei die Auswertung des vergangenen Quartals.\n' +
+      'Umsatz nach Land\nDE AT CH FR IT ES NL BE PL CZ\nDK SE NO FI PT IE GR HU RO BG\n' +
+      'Mit freundlichen Gruessen, die Sachbearbeitung des Hauses Nordlicht.\n';
+    const response = await harness.post('/v1/chat/completions', asAttachment(table));
+
+    expect(response.status).toBe(200);
+  });
+});
+
 describe('when attachment handling is off', () => {
   it('leaves the request exactly as it arrived', async () => {
     harness = await startHarness({
@@ -312,5 +382,74 @@ describe('when attachment handling is off', () => {
     });
 
     expect(harness.upstream.requests[0]?.body ?? '').toContain(data);
+  });
+});
+
+describe('separators that are invisible in the extracted text', () => {
+  // A hand-picked list of these leaves gaps, and every gap is a working
+  // separator: the character renders as nothing and the address matches
+  // nothing. U+FE00 is a variation selector, which an earlier list missed.
+  const SEPARATORS = ['​', '︀', '᠋', '⁥', 'ㅤ', '‪', '­'];
+
+  it.each(SEPARATORS)('does not let %j hide an address', async (separator) => {
+    harness = await startHarness({ handler: reply, config: withAttachments() });
+
+    const hidden = `Kundin Anna Schmidt, ${[...'anna.schmidt@nordlicht.example'].join(separator)}`;
+    const response = await harness.post('/v1/chat/completions', {
+      model: 'gpt-4o',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              file: {
+                filename: 'x.txt',
+                file_data: `data:text/plain;base64,${Buffer.from(hidden, 'utf8').toString('base64')}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(response.status).toBe(200);
+    const sent = harness.upstream.requests[0]?.body ?? '';
+    expect(sent).toContain('[EMAIL_1]');
+    expect(sent).not.toContain('nordlicht.example');
+  });
+});
+
+describe('a document cut at the character limit', () => {
+  it('says so, in the prompt and in the report', async () => {
+    harness = await startHarness({
+      handler: reply,
+      config: withAttachments({ maxTextChars: 100 }),
+    });
+
+    // The trailing whitespace matters: `tidy` strips it, and measuring
+    // truncation after that would spend the headroom and record a document cut
+    // to a third of itself as having been read in full.
+    const long = `${'A'.repeat(120)}${'   '.repeat(40)}Anna Schmidt`;
+    const response = await harness.post('/v1/chat/completions', {
+      model: 'gpt-4o',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              file: {
+                filename: 'l.txt',
+                file_data: `data:text/plain;base64,${Buffer.from(long, 'utf8').toString('base64')}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(response.status).toBe(200);
+    expect(harness.upstream.requests[0]?.body ?? '').toContain('truncated by hushgate');
   });
 });
