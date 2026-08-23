@@ -846,6 +846,9 @@ export function applyEnv(
   const auditPath = envValue(env, 'HUSHGATE_AUDIT_PATH');
   const auditEnabled = envValue(env, 'HUSHGATE_AUDIT');
   const residencyMode = envValue(env, 'HUSHGATE_RESIDENCY_MODE');
+  const attachmentsEnabled = envValue(env, 'HUSHGATE_ATTACHMENTS');
+  const onUnreadable = envValue(env, 'HUSHGATE_ATTACHMENTS_ON_UNREADABLE');
+  const attachmentMaxBytes = envValue(env, 'HUSHGATE_ATTACHMENT_MAX_BYTES');
 
   return {
     ...config,
@@ -860,6 +863,21 @@ export function applyEnv(
         anthropic === undefined
           ? config.upstreams.anthropic
           : envUrl(anthropic, 'HUSHGATE_UPSTREAM_ANTHROPIC'),
+    },
+    attachments: {
+      ...config.attachments,
+      enabled:
+        attachmentsEnabled === undefined
+          ? config.attachments.enabled
+          : envBoolean(attachmentsEnabled, 'HUSHGATE_ATTACHMENTS'),
+      onUnreadable:
+        onUnreadable === undefined
+          ? config.attachments.onUnreadable
+          : envUnreadable(onUnreadable, 'HUSHGATE_ATTACHMENTS_ON_UNREADABLE'),
+      maxBytes:
+        attachmentMaxBytes === undefined
+          ? config.attachments.maxBytes
+          : envPositiveInt(attachmentMaxBytes, 'HUSHGATE_ATTACHMENT_MAX_BYTES'),
     },
     redaction: {
       ...config.redaction,
@@ -1118,6 +1136,13 @@ function envPositiveInt(value: string, name: string): number {
     throw new ConfigError(`${name} must be a positive integer, got "${value}"`);
   }
   return parsed;
+}
+
+function envUnreadable(value: string, name: string): UnreadableAction {
+  if (!(UNREADABLE_ACTIONS as readonly string[]).includes(value)) {
+    throw new ConfigError(`${name} must be one of ${UNREADABLE_ACTIONS.join(', ')}, got ${describe(value)}`);
+  }
+  return value as UnreadableAction;
 }
 
 function envPolicy(value: string, name: string): Policy {

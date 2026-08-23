@@ -286,3 +286,69 @@ describe('applyOverrides', () => {
     expect(config.upstreams.anthropic).toBe(defaultConfig().upstreams.anthropic);
   });
 });
+
+describe('attachment configuration', () => {
+  it('is on by default, and refuses what it cannot read', () => {
+    const config = defaultConfig();
+    expect(config.attachments.enabled).toBe(true);
+    expect(config.attachments.onUnreadable).toBe('block');
+  });
+
+  it('ships an extractor for PDF, because nothing built in reads one', () => {
+    const [spec] = defaultConfig().attachments.extractors;
+    expect(spec?.command).toBe('pdftotext');
+    // Nothing from a request may reach argv, so the arguments are fixed and
+    // the document goes on stdin: "-" as both input and output.
+    expect(spec?.args).toEqual(['-q', '-enc', 'UTF-8', '-', '-']);
+  });
+
+  it('refuses a total budget smaller than a single attachment', () => {
+    expect(() =>
+      parseConfig({ attachments: { maxBytes: 1_000_000, maxTotalBytes: 1000 } }),
+    ).toThrow(/maxTotalBytes/u);
+  });
+
+  it('refuses an unknown onUnreadable action', () => {
+    expect(() => parseConfig({ attachments: { onUnreadable: 'ignore' } })).toThrow(
+      /block, withhold, forward/u,
+    );
+  });
+
+  it('refuses an extractor that claims nothing, since it could never run', () => {
+    expect(() =>
+      parseConfig({ attachments: { extractors: [{ command: 'x', args: [] }] } }),
+    ).toThrow(/mediaTypes or formats/u);
+  });
+
+  it('refuses an extractor with no command', () => {
+    expect(() =>
+      parseConfig({ attachments: { extractors: [{ mediaTypes: ['application/pdf'], command: '  ' }] } }),
+    ).toThrow(/command/u);
+  });
+
+  it('refuses a format that is not a format', () => {
+    expect(() =>
+      parseConfig({ attachments: { extractors: [{ formats: ['powerpoint'], command: 'x' }] } }),
+    ).toThrow(/not a known format/u);
+  });
+
+  it('rejects unknown keys, as every other section does', () => {
+    expect(() => parseConfig({ attachments: { ocr: true } })).toThrow(/ocr/u);
+  });
+
+  it('takes the environment overrides a container deployment needs', () => {
+    const config = applyEnv(defaultConfig(), {
+      HUSHGATE_ATTACHMENTS: 'true',
+      HUSHGATE_ATTACHMENTS_ON_UNREADABLE: 'withhold',
+      HUSHGATE_ATTACHMENT_MAX_BYTES: '2048',
+    });
+    expect(config.attachments.onUnreadable).toBe('withhold');
+    expect(config.attachments.maxBytes).toBe(2048);
+  });
+
+  it('refuses an unreadable action from the environment too', () => {
+    expect(() =>
+      applyEnv(defaultConfig(), { HUSHGATE_ATTACHMENTS_ON_UNREADABLE: 'whatever' }),
+    ).toThrow(/HUSHGATE_ATTACHMENTS_ON_UNREADABLE/u);
+  });
+});
