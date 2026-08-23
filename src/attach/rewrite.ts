@@ -154,8 +154,9 @@ async function handleSite(
       continue;
     }
 
-    const truncated = result.value.text.length > limits.maxTextChars;
-    const text = truncated ? result.value.text.slice(0, limits.maxTextChars) : result.value.text;
+    const cleaned = tidy(result.value.text);
+    const truncated = cleaned.length > limits.maxTextChars;
+    const text = truncated ? cleaned.slice(0, limits.maxTextChars) : cleaned;
 
     return {
       report: {
@@ -235,6 +236,24 @@ function header(
 
 function describeFile(filename: string | null, mediaType: string): string {
   return filename === null || filename.trim() === '' ? mediaType : filename;
+}
+
+/**
+ * Make extracted text fit to sit in a prompt.
+ *
+ * Runs only after the quality check has passed, and that ordering matters: a
+ * form feed is exactly what a scanned page extracts to, so `quality.ts` counts
+ * it as evidence that nothing was read. Once the text has been believed, the
+ * same character is just a page break, and leaving a run of them in the middle
+ * of a prompt spends the model's attention on nothing.
+ */
+function tidy(text: string): string {
+  return text
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\f', '\n')
+    .replaceAll(/[ \t]+$/gmu, '')
+    .replaceAll(/\n{3,}/gu, '\n\n')
+    .trim();
 }
 
 function textPart(head: string, text: string): JsonValue {

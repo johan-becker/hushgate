@@ -50,7 +50,7 @@ value, construct a synthetic one — the test suite is full of examples, and
 ## Out of scope
 
 - Weak detection coverage in itself. hushgate cannot recognise personal data
-  that has no structure, and [README §9](README.md#9-detection-what-it-catches-and-what-it-does-not)
+  that has no structure, and [README §10](README.md#10-detection-what-it-catches-and-what-it-does-not)
   says so. A *systematic* miss of something a detector claims to validate is a
   bug — report it as an ordinary issue.
 - Anything requiring write access to the configuration file or the audit trail

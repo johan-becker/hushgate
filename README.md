@@ -18,8 +18,13 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 739 tests
+network calls of its own beyond the upstream you configure, and its 948 tests
 pass with the cable pulled out.
+
+Attachments go through the same door: a PDF or a Word file in a request is
+turned into text, the text is pseudonymised, and the document itself never
+reaches the provider. A document hushgate cannot read is refused, not
+forwarded.
 
 Every command output printed below was produced by running that command against
 this repository. [`examples/`](examples) contains the config and the local
@@ -104,7 +109,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 
 Your provider API key is forwarded untouched and is never written anywhere.
 (In multi-tenant mode the caller sends a hushgate key instead, and the provider
-credential comes from the environment — see §8.)
+credential comes from the environment — see §9.)
 
 `hushgate init` writes a config with the reasoning in it, not a bare skeleton:
 
@@ -300,7 +305,172 @@ $ curl -sS -w '%{http_code}\n' http://127.0.0.1:8787/v1/chat/completions \
 
 The upstream log stayed empty for that one.
 
-## 4. Streaming
+## 4. Attachments
+
+A support agent pastes a question and drags in the invoice. The question is
+prose hushgate already knows how to handle; the invoice is 18 KiB of base64 in
+a content part, and before this existed it went to the provider byte for byte —
+the redaction layer selects the leaves that carry prose, and a PDF is not one.
+
+So attachments go through the same door as everything else, one step earlier.
+The document is turned into text, the text takes the document's place in the
+conversation, and only then does redaction run. By the time the request is
+serialised there is nothing in it but prose, and every detector, policy and
+placeholder applies to the invoice exactly as it applies to the question.
+
+Send this:
+
+```json
+{"model": "gpt-4o", "messages": [{"role": "user", "content": [
+  {"type": "text", "text": "Worum geht es in dieser Rechnung?"},
+  {"type": "file", "file": {"filename": "Rechnung Anna Schmidt.pdf",
+                            "file_data": "data:application/pdf;base64,JVBERi0xLjMK..."}}
+]}]}
+```
+
+and this is what the provider receives — captured from the fake upstream, not
+written by hand:
+
+```json
+[
+    {
+        "type": "text",
+        "text": "Worum geht es in dieser Rechnung?"
+    },
+    {
+        "type": "text",
+        "text": "--- attachment: Rechnung [NAME_1].pdf (application/pdf, 1 page) ---\nRechnung Nr. 2026-0815\nKundin: [NAME_1]\nE-Mail: [EMAIL_1]\nTelefon: [PHONE_1]\nIBAN: [IBAN_1]\nBetrag: 1.240,00 EUR\n--- end of attachment ---"
+    }
+]
+```
+
+The reply comes back with the real values restored, as it does for any other
+request. The filename is pseudonymised along with everything else, and on
+purpose: `Kuendigung_Anna_Schmidt.pdf` names a person and discloses an
+employment event before anyone opens it.
+
+### What it reads
+
+| Format | Read by |
+| --- | --- |
+| `.docx` `.xlsx` `.pptx` `.odt` `.ods` `.odp` | built in — ZIP via `node:zlib`, then the document XML |
+| `.txt` `.md` `.csv` `.tsv` `.json` `.xml` `.log` | built in — with BOM, UTF-16 and windows-1252 detection |
+| `.html` | built in — including `href`, `alt` and `title`, which carry addresses |
+| `.rtf` | built in |
+| `.eml` | built in — headers, RFC 2047 encoded subjects, and the text parts |
+| `.pdf` | an external extractor you configure. The Docker image ships `pdftotext`. |
+| images, audio, scans | nothing. There is no OCR and no transcription. |
+
+### Why PDF is not parsed in-process
+
+A from-scratch PDF text extractor was written and measured while this was
+designed, and it was rejected on its results. On ordinary documents — a Google
+Docs export, a letter from a telecoms provider — it produced output that read
+fluently, was the right length, and had the recipient's name, street, postcode
+and customer number simply missing from it. A variant produced
+`johan.beck er@klinik.de`: an address split on glyph advance widths, which no
+detector matches and which would therefore reach the provider in the clear.
+
+Those two failures are not the same. Text that is *dropped* is text hushgate
+never forwards either, so nothing leaks — the model just gets less. Text that is
+*shredded* is forwarded, and is a leak. hushgate refuses both, but it is the
+second that decided this: a parser that silently mangles identifiers is worse
+than no parser at all, in a tool whose entire claim is that identifiers do not
+get through.
+
+So PDF extraction is delegated to a tool built for it, run as a separate
+process with the document on its standard input. Nothing derived from the
+request reaches its arguments — a file named `-l 1` handed to `pdftotext` as an
+argument truncates a 400-page document to one page and exits zero — nothing
+touches the disk, and the child gets a minimal environment rather than
+hushgate's, which holds your provider API key.
+
+```jsonc
+"attachments": {
+  "extractors": [
+    { "mediaTypes": ["application/pdf"],
+      "command": "pdftotext",
+      "args": ["-q", "-enc", "UTF-8", "-", "-"],
+      "timeoutMs": 20000 }
+  ]
+}
+```
+
+`hushgate doctor` reports whether each configured command is actually on PATH,
+so "PDFs are being refused" is something you find out before your users do.
+
+### When it cannot read a document
+
+This is the case the design turns on, because it is where personal data would
+leak quietly. An extractor that fails is easy; an extractor that *succeeds* on a
+scanned page is not. `pdftotext` on a scan exits 0 and prints a single form
+feed, which is indistinguishable from "this document contains no text" to
+anything that only checks the exit status.
+
+So every extraction is asked a second question before it is believed: enough
+characters overall, enough per page, few enough replacement characters, few
+enough control characters, and words that are not overwhelmingly one and two
+letters long. Failing any of those makes the document unreadable, and
+`attachments.onUnreadable` decides what happens:
+
+| Setting | Behaviour |
+| --- | --- |
+| `block` (default) | The request is refused with **422** and nothing leaves the machine. |
+| `withhold` | The file is replaced by a note saying it was withheld; the rest of the request goes on. |
+| `forward` | The original bytes are sent. The one setting that lets an unread document reach the provider — `doctor` reports it as a failure, and the Article 30 report counts every document it affects. |
+
+```console
+$ curl -sS -w '%{http_code}\n' http://127.0.0.1:8787/v1/chat/completions \
+    -H 'content-type: application/json' -d @scan-request.json
+422
+{
+    "error": {
+        "type": "hushgate_attachment_unreadable",
+        "message": "attachment (application/pdf, 2416551 bytes) could not be pseudonymised: extracted only 1 characters from 3 pages, which is not a readable document",
+        "mediaType": "application/pdf",
+        "bytes": 2416551
+    }
+}
+```
+
+A remote `image_url`, an Anthropic `source.type: "url"`, and a provider
+`file_id` are all unreadable by the same rule. hushgate will not fetch them:
+making an outbound request of its own to pull in an unknown document, on a
+caller's say-so, is not a thing this program does.
+
+### Seeing it without sending anything
+
+`hushgate extract` answers the question an auditor actually asks — show me what
+you sent — offline, against a file of their choosing, with no request and no
+upstream:
+
+```console
+$ hushgate extract Rechnung.pdf
+Rechnung.pdf
+  pdf, 17.7 KiB, 1 page, read by external.pdftotext
+  162 characters, 3 findings (EMAIL 1, IBAN 1, PHONE 1)
+
+Rechnung Nr. 2026-0815
+Kundin: Anna Schmidt
+E-Mail: [EMAIL_1]
+Telefon: [PHONE_1]
+IBAN: [IBAN_1]
+Betrag: 1.240,00 EUR
+```
+
+`hushgate scan` reads documents too, so a folder of contracts can be checked for
+what it holds before any of it goes near a model.
+
+### Limits
+
+Decoded size is checked before anything is allocated, per attachment and across
+the request. ZIP entries are capped by count, by size and by compression ratio:
+a 21 KiB crafted `.docx` has been measured driving a mature extractor to 178 MiB
+of resident memory. No XML is parsed with entity resolution, so XXE is
+structurally impossible rather than merely blocked. External extractors get a
+wall-clock timeout, a `SIGKILL` after it, and a cap on how much they may write.
+
+## 5. Streaming
 
 Streaming is where a naive proxy falls apart. A model does not emit `[EMAIL_1]`
 as one token; it emits `[`, then `EMAIL`, then `_1]`, in three separate SSE
@@ -351,9 +521,9 @@ data: [DONE]
 
 The third event emitted only ` an ` and held `[EMAIL_1` back, because that run
 could still grow into a placeholder. The fourth resolved it and flushed the
-whole address at once. §7 explains why that can never stall.
+whole address at once. §8 explains why that can never stall.
 
-## 5. Data residency
+## 6. Data residency
 
 `hushgate residency` answers the DPO's question directly: where does each route
 send data, and on whose authority. This is the command an engineer screenshots.
@@ -452,7 +622,7 @@ an account setting or a contract clause, are reported rather than faked; with
 `residency.requireDataControls` set, an upstream that offers none refuses to
 start.
 
-## 6. The audit trail
+## 7. The audit trail
 
 Every request appends one JSONL record: timestamp, route, outcome, latency,
 upstream, the count of findings per category, the policy applied to each, and
@@ -465,7 +635,7 @@ of the previous one, so the file is a hash chain.
 
 The trail below is [`examples/hushgate-audit.jsonl`](examples/hushgate-audit.jsonl),
 committed to the repository so this section can be read without running
-anything. It is exactly what the two requests in §3 and the stream in §4
+anything. It is exactly what the two requests in §3 and the stream in §5
 produce; delete it and re-run them and you get the same records, though the
 hashes differ because the chain covers timestamps.
 
@@ -572,7 +742,7 @@ processing activities; it is not legal advice and does not by itself make any
 transfer lawful.
 ```
 
-## 7. How it works
+## 8. How it works
 
 ### Structural traversal, not a regex over the blob
 
@@ -688,7 +858,7 @@ doubling against the next rather than trusting a single ratio. A typical chat
 request sits in the first row of that table, against a network round trip
 measured in hundreds of milliseconds.
 
-## 8. Reference
+## 9. Reference
 
 ### Commands
 
@@ -696,7 +866,8 @@ measured in hundreds of milliseconds.
 | --- | --- |
 | `hushgate init [--path <p>] [--force]` | Write a commented starter `hushgate.config.json`. |
 | `hushgate serve [options]` | Run the redacting proxy in the foreground. |
-| `hushgate scan [--json] [--show-values] [-q] <file...>` | Find personal data in files. Exits 3 when it finds any. |
+| `hushgate scan [--json] [--show-values] [-q] <file...>` | Find personal data in files, including PDFs and Office documents. Exits 3 when it finds any. |
+| `hushgate extract [--raw] [--json] <file>` | Show the text a document would be sent as. |
 | `hushgate check [-q]` | Redact standard input to standard output, for piping. |
 | `hushgate residency [--json] [--registry]` | Where each route sends data, and on whose authority. |
 | `hushgate doctor [--json] [--allow-warnings]` | Validate config, residency and audit chain. For CI. |
@@ -785,12 +956,19 @@ wins. The file is JSONC: `//` and `/* */` comments are stripped on load.
 | `redaction.custom` | `[]` | `{ "name", "pattern" }`; the name becomes the category. |
 | `redaction.hmacKey` | random per session | Set it to make `hash` output comparable across requests and restarts. |
 | `redaction.dobYearRange` | 1900 → this year − 13 | Plausible birth years. |
-| `limits.maxBodyBytes` | 4 MiB | Larger requests are refused with 413. |
+| `limits.maxBodyBytes` | 16 MiB | Larger requests are refused with 413. Base64 inflates a document by a third. |
 | `limits.maxResponseBytes` | 16 MiB | Larger upstream responses are refused with 502. |
 | `limits.upstreamTimeoutMs` | 120000 | Upstream request timeout. |
 | `limits.requestTimeoutMs` | 60000 | How long a client may take to deliver its request. |
 | `limits.upstreamRetries` | 2 | Retries for an upstream that never answered. A response is never retried. |
 | `limits.retryBackoffMs` | 250 | Base delay for the full-jitter backoff, doubled each attempt. |
+| `attachments.enabled` | `true` | Turn documents into text before redacting. Off means they are forwarded unread. |
+| `attachments.onUnreadable` | `block` | `block` \| `withhold` \| `forward`. What to do with a document whose text hushgate could not read. |
+| `attachments.maxBytes` | 10 MiB | Per attachment, decoded. |
+| `attachments.maxTotalBytes` | 32 MiB | Across one request. |
+| `attachments.maxTextChars` | 200000 | Extracted text is cut here, and the cut is reported. |
+| `attachments.timeoutMs` | 20000 | Budget for extracting one attachment. |
+| `attachments.extractors` | `pdftotext` | Operator-provided commands, tried before the built-in ones. |
 | `audit.enabled`, `audit.path` | `true`, `hushgate-audit.jsonl` | |
 | `residency.mode` | `sanitize` | `block` \| `sanitize` \| `warn` \| `allow`. |
 | `residency.routes`, `.categories` | `{}` | Per-route and per-category overrides. |
@@ -888,7 +1066,7 @@ Also exported: `detect`, `createDetectors` and every individual detector;
 audit log and chain verifier; the residency registry and policy engine; the
 tenant registry; the metrics registry.
 
-## 9. Detection: what it catches, and what it does not
+## 10. Detection: what it catches, and what it does not
 
 hushgate is a deterministic detector, not a model. It is very good at
 identifiers that carry their own proof, and structurally incapable of
@@ -956,7 +1134,9 @@ What it does **not** do:
 - **Health, religion, union membership and the other Article 9 special
   categories.** They are prose. A dictionary or a custom rule can catch known
   terms; nothing catches the general case.
-- **Anything inside images.** Image content parts are skipped by design.
+- **Anything inside images.** There is no OCR, so a photograph or a scanned
+  page has no text hushgate can read. It is refused rather than forwarded —
+  see §4 — but refusing it is all hushgate can do.
 - **Re-identification by combination.** Removing the name does not stop
   "the customer in Ravensburg who ordered the ZX-40 on Tuesday" from being
   exactly one person. Pseudonymisation is not anonymisation.
@@ -964,7 +1144,7 @@ What it does **not** do:
   so `[EMAIL_1]` in yesterday's audit trail means nothing today. `hash` is the
   policy for stable, comparable, irreversible identifiers.
 
-## 10. Is this legally sufficient?
+## 11. Is this legally sufficient?
 
 No — and any tool that claims otherwise is selling something.
 
@@ -992,7 +1172,7 @@ What it does not do:
   starting point for a transfer impact assessment, not the conclusion of one,
   which is why every `residency.allow` entry is required to carry a
   `legalBasis` written by you.
-- Detection is best-effort (§9). A control that catches most personal data is
+- Detection is best-effort (§10). A control that catches most personal data is
   not a guarantee that none escaped.
 
 hushgate is a technical control that supports compliance. It is not legal
@@ -1000,7 +1180,7 @@ advice, and it does not by itself make any transfer lawful. Have your DPO review
 the configuration, and treat `hushgate residency` and `hushgate audit report` as
 inputs to that review rather than as its conclusion.
 
-## 11. Deployment
+## 12. Deployment
 
 ```sh
 hushgate init                 # the compose file mounts ./hushgate.config.json read-only
@@ -1082,7 +1262,7 @@ status — a 429 with a `retry-after` belongs to the caller, and quietly resendi
 a request the provider has already seen and charged for would be worse than the
 error.
 
-## 12. Development
+## 13. Development
 
 ```sh
 npm install
@@ -1098,7 +1278,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-739 tests across 29 files, and **none of them touch the network**. Every proxy
+948 tests across 36 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`
@@ -1112,7 +1292,7 @@ vulnerabilities privately per [SECURITY.md](SECURITY.md); participation is
 governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Notable changes are
 recorded in [CHANGELOG.md](CHANGELOG.md).
 
-## 13. License
+## 14. License
 
 hushgate is **source-available**, not open source. It is licensed under the
 [Business Source License 1.1](LICENSE) — the standard, unmodified BUSL text,
