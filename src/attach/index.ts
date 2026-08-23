@@ -19,7 +19,7 @@ export {
 } from './rewrite.js';
 export { rtfToText } from './rtf.js';
 export { findAttachmentSites, type AttachmentSite } from './shapes.js';
-export { normaliseMediaType, sniffFormat } from './sniff.js';
+export { mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
 export { readZip, type ZipEntry } from './zip.js';
 export type {
   Attachment,

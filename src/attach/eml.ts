@@ -263,7 +263,9 @@ const decodeEncodedWords = (value: string): string => {
     const encoding = (match[2] ?? 'q').toLowerCase();
     const text = match[3] ?? '';
     const bytes =
-      encoding === 'b' ? Buffer.from(text, 'base64') : decodeQuotedPrintable(text.replaceAll('_', ' '));
+      encoding === 'b'
+        ? Buffer.from(text, 'base64')
+        : decodeQuotedPrintable(text.replaceAll('_', ' '));
     out += decodeCharset(bytes, charset);
 
     cursor = match.index + match[0].length;
@@ -307,7 +309,8 @@ const parseContentType = (raw: string | undefined): ContentType => {
   for (const segment of segments.slice(1)) {
     const equals = segment.indexOf('=');
     if (equals === -1) continue;
-    parameters.set(segment.slice(0, equals).trim().toLowerCase(), unquote(segment.slice(equals + 1)));
+    const name = segment.slice(0, equals).trim().toLowerCase();
+    parameters.set(name, unquote(segment.slice(equals + 1)));
   }
 
   return { type: (segments[0] ?? '').trim().toLowerCase(), parameters };
@@ -420,8 +423,8 @@ const isReadableText = (type: string): boolean =>
   type === '' || type.startsWith('text/') || type === 'application/xhtml+xml';
 
 const partText = (part: Part, contentType: ContentType): string => {
-  const encoding = (headerValue(part.headers, 'content-transfer-encoding') ?? '').trim().toLowerCase();
-  const bytes = decodeTransfer(part.body, encoding);
+  const declared = headerValue(part.headers, 'content-transfer-encoding') ?? '';
+  const bytes = decodeTransfer(part.body, declared.trim().toLowerCase());
   return decodeCharset(bytes, contentType.parameters.get('charset') ?? null);
 };
 
@@ -457,6 +460,9 @@ const collectMessage = (message: Part, depth: number, sink: Sink, budget: Budget
   collectPart(message, depth, sink, budget);
 };
 
+// A declaration where the rest of this file uses arrows: this and
+// collectMessage call each other, and hoisting is what lets the pair be written
+// in the order they are read in.
 function collectPart(part: Part, depth: number, sink: Sink, budget: Budget): void {
   if (sink.full()) return;
 
@@ -471,10 +477,16 @@ function collectPart(part: Part, depth: number, sink: Sink, budget: Budget): voi
     }
 
     const boundary = contentType.parameters.get('boundary');
-    if (boundary === undefined || boundary === '') return;
+    if (boundary === undefined || boundary === '') {
+      // Nothing can be found in a multipart with no boundary, and a body that
+      // silently went missing is the failure this module is written against.
+      sink.push('[message body not read: multipart without a boundary]\n');
+      return;
+    }
 
     const children = splitParts(part.body, boundary, MAX_PARTS).map((raw) => splitMessage(raw));
-    const chosen = contentType.type === 'multipart/alternative' ? [pickAlternative(children)] : children;
+    const alternative = contentType.type === 'multipart/alternative';
+    const chosen = alternative ? [pickAlternative(children)] : children;
 
     for (const child of chosen) {
       if (child === null || sink.full() || budget.parts >= MAX_PARTS) break;
@@ -519,9 +531,10 @@ export function emlToText(bytes: Uint8Array, maxChars: number): ExtractionResult
   if (bytes.length === 0) return { ok: false, reason: 'the message is empty' };
   if (bytes.length > MAX_MESSAGE_BYTES) {
     const size = formatBytes(bytes.length);
+    const limit = formatBytes(MAX_MESSAGE_BYTES);
     return {
       ok: false,
-      reason: `the message is ${size}, over the ${formatBytes(MAX_MESSAGE_BYTES)} the mail reader accepts`,
+      reason: `the message is ${size}, over the ${limit} the mail reader accepts`,
     };
   }
 

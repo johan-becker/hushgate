@@ -303,7 +303,7 @@ export function defaultConfig(): HushgateConfig {
       extractors: [
         {
           mediaTypes: ['application/pdf'],
-          formats: [],
+          formats: ['pdf'],
           command: 'pdftotext',
           args: ['-q', '-enc', 'UTF-8', '-', '-'],
           timeoutMs: 20_000,

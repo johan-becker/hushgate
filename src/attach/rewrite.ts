@@ -19,7 +19,7 @@ import type { JsonValue, Path } from '../redact/traverse.js';
 import { decodeBase64, formatBytes } from './decode.js';
 import { assessText } from './quality.js';
 import { findAttachmentSites, type AttachmentSite } from './shapes.js';
-import { sniffFormat } from './sniff.js';
+import { mediaTypeForFormat, sniffFormat } from './sniff.js';
 import type {
   AttachmentFormat,
   AttachmentReport,
@@ -125,7 +125,7 @@ async function handleSite(
   }
 
   const format = sniffFormat(bytes, site.declaredMediaType, site.filename);
-  const mediaType = site.declaredMediaType ?? mediaTypeFor(format);
+  const mediaType = site.declaredMediaType ?? mediaTypeForFormat(format);
   const context = {
     format,
     mediaType: site.declaredMediaType,
@@ -240,25 +240,6 @@ function describeFile(filename: string | null, mediaType: string): string {
 function textPart(head: string, text: string): JsonValue {
   const body = text === '' ? head : `${head}\n${text}\n--- end of attachment ---`;
   return { type: 'text', text: body };
-}
-
-function mediaTypeFor(format: AttachmentFormat): string {
-  switch (format) {
-    case 'pdf':
-      return 'application/pdf';
-    case 'html':
-      return 'text/html';
-    case 'csv':
-      return 'text/csv';
-    case 'json':
-      return 'application/json';
-    case 'xml':
-      return 'application/xml';
-    case 'text':
-      return 'text/plain';
-    default:
-      return 'application/octet-stream';
-  }
 }
 
 const keyOf = (path: Path): string => JSON.stringify(path);

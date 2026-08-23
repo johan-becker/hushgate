@@ -56,6 +56,8 @@ const RTF_HEADER = [0x7b, 0x5c, 0x72, 0x74, 0x66]; // {\rtf
 const UTF8_BOM = [0xef, 0xbb, 0xbf];
 const UTF16_LE_BOM = [0xff, 0xfe];
 const UTF16_BE_BOM = [0xfe, 0xff];
+const RIFF_HEADER = [0x52, 0x49, 0x46, 0x46];
+const WEBP_TAG = [0x57, 0x45, 0x42, 0x50];
 const ZIP_LOCAL_HEADER = [0x50, 0x4b, 0x03, 0x04];
 const ZIP_END_OF_DIRECTORY = [0x50, 0x4b, 0x05, 0x06];
 const ZIP_SPANNED = [0x50, 0x4b, 0x07, 0x08];
@@ -171,9 +173,7 @@ const isBitmap = (bytes: Uint8Array): boolean => {
 
 const isImage = (bytes: Uint8Array): boolean => {
   if (IMAGE_MAGIC.some((magic) => hasPrefix(bytes, 0, magic))) return true;
-  if (hasPrefix(bytes, 0, [0x52, 0x49, 0x46, 0x46]) && hasPrefix(bytes, 8, [0x57, 0x45, 0x42, 0x50])) {
-    return true;
-  }
+  if (hasPrefix(bytes, 0, RIFF_HEADER) && hasPrefix(bytes, 8, WEBP_TAG)) return true;
   return isBitmap(bytes);
 };
 
@@ -311,6 +311,12 @@ const sniffMarkup = (bytes: Uint8Array): AttachmentFormat | null => {
   return root.includes(XHTML_NAMESPACE) || /<html[\s>]/u.test(root) ? 'html' : 'xml';
 };
 
+/** The control characters prose is not made of. Tab, the line endings and form feed are. */
+const isControl = (code: number): boolean => {
+  if (code === 0x7f) return true;
+  return code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0c && code !== 0x0d;
+};
+
 const decodesAsUtf8 = (sample: Uint8Array): string | null => {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(sample);
@@ -346,9 +352,7 @@ const looksLikeText = (bytes: Uint8Array): boolean => {
   for (const char of text) {
     const code = char.codePointAt(0) ?? 0;
     if (code === 0) return false; // a NUL belongs to a container, never to prose
-    if (code === 0x7f || (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0c && code !== 0x0d)) {
-      controls += 1;
-    }
+    if (isControl(code)) controls += 1;
   }
   return controls <= text.length * MAX_CONTROL_RATIO;
 };
@@ -369,7 +373,8 @@ const fromFilename = (filename: string | null): AttachmentFormat | null => {
 
   const dot = filename.lastIndexOf('.');
   if (dot === -1) return null;
-  return EXTENSION_FORMATS.get(filename.slice(dot + 1, dot + 1 + MAX_EXTENSION_CHARS).toLowerCase()) ?? null;
+  const extension = filename.slice(dot + 1, dot + 1 + MAX_EXTENSION_CHARS).toLowerCase();
+  return EXTENSION_FORMATS.get(extension) ?? null;
 };
 
 /** Lowercase `type/subtype`, parameters dropped, or `null` when it is not one. */
@@ -411,4 +416,46 @@ export function sniffFormat(
   if (named !== null) return named;
 
   return looksLikeText(bytes) ? 'text' : 'unknown';
+}
+
+/**
+ * The media type a sniffed format implies.
+ *
+ * Needed wherever there is no declared type to go on — `hushgate scan` and
+ * `hushgate extract` are handed a file, not a request — so an extractor
+ * configured by media type still matches what sniffing found.
+ */
+export function mediaTypeForFormat(format: AttachmentFormat): string {
+  switch (format) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case 'odt':
+      return 'application/vnd.oasis.opendocument.text';
+    case 'ods':
+      return 'application/vnd.oasis.opendocument.spreadsheet';
+    case 'odp':
+      return 'application/vnd.oasis.opendocument.presentation';
+    case 'html':
+      return 'text/html';
+    case 'rtf':
+      return 'application/rtf';
+    case 'eml':
+      return 'message/rfc822';
+    case 'csv':
+      return 'text/csv';
+    case 'json':
+      return 'application/json';
+    case 'xml':
+      return 'application/xml';
+    case 'text':
+      return 'text/plain';
+    default:
+      return 'application/octet-stream';
+  }
 }

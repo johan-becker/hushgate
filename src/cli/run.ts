@@ -13,6 +13,7 @@ import { doctor, DOCTOR_FLAGS, DOCTOR_SUMMARY } from './commands/doctor.js';
 import { init, INIT_FLAGS, INIT_SUMMARY } from './commands/init.js';
 import { keys, KEYS_FLAGS, KEYS_SUMMARY } from './commands/keys.js';
 import { residency, RESIDENCY_FLAGS, RESIDENCY_SUMMARY } from './commands/residency.js';
+import { extract, EXTRACT_FLAGS, EXTRACT_SUMMARY } from './commands/extract.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
 
@@ -41,6 +42,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate scan [options] <file...>',
     flags: SCAN_FLAGS,
     run: scan,
+  },
+  extract: {
+    summary: EXTRACT_SUMMARY,
+    usage: 'hushgate extract [options] <file>',
+    flags: EXTRACT_FLAGS,
+    run: extract,
   },
   residency: {
     summary: RESIDENCY_SUMMARY,

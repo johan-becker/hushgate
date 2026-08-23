@@ -71,7 +71,8 @@ const zip = (entries: readonly ZipInput[]): Uint8Array => {
   return new Uint8Array(Buffer.concat([body, central, end]));
 };
 
-const OOXML_TYPES = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>';
+const CONTENT_TYPES = 'http://schemas.openxmlformats.org/package/2006/content-types';
+const OOXML_TYPES = `<?xml version="1.0"?><Types xmlns="${CONTENT_TYPES}"/>`;
 
 const MINIMAL_PDF = [
   '%PDF-1.7',
@@ -144,16 +145,18 @@ describe('sniffing by magic bytes', () => {
   });
 
   it('reads an xhtml root as html rather than xml', () => {
-    const bytes = utf8('<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body/></html>');
+    const xhtml = '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body/></html>';
+    const bytes = utf8(xhtml);
     expect(sniffFormat(bytes, null, null)).toBe('html');
   });
 });
 
 describe('sniffing what a zip container holds', () => {
   it('reads the OOXML main part as docx, xlsx or pptx', () => {
-    const docx = zip([{ name: '[Content_Types].xml', data: OOXML_TYPES }, { name: 'word/document.xml', data: '<w/>' }]);
-    const xlsx = zip([{ name: '[Content_Types].xml', data: OOXML_TYPES }, { name: 'xl/workbook.xml', data: '<w/>' }]);
-    const pptx = zip([{ name: '[Content_Types].xml', data: OOXML_TYPES }, { name: 'ppt/presentation.xml', data: '<p/>' }]);
+    const types = { name: '[Content_Types].xml', data: OOXML_TYPES };
+    const docx = zip([types, { name: 'word/document.xml', data: '<w/>' }]);
+    const xlsx = zip([types, { name: 'xl/workbook.xml', data: '<w/>' }]);
+    const pptx = zip([types, { name: 'ppt/presentation.xml', data: '<p/>' }]);
 
     expect(sniffFormat(docx, null, null)).toBe('docx');
     expect(sniffFormat(xlsx, null, null)).toBe('xlsx');
@@ -197,9 +200,8 @@ describe('sniffing what a zip container holds', () => {
 
   it('refuses a container whose directory does not parse', () => {
     const bytes = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, ...Array.from({ length: 40 }, () => 0xff)]);
-    expect(sniffFormat(bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'a.docx')).toBe(
-      'unknown',
-    );
+    const declared = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    expect(sniffFormat(bytes, declared, 'a.docx')).toBe('unknown');
   });
 });
 
@@ -235,9 +237,8 @@ describe('falling back to the declared type and then the filename', () => {
   });
 
   it('reads printable UTF-8 with no hints at all as text', () => {
-    expect(sniffFormat(utf8('Sehr geehrte Frau Schmidt,\n\nvielen Dank für Ihre Nachricht.\n'), null, null)).toBe(
-      'text',
-    );
+    const prose = utf8('Sehr geehrte Frau Schmidt,\n\nvielen Dank für Ihre Nachricht.\n');
+    expect(sniffFormat(prose, null, null)).toBe('text');
   });
 
   it('refuses bytes that are neither valid UTF-8 nor printable', () => {
@@ -290,10 +291,8 @@ describe('probing a PDF', () => {
   });
 
   it('counts page objects when no page tree says how many there are', () => {
-    const bare = ['%PDF-1.3', '1 0 obj << /Type /Page >> endobj', '2 0 obj << /Type/Page >> endobj', '%%EOF'].join(
-      '\n',
-    );
-    expect(probePdf(utf8(bare)).pages).toBe(2);
+    const bare = ['%PDF-1.3', '1 0 obj << /Type /Page >> endobj', '2 0 obj << /Type/Page >>', '%%EOF'];
+    expect(probePdf(utf8(bare.join('\n'))).pages).toBe(2);
   });
 
   it('reports an encrypted trailer', () => {
@@ -469,15 +468,10 @@ describe('reading a mail', () => {
   });
 
   it('stops walking a message that nests multiparts past the depth cap', () => {
-    let body = ['Content-Type: text/plain', '', 'Anna Schmidt'];
+    const body = ['Content-Type: text/plain', '', 'Anna Schmidt'];
     for (let level = 12; level > 0; level -= 1) {
-      body = [
-        `Content-Type: multipart/mixed; boundary="g${level}"`,
-        '',
-        `--g${level}`,
-        ...body,
-        `--g${level}--`,
-      ];
+      body.unshift(`Content-Type: multipart/mixed; boundary="g${level}"`, '', `--g${level}`);
+      body.push(`--g${level}--`);
     }
 
     const text = textOf(emlToText(mail(['From: a@example.de', ...body, '']), 4000));
@@ -487,7 +481,8 @@ describe('reading a mail', () => {
 
   it('refuses input that has no header fields', () => {
     const result = emlToText(utf8('nur etwas text\nund noch eine zeile\n'), 4000);
-    expect(result).toEqual({ ok: false, reason: 'no rfc 822 header fields before the first blank line' });
+    const reason = 'no rfc 822 header fields before the first blank line';
+    expect(result).toEqual({ ok: false, reason });
   });
 
   it('refuses an empty message', () => {

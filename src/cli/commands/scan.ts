@@ -6,7 +6,11 @@
  */
 import { readFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve as joinPath } from 'node:path';
-import { loadConfig, redactionOptions } from '../../config.js';
+import { assessText } from '../../attach/quality.js';
+import { buildExtractors } from '../../attach/registry.js';
+import { mediaTypeForFormat, sniffFormat } from '../../attach/sniff.js';
+import type { Extractor } from '../../attach/types.js';
+import { loadConfig, redactionOptions, type HushgateConfig } from '../../config.js';
 import { createDetectors, detect } from '../../detectors/index.js';
 import { HushgateError, UsageError } from '../../errors.js';
 import { Session } from '../../redact/session.js';
@@ -56,6 +60,7 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   });
 
   const options = redactionOptions(config);
+  const extractors = buildExtractors(config.attachments.extractors);
   const detectors = createDetectors(options);
   const session = new Session(options);
   const showValues = boolFlag(parsed, 'show-values');
@@ -65,7 +70,7 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
     // Sequential on purpose: the report has to follow the order of the
     // arguments, and a scan is bounded by the files the user named.
     // oxlint-disable-next-line no-await-in-loop
-    const text = await readTarget(cli, target);
+    const text = await readTarget(cli, target, config, extractors);
     const hits = detect(text, detectors).map((span) =>
       toHit(span, text, session.policyFor(span.kind), showValues),
     );
@@ -83,18 +88,70 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   return total === 0 ? EXIT.ok : EXIT.findings;
 }
 
-async function readTarget(cli: Cli, target: string): Promise<string> {
+/**
+ * Read one target as text.
+ *
+ * A PDF or a Word file read as UTF-8 is mojibake, and a scan over mojibake
+ * finds nothing — which would report a folder of customer contracts as clean.
+ * So the same extractors the proxy uses run here, and a document that cannot be
+ * read is an error rather than an empty result.
+ */
+async function readTarget(
+  cli: Cli,
+  target: string,
+  config: HushgateConfig,
+  extractors: readonly Extractor[],
+): Promise<string> {
   if (target === '-') {
     if (cli.stdin === undefined) throw new HushgateError('no standard input to read');
     return readAll(cli.stdin);
   }
 
   const path = isAbsolute(target) ? target : joinPath(cli.cwd, target);
+  let bytes: Buffer;
   try {
-    return readFileSync(path, 'utf8');
+    bytes = readFileSync(path);
   } catch (cause) {
     throw new HushgateError(`cannot read ${target}: ${(cause as Error).message}`, { cause });
   }
+
+  const format = sniffFormat(bytes, null, target);
+  // Plain text is read as it always was: routing it through an extractor would
+  // only risk changing what a long-standing scan reports.
+  if (format === 'text' || format === 'csv' || format === 'json' || format === 'xml') {
+    return bytes.toString('utf8');
+  }
+
+  const context = {
+    format,
+    // No caller declared anything here, so the type sniffing inferred stands in
+    // for one — otherwise an extractor configured by media type, which is the
+    // usual way, would never match a file named on the command line.
+    mediaType: mediaTypeForFormat(format),
+    maxChars: config.attachments.maxTextChars,
+    timeoutMs: config.attachments.timeoutMs,
+  };
+
+  let reason = `no extractor handles ${format}`;
+  for (const extractor of extractors) {
+    if (!extractor.supports(format, null)) continue;
+    // Sequential on purpose: the first extractor to produce trustworthy text is
+    // the one the proxy would have used.
+    // oxlint-disable-next-line no-await-in-loop
+    const result = await extractor.extract(bytes, context);
+    if (!result.ok) {
+      reason = result.reason;
+      continue;
+    }
+    const verdict = assessText(result.value.text, result.value.pages);
+    if (!verdict.ok) {
+      reason = verdict.reason;
+      continue;
+    }
+    return result.value.text;
+  }
+
+  throw new HushgateError(`cannot read ${target}: ${reason}`);
 }
 
 function toHit(span: Span, text: string, policy: Policy, showValues: boolean): Hit {
