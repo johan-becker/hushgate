@@ -131,9 +131,12 @@ const finish = (raw: string, encoding: string): DecodedText => ({
  */
 export function clampChars(text: string, maxChars: number): string {
   if (maxChars <= 0) return '';
-  if (text.length <= maxChars) return text;
 
-  const cut = text.slice(0, maxChars);
+  const cut = text.length <= maxChars ? text : text.slice(0, maxChars);
+  // `codePointAt` on the last unit of a complete pair reports the low half, so
+  // this matches an unpaired high half and nothing else. It is checked even
+  // when nothing was cut here, because an extractor that filled its budget
+  // exactly has already made the cut itself.
   const last = cut.codePointAt(cut.length - 1) ?? 0;
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }

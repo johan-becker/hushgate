@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { emlToText } from '../src/attach/eml.js';
 import { probePdf } from '../src/attach/pdf.js';
 import { normaliseMediaType, sniffFormat } from '../src/attach/sniff.js';
+import type { ExtractionResult } from '../src/attach/types.js';
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 const raw = (...values: number[]): Uint8Array => Uint8Array.from(values);
@@ -313,6 +314,12 @@ describe('probing a PDF', () => {
 
 const mail = (lines: readonly string[]): Uint8Array => Buffer.from(lines.join('\r\n'), 'latin1');
 
+/** The text, or a failure loud enough to read: a refusal must never assert true. */
+const textOf = (result: ExtractionResult): string => {
+  if (!result.ok) throw new Error(`extraction refused the message: ${result.reason}`);
+  return result.value.text;
+};
+
 describe('reading a mail', () => {
   const multipart = mail([
     'From: Anna Schmidt <anna.schmidt@example.de>',
@@ -338,24 +345,21 @@ describe('reading a mail', () => {
 
   it('puts the five envelope fields on their own lines', () => {
     const result = emlToText(multipart, 4000);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.text).toContain('From: Anna Schmidt <anna.schmidt@example.de>');
-    expect(result.value.text).toContain('Cc: Buchhaltung <buchhaltung@example.de>');
-    expect(result.value.text).toContain('Date: Tue, 12 Mar 2024 09:14:00 +0100');
-    expect(result.value.extractor).toBe('builtin.eml');
-    expect(result.value.pages).toBeNull();
+    expect(textOf(result)).toContain('From: Anna Schmidt <anna.schmidt@example.de>');
+    expect(textOf(result)).toContain('Cc: Buchhaltung <buchhaltung@example.de>');
+    expect(textOf(result)).toContain('Date: Tue, 12 Mar 2024 09:14:00 +0100');
+    expect(result.ok && result.value.extractor).toBe('builtin.eml');
+    expect(result.ok && result.value.pages).toBeNull();
   });
 
   it('decodes a base64 encoded word in the subject', () => {
-    const result = emlToText(multipart, 4000);
-    expect(result.ok && result.value.text).toContain('Subject: Kündigung Anna Schmidt');
+    expect(textOf(emlToText(multipart, 4000))).toContain('Subject: Kündigung Anna Schmidt');
   });
 
   it('decodes the quoted-printable alternative and reads it only once', () => {
-    const result = emlToText(multipart, 4000);
-    expect(result.ok && result.value.text).toContain('Grüße aus Karlsruhe, IBAN DE89 3704 0044 0532 0130 00');
-    expect(result.ok && result.value.text).not.toContain('niemand zweimal');
+    const text = textOf(emlToText(multipart, 4000));
+    expect(text).toContain('Grüße aus Karlsruhe, IBAN DE89 3704 0044 0532 0130 00');
+    expect(text).not.toContain('niemand zweimal');
   });
 
   it('falls back to the html alternative when there is no plain one', () => {
@@ -370,9 +374,7 @@ describe('reading a mail', () => {
       '--g--',
       '',
     ]);
-    expect(emlToText(bytes, 4000).ok && emlToText(bytes, 4000)).toBeTruthy();
-    const result = emlToText(bytes, 4000);
-    expect(result.ok && result.value.text).toContain('Frau Schmidt');
+    expect(textOf(emlToText(bytes, 4000))).toContain('Frau Schmidt');
   });
 
   it('joins a folded subject and the encoded words it was folded between', () => {
@@ -384,9 +386,7 @@ describe('reading a mail', () => {
       'Text',
       '',
     ]);
-    expect(emlToText(bytes, 4000).ok && emlToText(bytes, 4000)).toBeTruthy();
-    const result = emlToText(bytes, 4000);
-    expect(result.ok && result.value.text).toContain('Subject: Anna Schmidt');
+    expect(textOf(emlToText(bytes, 4000))).toContain('Subject: Anna Schmidt');
   });
 
   it('names an attached file without decoding it', () => {
@@ -408,10 +408,10 @@ describe('reading a mail', () => {
       '',
     ]);
 
-    const result = emlToText(bytes, 4000);
-    expect(result.ok && result.value.text).toContain('[attachment: Kuendigung_Anna_Schmidt.pdf]');
-    expect(result.ok && result.value.text).toContain('Anbei die Unterlagen.');
-    expect(result.ok && result.value.text).not.toContain('JVBERi0x');
+    const text = textOf(emlToText(bytes, 4000));
+    expect(text).toContain('[attachment: Kuendigung_Anna_Schmidt.pdf]');
+    expect(text).toContain('Anbei die Unterlagen.');
+    expect(text).not.toContain('JVBERi0x');
   });
 
   it('decodes an RFC 2231 filename', () => {
@@ -427,9 +427,7 @@ describe('reading a mail', () => {
       '--g--',
       '',
     ]);
-    expect(emlToText(bytes, 4000).ok && emlToText(bytes, 4000)).toBeTruthy();
-    const result = emlToText(bytes, 4000);
-    expect(result.ok && result.value.text).toContain('[attachment: Kündigung.pdf]');
+    expect(textOf(emlToText(bytes, 4000))).toContain('[attachment: Kündigung.pdf]');
   });
 
   it('reads the envelope of a forwarded message too', () => {
@@ -448,14 +446,43 @@ describe('reading a mail', () => {
       '',
     ]);
 
-    const result = emlToText(bytes, 4000);
-    expect(result.ok && result.value.text).toContain('From: Anna Schmidt <anna.schmidt@example.de>');
-    expect(result.ok && result.value.text).toContain('Neue Anschrift folgt.');
+    const text = textOf(emlToText(bytes, 4000));
+    expect(text).toContain('From: Anna Schmidt <anna.schmidt@example.de>');
+    expect(text).toContain('Neue Anschrift folgt.');
   });
 
   it('stops at the character budget', () => {
-    const result = emlToText(multipart, 20);
-    expect(result.ok && result.value.text.length).toBeLessThanOrEqual(20);
+    expect(textOf(emlToText(multipart, 20)).length).toBeLessThanOrEqual(20);
+  });
+
+  it('decodes a quoted-printable soft line break', () => {
+    const bytes = mail([
+      'From: a@example.de',
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: quoted-printable',
+      '',
+      'Anna Schmidt, Karls=',
+      'ruhe',
+      '',
+    ]);
+    expect(textOf(emlToText(bytes, 4000))).toContain('Anna Schmidt, Karlsruhe');
+  });
+
+  it('stops walking a message that nests multiparts past the depth cap', () => {
+    let body = ['Content-Type: text/plain', '', 'Anna Schmidt'];
+    for (let level = 12; level > 0; level -= 1) {
+      body = [
+        `Content-Type: multipart/mixed; boundary="g${level}"`,
+        '',
+        `--g${level}`,
+        ...body,
+        `--g${level}--`,
+      ];
+    }
+
+    const text = textOf(emlToText(mail(['From: a@example.de', ...body, '']), 4000));
+    expect(text).toContain('too deeply nested');
+    expect(text).not.toContain('Anna Schmidt');
   });
 
   it('refuses input that has no header fields', () => {

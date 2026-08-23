@@ -147,8 +147,19 @@ const codePointToString = (code: number): string | null => {
 
 /** Resolve one reference at `start`, or `null` when the `&` is just an ampersand. */
 const decodeEntity = (source: string, start: number): { readonly text: string; readonly next: number } | null => {
-  const semicolon = source.indexOf(';', start + 1);
-  if (semicolon === -1 || semicolon - start > MAX_ENTITY_LENGTH) return null;
+  // The scan is bounded rather than an `indexOf`, which is the difference
+  // between linear and quadratic: a document of a hundred thousand bare `&`
+  // and no `;` at all would otherwise search to the end of the input once per
+  // ampersand.
+  const limit = Math.min(source.length, start + 1 + MAX_ENTITY_LENGTH);
+  let semicolon = -1;
+  for (let index = start + 1; index < limit; index += 1) {
+    if (source.codePointAt(index) === 0x3b) {
+      semicolon = index;
+      break;
+    }
+  }
+  if (semicolon === -1) return null;
 
   const body = source.slice(start + 1, semicolon);
   if (body.length === 0) return null;
@@ -372,6 +383,17 @@ export function htmlToText(html: string, maxChars: number): string {
       const end = html.indexOf('-->', index + 4);
       // An unterminated comment swallows the rest of the document, which is
       // both what a browser does and the safe direction to be wrong in.
+      index = end === -1 ? html.length : end + 3;
+      continue;
+    }
+
+    if (html.startsWith('<![CDATA[', index)) {
+      // A browser renders this as nothing, because in an HTML document it is a
+      // bogus comment. hushgate is not a browser: an XHTML export puts real
+      // sentences in here, and a name inside one is still a name. The content
+      // is literal by definition, so no reference is resolved in it.
+      const end = html.indexOf(']]>', index + 9);
+      emitText(html.slice(index + 9, end === -1 ? html.length : end));
       index = end === -1 ? html.length : end + 3;
       continue;
     }

@@ -196,6 +196,22 @@ describe('htmlToText', () => {
     expect(htmlToText('<p>abcdefghij</p>', 4)).toBe('abcd');
   });
 
+  it('reads the content of a CDATA section a browser would render as nothing', () => {
+    expect(htmlToText('<p><![CDATA[Anna Schmidt]]> kam</p>', 100)).toBe('Anna Schmidt kam');
+  });
+
+  it('leaves no half of a surrogate pair behind when the budget runs out', () => {
+    expect(htmlToText('<p>ab&#128512;</p>', 3)).toBe('ab');
+    expect(htmlToText('<p>ab&#128512;</p>', 4)).toBe('ab\u{1F600}');
+  });
+
+  it('finishes fast on a document that is nothing but ampersands', () => {
+    const started = Date.now();
+    expect(htmlToText('&'.repeat(400_000), 2000)).toBe('&'.repeat(2000));
+    expect(htmlToText(`${'&amp'.repeat(200_000)};`, 40).length).toBe(40);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it('finishes fast on a document that is nothing but less-than signs', () => {
     const started = Date.now();
     const text = htmlToText('<'.repeat(300_000), 2000);
@@ -270,6 +286,14 @@ describe('rtfToText', () => {
   it('reads a negative Unicode parameter as the unsigned code point it stands for', () => {
     // 64257 does not fit a signed 16-bit parameter, so writers emit 64257 - 65536.
     expect(rtfToText(bytes(`${RTF_HEADER} \\u-1279 ?}`), 1000)).toBe('\uFB01');
+  });
+
+  it('joins the two escapes of an astral character back together', () => {
+    expect(rtfToText(bytes(`${RTF_HEADER} \\u-10179 ?\\u-8698 ?}`), 1000)).toBe('\u{1F606}');
+  });
+
+  it('drops a surrogate half whose partner never arrives', () => {
+    expect(rtfToText(bytes(`${RTF_HEADER} a\\u-10179 ?b}`), 1000)).toBe('ab');
   });
 
   it('skips a \\bin payload whole, braces and all', () => {

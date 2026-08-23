@@ -154,6 +154,8 @@ export function rtfToText(bytes: Uint8Array, maxChars: number): string {
   const unicodeSkipStack: number[] = [];
   /** Fallback characters still owed to a `\u`, which must not reach the output. */
   let pending = 0;
+  /** Half of an astral character, waiting for the `\u` that carries the other half. */
+  let highSurrogate: number | null = null;
   let table = codePageTable(DEFAULT_CODE_PAGE);
 
   while (index < bytes.length) {
@@ -203,6 +205,7 @@ export function rtfToText(bytes: Uint8Array, maxChars: number): string {
       if (ignoreFrom === null) {
         let run = '';
         for (let cursor = index; cursor < end; cursor += 1) run += table[bytes[cursor] ?? 0] ?? '';
+        highSurrogate = null;
         emit(run);
       }
       index = end;
@@ -237,7 +240,10 @@ export function rtfToText(bytes: Uint8Array, maxChars: number): string {
         pending -= 1;
         continue;
       }
-      if (ignoreFrom === null) emit(table[high * 16 + low] ?? '');
+      if (ignoreFrom === null) {
+        highSurrogate = null;
+        emit(table[high * 16 + low] ?? '');
+      }
       continue;
     }
 
@@ -331,9 +337,26 @@ export function rtfToText(bytes: Uint8Array, maxChars: number): string {
         // The parameter is a signed 16-bit integer, so anything above U+7FFF
         // arrives negative.
         const code = parameter < 0 ? parameter + 0x10000 : parameter;
-        const astral = code >= 0xd800 && code <= 0xdfff;
-        if (owed === 0 && code > 0 && code <= 0x10ffff && !astral) emit(String.fromCodePoint(code));
         pending = unicodeSkip;
+        if (owed > 0) break;
+
+        // An astral character is written as two escapes, one per half of its
+        // surrogate pair. Emitted separately they are two strings that are not
+        // text, so the high half waits for its partner and is discarded if
+        // anything else arrives first.
+        if (code >= 0xd800 && code <= 0xdbff) {
+          highSurrogate = code;
+          break;
+        }
+        const partner = highSurrogate;
+        highSurrogate = null;
+        if (code >= 0xdc00 && code <= 0xdfff) {
+          if (partner !== null) {
+            emit(String.fromCodePoint((partner - 0xd800) * 0x400 + (code - 0xdc00) + 0x10000));
+          }
+          break;
+        }
+        if (code > 0 && code <= 0x10ffff) emit(String.fromCodePoint(code));
         break;
       }
       default: {
