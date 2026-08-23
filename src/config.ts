@@ -8,6 +8,12 @@
  */
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
+import {
+  ATTACHMENT_FORMATS,
+  type AttachmentFormat,
+  type ExternalExtractorSpec,
+  type UnreadableAction,
+} from './attach/types.js';
 import type { CustomRule } from './detectors/custom.js';
 import type { DictionaryInput } from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
@@ -158,6 +164,31 @@ export interface OrganisationConfig {
   readonly purposes: readonly string[];
 }
 
+/**
+ * How attachments are handled.
+ *
+ * Before this section existed, a base64 PDF inside a content part was
+ * forwarded to the provider byte for byte: the redaction layer selects string
+ * leaves that carry prose, and a document is not one. `enabled` therefore
+ * defaults to true. Turning it off restores that behaviour, which is why
+ * `hushgate doctor` reports the off state rather than staying quiet about it.
+ */
+export interface AttachmentsConfig {
+  readonly enabled: boolean;
+  /** Largest single attachment hushgate will decode, in bytes. */
+  readonly maxBytes: number;
+  /** Largest total across one request, in bytes. */
+  readonly maxTotalBytes: number;
+  /** Characters of extracted text kept per attachment. */
+  readonly maxTextChars: number;
+  /** Wall-clock budget for extracting one attachment. */
+  readonly timeoutMs: number;
+  /** What to do with an attachment whose text could not be read. */
+  readonly onUnreadable: UnreadableAction;
+  /** Operator-provided extractors, tried before the built-in ones. */
+  readonly extractors: readonly ExternalExtractorSpec[];
+}
+
 export interface AuditConfig {
   /** Whether to write an audit trail at all. */
   readonly enabled: boolean;
@@ -172,6 +203,7 @@ export interface HushgateConfig {
   readonly redaction: RedactionConfig;
   readonly limits: LimitsConfig;
   readonly audit: AuditConfig;
+  readonly attachments: AttachmentsConfig;
   readonly residency: ResidencyConfig;
   /** Tenants, or an empty list for single-tenant operation. */
   readonly tenants: readonly Tenant[];
@@ -191,6 +223,7 @@ export interface ConfigOverrides {
   readonly limits?: Partial<LimitsConfig>;
   readonly redaction?: Partial<RedactionConfig>;
   readonly audit?: Partial<AuditConfig>;
+  readonly attachments?: Partial<AttachmentsConfig>;
   readonly residency?: Partial<ResidencyConfig>;
   readonly tenants?: readonly Tenant[];
   readonly organisation?: Partial<OrganisationConfig>;
@@ -206,6 +239,7 @@ const KNOWN_KEYS = new Set([
   'redaction',
   'limits',
   'audit',
+  'attachments',
   'residency',
   'tenants',
   'organisation',
@@ -236,7 +270,10 @@ export function defaultConfig(): HushgateConfig {
       hmacKey: null,
     },
     limits: {
-      maxBodyBytes: 4 * 1024 * 1024,
+      // Raised from 4 MiB when attachments arrived: base64 inflates a document
+      // by a third, so the old cap refused most real ones before an extractor
+      // could even look at them.
+      maxBodyBytes: 16 * 1024 * 1024,
       maxResponseBytes: 16 * 1024 * 1024,
       upstreamTimeoutMs: 120_000,
       requestTimeoutMs: 60_000,
@@ -248,6 +285,17 @@ export function defaultConfig(): HushgateConfig {
     audit: {
       enabled: true,
       path: DEFAULT_AUDIT_PATH,
+    },
+    // On by default: leaving it off would preserve the gap this section closes,
+    // and a document hushgate never reads is a document it cannot pseudonymise.
+    attachments: {
+      enabled: true,
+      maxBytes: 10 * 1024 * 1024,
+      maxTotalBytes: 32 * 1024 * 1024,
+      maxTextChars: 200_000,
+      timeoutMs: 20_000,
+      onUnreadable: 'block',
+      extractors: [],
     },
     residency: defaultResidencyConfig(),
     tenants: [],
@@ -322,6 +370,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       enabled: optionalBoolean(audit['enabled'], `${where}: "audit.enabled"`) ?? base.audit.enabled,
       path: optionalString(audit['path'], `${where}: "audit.path"`) ?? base.audit.path,
     },
+    attachments: parseAttachments(root['attachments'], where, base.attachments),
     residency: parseResidency(root['residency'], where, base.residency),
     tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction),
     organisation: parseOrganisation(root['organisation'], `${where}: "organisation"`),
@@ -852,6 +901,7 @@ export function applyOverrides(
     redaction: { ...config.redaction, ...overrides.redaction },
     limits: { ...config.limits, ...overrides.limits },
     audit: { ...config.audit, ...overrides.audit },
+    attachments: { ...config.attachments, ...overrides.attachments },
     residency: { ...config.residency, ...overrides.residency },
     tenants: overrides.tenants ?? config.tenants,
     organisation: { ...config.organisation, ...overrides.organisation },
@@ -1096,4 +1146,126 @@ export function redactionOptions(config: HushgateConfig): SessionOptions {
     dobYearRange: dobYearRange ?? undefined,
     hmacKey: hmacKey ?? undefined,
   };
+}
+
+/** Actions `attachments.onUnreadable` accepts, in the order doctor reports them. */
+const UNREADABLE_ACTIONS: readonly UnreadableAction[] = ['block', 'withhold', 'forward'];
+
+/**
+ * Validate the `attachments` section.
+ *
+ * The one field worth arguing about is `onUnreadable`. `forward` means an
+ * attachment hushgate could not read is sent to the provider as it arrived,
+ * which is the exact event the rest of the product exists to prevent. It is
+ * accepted, because an operator who knowingly wants images through should not
+ * have to patch the source — but it is a decision, so it is spelled out in
+ * config rather than reached by leaving something unset, and `doctor` reports
+ * it.
+ */
+function parseAttachments(
+  raw: unknown,
+  where: string,
+  base: AttachmentsConfig,
+): AttachmentsConfig {
+  const scope = `${where}: "attachments"`;
+  const node = asObject(raw ?? {}, scope);
+  rejectUnknownKeys(
+    node,
+    new Set([
+      'enabled',
+      'maxBytes',
+      'maxTotalBytes',
+      'maxTextChars',
+      'timeoutMs',
+      'onUnreadable',
+      'extractors',
+    ]),
+    scope,
+  );
+
+  const maxBytes = optionalPositiveInt(node['maxBytes'], `${scope}.maxBytes`) ?? base.maxBytes;
+  const maxTotalBytes =
+    optionalPositiveInt(node['maxTotalBytes'], `${scope}.maxTotalBytes`) ?? base.maxTotalBytes;
+
+  if (maxTotalBytes < maxBytes) {
+    throw new ConfigError(
+      `${scope}.maxTotalBytes (${maxTotalBytes}) is below maxBytes (${maxBytes}), so no attachment could ever be accepted`,
+    );
+  }
+
+  return {
+    enabled: optionalBoolean(node['enabled'], `${scope}.enabled`) ?? base.enabled,
+    maxBytes,
+    maxTotalBytes,
+    maxTextChars:
+      optionalPositiveInt(node['maxTextChars'], `${scope}.maxTextChars`) ?? base.maxTextChars,
+    timeoutMs: optionalPositiveInt(node['timeoutMs'], `${scope}.timeoutMs`) ?? base.timeoutMs,
+    onUnreadable: parseUnreadable(node['onUnreadable'], `${scope}.onUnreadable`) ?? base.onUnreadable,
+    extractors: parseExtractors(node['extractors'], `${scope}.extractors`) ?? base.extractors,
+  };
+}
+
+function parseUnreadable(value: unknown, where: string): UnreadableAction | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !(UNREADABLE_ACTIONS as readonly string[]).includes(value)) {
+    throw new ConfigError(
+      `${where} must be one of ${UNREADABLE_ACTIONS.join(', ')}, got ${describe(value)}`,
+    );
+  }
+  return value as UnreadableAction;
+}
+
+/**
+ * External extractors.
+ *
+ * `command` and `args` come from here and from nowhere else. Nothing derived
+ * from a request may reach a child process's argv: a document named `-layout`
+ * handed to pdftotext as an argument is read as a flag, and the tool then exits
+ * zero having produced nothing — a silent, caller-chosen truncation. Config is
+ * the only source, and the request only ever reaches the child over stdin.
+ */
+function parseExtractors(raw: unknown, where: string): ExternalExtractorSpec[] | undefined {
+  if (raw === undefined) return undefined;
+  const items = asArray(raw, where);
+
+  return items.map((item, index) => {
+    const scope = `${where}[${index}]`;
+    const node = asObject(item, scope);
+    rejectUnknownKeys(
+      node,
+      new Set(['mediaTypes', 'formats', 'command', 'args', 'timeoutMs']),
+      scope,
+    );
+
+    const command = requiredString(node['command'], `${scope}.command`);
+    if (command.trim() === '') throw new ConfigError(`${scope}.command must not be empty`);
+
+    const mediaTypes = optionalStringArray(node['mediaTypes'], `${scope}.mediaTypes`) ?? [];
+    const formats = parseFormats(node['formats'], `${scope}.formats`);
+    if (mediaTypes.length === 0 && formats.length === 0) {
+      throw new ConfigError(
+        `${scope} must name at least one of mediaTypes or formats, or it would never be used`,
+      );
+    }
+
+    return {
+      mediaTypes: mediaTypes.map((value) => value.toLowerCase()),
+      formats,
+      command,
+      args: optionalStringArray(node['args'], `${scope}.args`) ?? [],
+      timeoutMs: optionalPositiveInt(node['timeoutMs'], `${scope}.timeoutMs`) ?? 20_000,
+    };
+  });
+}
+
+function parseFormats(raw: unknown, where: string): AttachmentFormat[] {
+  const values = optionalStringArray(raw, where) ?? [];
+  for (const value of values) {
+    if (!(ATTACHMENT_FORMATS as readonly string[]).includes(value)) {
+      throw new ConfigError(
+        `${where} contains ${describe(value)}, which is not a known format; expected one of ${ATTACHMENT_FORMATS.join(', ')}`,
+      );
+    }
+  }
+  return values as AttachmentFormat[];
 }

@@ -133,3 +133,21 @@ export interface AttachmentReport {
   readonly extractor: string | null;
   readonly outcome: AttachmentOutcome;
 }
+
+/**
+ * An operator-provided extractor.
+ *
+ * Lives here rather than beside its implementation because the config layer
+ * validates it and must not depend on `node:child_process` to do so.
+ */
+export interface ExternalExtractorSpec {
+  /** Media types this command claims, lowercased. */
+  readonly mediaTypes: readonly string[];
+  /** Formats this command claims, as an alternative to naming media types. */
+  readonly formats: readonly AttachmentFormat[];
+  /** Executable name or path. Comes from config and from nowhere else. */
+  readonly command: string;
+  /** Fixed arguments. Nothing derived from a request may ever appear here. */
+  readonly args: readonly string[];
+  readonly timeoutMs: number;
+}
