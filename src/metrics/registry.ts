@@ -29,6 +29,8 @@ export class Metrics {
   private readonly blocked = new Map<string, number>();
   private readonly tokens = new Map<string, number>();
   private readonly durations = new Map<string, Histogram>();
+  private readonly attachments = new Map<string, number>();
+  private readonly attachmentBytes = new Map<string, number>();
 
   constructor(private readonly buckets: readonly number[] = DEFAULT_BUCKETS) {}
 
@@ -68,6 +70,30 @@ export class Metrics {
     this.bump(this.blocked, { reason, rule });
   }
 
+  /**
+   * Record one attachment.
+   *
+   * `outcome` is the label an operator alerts on. A rise in `withheld` or
+   * `forwarded` means documents are reaching the provider unread, which is the
+   * condition worth paging about — so it is a counter, not a log line.
+   */
+  observeAttachment(options: {
+    readonly format: string;
+    readonly outcome: string;
+    readonly extractor: string | null;
+    readonly bytes: number;
+  }): void {
+    const labels = {
+      format: options.format,
+      outcome: options.outcome,
+      extractor: options.extractor ?? 'none',
+    };
+    this.bump(this.attachments, labels);
+    if (options.bytes > 0) {
+      this.bump(this.attachmentBytes, { format: options.format }, options.bytes);
+    }
+  }
+
   private observeDuration(labels: Labels, seconds: number): void {
     const key = serialise(labels);
     let histogram = this.durations.get(key);
@@ -103,6 +129,18 @@ export class Metrics {
       '# HELP hushgate_requests_total Requests handled, by route, outcome and tenant.',
       '# TYPE hushgate_requests_total counter',
       ...series('hushgate_requests_total', this.requests),
+    );
+
+    lines.push(
+      '# HELP hushgate_attachments_total Attachments handled, by format, outcome and extractor.',
+      '# TYPE hushgate_attachments_total counter',
+      ...series('hushgate_attachments_total', this.attachments),
+    );
+
+    lines.push(
+      '# HELP hushgate_attachment_bytes_total Attachment bytes decoded, by format.',
+      '# TYPE hushgate_attachment_bytes_total counter',
+      ...series('hushgate_attachment_bytes_total', this.attachmentBytes),
     );
 
     lines.push(
