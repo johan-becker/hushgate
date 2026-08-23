@@ -76,6 +76,13 @@ interface Header {
   readonly value: string;
 }
 
+/** One field mid-unfold: its continuation lines, not yet joined. */
+interface FoldedHeader {
+  readonly name: string;
+  readonly chunks: string[];
+  used: number;
+}
+
 /** A message, or one part of one: its fields and the text after the blank line. */
 interface Part {
   readonly headers: readonly Header[];
@@ -139,19 +146,25 @@ const headerValue = (headers: readonly Header[], name: string): string | undefin
  * long enough to wrap is the normal case, not an edge one.
  */
 const parseHeaders = (block: string): Header[] => {
-  const headers: Header[] = [];
+  const folded: FoldedHeader[] = [];
 
   for (const line of block.split('\n')) {
-    if (headers.length >= MAX_HEADERS) break;
+    if (folded.length >= MAX_HEADERS) break;
 
     const text = line.endsWith('\r') ? line.slice(0, -1) : line;
     if (text === '') continue;
 
     if (text.startsWith(' ') || text.startsWith('\t')) {
-      const previous = headers.pop();
+      const previous = folded.at(-1);
       if (previous === undefined) continue;
-      const joined = `${previous.value} ${text.trim()}`;
-      headers.push({ name: previous.name, value: clampChars(joined, MAX_HEADER_CHARS) });
+      // A field already at its cap takes nothing more. Rebuilding and
+      // re-clamping the whole value per continuation line is quadratic, and a
+      // subject folded across a hundred thousand lines is a CPU probe, not a
+      // subject: it held the single-threaded proxy for most of two seconds.
+      if (previous.used >= MAX_HEADER_CHARS) continue;
+      const piece = clampChars(` ${text.trim()}`, MAX_HEADER_CHARS - previous.used);
+      previous.chunks.push(piece);
+      previous.used += piece.length;
       continue;
     }
 
@@ -159,13 +172,11 @@ const parseHeaders = (block: string): Header[] => {
     // A line that is not a field is not a guess to make: skip it and keep the
     // fields around it rather than treating the whole block as body.
     if (colon === -1) continue;
-    headers.push({
-      name: text.slice(0, colon).trim().toLowerCase(),
-      value: clampChars(text.slice(colon + 1).trim(), MAX_HEADER_CHARS),
-    });
+    const value = clampChars(text.slice(colon + 1).trim(), MAX_HEADER_CHARS);
+    folded.push({ name: text.slice(0, colon).trim().toLowerCase(), chunks: [value], used: value.length });
   }
 
-  return headers;
+  return folded.map((header) => ({ name: header.name, value: header.chunks.join('') }));
 };
 
 /** Fields and body, split at the first blank line, whichever line ending is used. */

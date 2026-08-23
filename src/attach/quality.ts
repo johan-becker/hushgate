@@ -30,6 +30,12 @@ export interface QualityLimits {
   readonly maxFragmentRatio: number;
   /** Below this many alphabetic runs, the fragment ratio is not meaningful. */
   readonly minRunsForFragmentCheck: number;
+  /**
+   * Runs per window for the local check. Shredding is usually local — one
+   * address block in a page of clean prose — and a document-wide average hides
+   * it completely.
+   */
+  readonly fragmentWindow: number;
 }
 
 export const DEFAULT_QUALITY_LIMITS: QualityLimits = {
@@ -39,6 +45,7 @@ export const DEFAULT_QUALITY_LIMITS: QualityLimits = {
   maxNonPrintableRatio: 0.3,
   maxFragmentRatio: 0.4,
   minRunsForFragmentCheck: 40,
+  fragmentWindow: 40,
 };
 
 /** Either the text may be trusted, or an operator is told why it may not. */
@@ -61,15 +68,16 @@ export type QualityVerdict =
  * runs are overwhelmingly one and two characters long is refused, however
  * fluent the character counts make it look.
  */
-function fragmentRatio(text: string): { ratio: number; runs: number } {
-  let runs = 0;
-  let short = 0;
+function fragmentRatio(
+  text: string,
+  window: number,
+): { worst: number; overall: number; runs: number } {
+  const lengths: number[] = [];
   let current = 0;
 
   const finish = (): void => {
     if (current === 0) return;
-    runs += 1;
-    if (current <= 2) short += 1;
+    lengths.push(current);
     current = 0;
   };
 
@@ -80,7 +88,28 @@ function fragmentRatio(text: string): { ratio: number; runs: number } {
   }
   finish();
 
-  return { ratio: runs === 0 ? 0 : short / runs, runs };
+  const runs = lengths.length;
+  if (runs === 0) return { worst: 0, overall: 0, runs: 0 };
+
+  const short = (index: number): number => ((lengths[index] ?? 0) <= 2 ? 1 : 0);
+  const overall = lengths.reduce((sum, length) => sum + (length <= 2 ? 1 : 0), 0) / runs;
+
+  // A sliding window, because the address block is the part that matters and it
+  // is a small part of the page. Averaged over the whole document, a shredded
+  // sender block inside a fluent letter disappears entirely — and the sender
+  // block is where the name and the account number are.
+  if (runs < window) return { worst: overall, overall, runs };
+
+  let count = 0;
+  for (let index = 0; index < window; index += 1) count += short(index);
+
+  let worst = count / window;
+  for (let index = window; index < runs; index += 1) {
+    count += short(index) - short(index - window);
+    worst = Math.max(worst, count / window);
+  }
+
+  return { worst, overall, runs };
 }
 
 /** Letters in the ranges European business documents actually use. */
@@ -158,6 +187,7 @@ const resolveLimits = (limits: Partial<QualityLimits> | undefined): QualityLimit
   maxFragmentRatio: limits?.maxFragmentRatio ?? DEFAULT_QUALITY_LIMITS.maxFragmentRatio,
   minRunsForFragmentCheck:
     limits?.minRunsForFragmentCheck ?? DEFAULT_QUALITY_LIMITS.minRunsForFragmentCheck,
+  fragmentWindow: limits?.fragmentWindow ?? DEFAULT_QUALITY_LIMITS.fragmentWindow,
 });
 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
@@ -222,13 +252,16 @@ export function assessText(
     );
   }
 
-  const fragments = fragmentRatio(text);
+  const fragments = fragmentRatio(text, active.fragmentWindow);
   if (
     fragments.runs >= active.minRunsForFragmentCheck &&
-    fragments.ratio > active.maxFragmentRatio
+    fragments.worst > active.maxFragmentRatio
   ) {
+    const local = fragments.worst > fragments.overall + 0.05;
     return reject(
-      `${percent(fragments.ratio)} of the extracted words are one or two characters long, so the text is fragmented and identifiers in it would not be recognised`,
+      local
+        ? `a passage of the extracted text is ${percent(fragments.worst)} one- and two-character words, so part of the document is fragmented and identifiers in it would not be recognised`
+        : `${percent(fragments.worst)} of the extracted words are one or two characters long, so the text is fragmented and identifiers in it would not be recognised`,
     );
   }
 

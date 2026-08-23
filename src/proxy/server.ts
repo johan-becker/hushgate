@@ -298,6 +298,9 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       const rewritten = await rewriteAttachments(parseJsonObject(body) as JsonValue, {
         limits: config.attachments,
         extractors,
+        // The route's own rules, so the rewrite can check that the text it is
+        // about to insert lands somewhere redaction will visit.
+        rules: route.rules,
       });
       const parsed = rewritten.body;
       attachments = rewritten.reports;
@@ -401,26 +404,19 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         // Nothing was sent: the refusal happens before the body is serialised.
         outcome = 'blocked';
         reached = null;
-        attachments = [
-          ...attachments,
-          {
-            format: 'unknown',
-            mediaType: error.mediaType,
-            bytes: error.bytes,
-            chars: 0,
-            pages: null,
-            extractor: null,
-            outcome: 'blocked',
-            reason: error.detail,
-          },
-        ];
+        // The error carries the whole list, including the attachments handled
+        // before the one that failed — those were decoded, and the trail has to
+        // say so.
+        attachments = error.reports as readonly AttachmentReport[];
         metrics.observeBlocked('attachment', 'attachments.onUnreadable');
-        metrics.observeAttachment({
-          format: 'unknown',
-          outcome: 'blocked',
-          extractor: null,
-          bytes: error.bytes,
-        });
+        for (const report of attachments) {
+          metrics.observeAttachment({
+            format: report.format,
+            outcome: report.outcome,
+            extractor: report.extractor,
+            bytes: report.bytes,
+          });
+        }
       } else if (error instanceof UpstreamError) {
         outcome = 'failed';
       } else if (outcome === 'forwarded') {

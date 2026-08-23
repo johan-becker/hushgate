@@ -41,7 +41,29 @@ const FAIL = script(
    process.exitCode = 2;`,
 );
 
+/**
+ * The poppler failure mode: an extractor handed a malformed document quotes
+ * the bytes it choked on. The fake IBAN below is chosen to use no digit that
+ * the mechanical reason could contain on its own.
+ */
+const FAKE_IBAN = 'DE00370400440532000000';
+
+const LEAKY = script(
+  'leaky.mjs',
+  `process.stderr.write('Syntax Error: could not parse ${FAKE_IBAN} at offset 42\\n');
+   process.exitCode = 1;`,
+);
+
+const LEAKY_SILENT = script(
+  'leaky-silent.mjs',
+  `process.stderr.write('Syntax Error: could not parse ${FAKE_IBAN} at offset 42\\n');
+   process.exitCode = 0;`,
+);
+
 const SILENT = script('silent.mjs', 'process.exitCode = 0;');
+
+/** Never reads stdin and never exits: a big input is still in flight at kill. */
+const IDLE = script('idle.mjs', 'setInterval(() => {}, 1000);');
 
 const PAGES = script(
   'pages.mjs',
@@ -127,13 +149,16 @@ describe('an external extractor', () => {
     expect(result.value.text).toBe('read:-layout');
   });
 
-  it('reports a non-zero exit with the first line of stderr', async () => {
+  it('reports a non-zero exit as the exit status alone, without the stderr', async () => {
+    // The reason is written to the audit trail and returned to the caller, and
+    // an extractor's stderr is not hushgate's text to repeat: poppler prints
+    // the bytes it failed on.
     const result = await externalExtractor(spec(FAIL)).extract(bytes('x'), context());
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain('exited with status 2');
-    expect(result.reason).toContain("Couldn't find trailer dictionary");
+    expect(result.reason).not.toContain("Couldn't find trailer dictionary");
     expect(result.reason).not.toContain('second line');
   });
 
@@ -248,6 +273,72 @@ describe('an external extractor', () => {
     expect(extractor.supports('pdf', null)).toBe(true);
     expect(extractor.supports('docx', 'application/msword')).toBe(false);
     expect(extractor.supports('unknown', null)).toBe(false);
+  });
+});
+
+describe('what a failing extractor is allowed to say', () => {
+  // The reason reaches AttachmentReport.reason, the audit trail and the HTTP
+  // 422 body. poppler quotes the bytes it choked on, so anything copied out of
+  // stderr is document content written into the evidence file.
+  it('does not quote the child stderr when the command fails', async () => {
+    const result = await externalExtractor(spec(LEAKY)).extract(bytes('x'), context());
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).not.toContain(FAKE_IBAN);
+    expect(result.reason).not.toContain('370400440532');
+    expect(result.reason).toContain('exited with status 1');
+  });
+
+  it('does not quote it when the command succeeds but prints nothing', async () => {
+    const result = await externalExtractor(spec(LEAKY_SILENT)).extract(bytes('x'), context());
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).not.toContain(FAKE_IBAN);
+    expect(result.reason).toContain('produced no output');
+  });
+});
+
+const pipesNow = (): number =>
+  process.getActiveResourcesInfo().filter((name) => name === 'PipeWrap').length;
+
+describe('what a finished extraction leaves behind', () => {
+  it('releases the pipes even when a grandchild keeps them open', async () => {
+    // A shell wrapper that forks is the realistic case: the parent exits, the
+    // grandchild inherits stdout, and a proxy that waits for `close` before
+    // letting go of the handles accumulates two per request until it runs out
+    // of descriptors.
+    const forking = externalExtractor({
+      mediaTypes: ['text/plain'],
+      formats: [],
+      command: '/bin/sh',
+      args: ['-c', 'sleep 30 & cat'],
+      timeoutMs: 2000,
+    });
+
+    await forking.extract(bytes('warm up'), context());
+    const before = pipesNow();
+
+    for (let round = 0; round < 6; round += 1) {
+      // Sequential on purpose: the count only means something if the previous
+      // extraction has already settled.
+      // oxlint-disable-next-line no-await-in-loop
+      await forking.extract(bytes('Anna Schmidt'), context());
+    }
+
+    expect(pipesNow()).toBeLessThanOrEqual(before);
+  });
+
+  it('settles once when the child never reads stdin and never exits', async () => {
+    const result = await externalExtractor({ ...spec(IDLE), timeoutMs: 300 }).extract(
+      bytes('x'.repeat(200_000)),
+      context(),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('did not finish');
   });
 });
 

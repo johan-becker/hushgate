@@ -15,11 +15,12 @@
  * first and hands the redactor a body that is already nothing but text.
  */
 import { AttachmentBlockedError } from '../errors.js';
-import type { JsonValue, Path } from '../redact/traverse.js';
+import { selectByRules, type JsonValue, type Path, type PathRule } from '../redact/traverse.js';
 import { decodeBase64, formatBytes } from './decode.js';
+import { probePdf } from './pdf.js';
 import { assessText } from './quality.js';
 import { findAttachmentSites, type AttachmentSite } from './shapes.js';
-import { mediaTypeForFormat, sniffFormat } from './sniff.js';
+import { mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
 import type {
   AttachmentFormat,
   AttachmentReport,
@@ -41,6 +42,14 @@ export interface RewriteOptions {
   readonly limits: RewriteLimits;
   /** Tried in order. Operator-provided extractors come first. */
   readonly extractors: readonly Extractor[];
+  /**
+   * The route's redaction rules.
+   *
+   * Not used to find attachments — that is done by shape — but to check, before
+   * any extracted text is put into the body, that the place it is going is a
+   * place the redactor will actually visit. See {@link rewriteAttachments}.
+   */
+  readonly rules: readonly PathRule[];
 }
 
 export interface RewriteResult {
@@ -67,6 +76,7 @@ export async function rewriteAttachments(
 
   const reports: AttachmentReport[] = [];
   const replacements = new Map<string, JsonValue>();
+  const redacts = selectByRules(options.rules);
   let spent = 0;
 
   for (const site of sites) {
@@ -76,13 +86,33 @@ export async function rewriteAttachments(
     // child process, so a request carrying twenty documents must not become
     // twenty concurrent processes.
     // oxlint-disable-next-line no-await-in-loop
-    const outcome = await handleSite(site, options, spent);
+    const outcome = await handleSite(site, options, spent, redacts, reports);
     spent += outcome.report.bytes;
     reports.push(outcome.report);
     if (outcome.replacement !== null) replacements.set(keyOf(site.path), outcome.replacement);
   }
 
   return { body: substitute(body, replacements), reports };
+}
+
+/**
+ * Would the redactor visit the text we are about to write here?
+ *
+ * Attachments are found by shape, anywhere in the body, because a shape matcher
+ * keeps working when a provider adds a content part next quarter. Redaction is
+ * the opposite: it visits an explicit list of paths. The two can therefore
+ * disagree, and when they do the failure is silent and total — hushgate decodes
+ * a document, writes the plaintext into a corner of the body no rule reaches,
+ * records the attachment as `extracted`, and forwards a name and an IBAN in
+ * clear with `findings: {}` beside them in the audit trail.
+ *
+ * So placement is checked rather than assumed. A site the rules do not cover is
+ * treated as unreadable, which means `onUnreadable` decides and the default
+ * refuses the request. Finding an attachment somewhere new must fail towards
+ * refusing it, never towards forwarding it.
+ */
+function isRedactable(redacts: (path: Path) => boolean, path: readonly (string | number)[]): boolean {
+  return redacts([...path, 'text']);
 }
 
 interface SiteOutcome {
@@ -95,21 +125,23 @@ async function handleSite(
   site: AttachmentSite,
   options: RewriteOptions,
   alreadySpent: number,
+  redacts: (path: Path) => boolean,
+  soFar: readonly AttachmentReport[],
 ): Promise<SiteOutcome> {
   const { limits } = options;
-  const declared = site.declaredMediaType ?? 'application/octet-stream';
+  const declared = normaliseMediaType(site.declaredMediaType) ?? 'application/octet-stream';
 
   if (site.unresolvable !== null) {
-    return refuse(site, 'unknown', declared, 0, site.unresolvable, limits.onUnreadable);
+    return refuse(site, 'unknown', declared, 0, site.unresolvable, limits.onUnreadable, soFar);
   }
 
   if (site.data === null) {
-    return refuse(site, 'unknown', declared, 0, 'attachment carries no data', limits.onUnreadable);
+    return refuse(site, 'unknown', declared, 0, 'attachment carries no data', limits.onUnreadable, soFar);
   }
 
   const decoded = decodeBase64(site.data, limits.maxBytes);
   if (!decoded.ok) {
-    return refuse(site, 'unknown', declared, 0, decoded.reason, limits.onUnreadable);
+    return refuse(site, 'unknown', declared, 0, decoded.reason, limits.onUnreadable, soFar);
   }
 
   const bytes = decoded.bytes;
@@ -121,15 +153,37 @@ async function handleSite(
       bytes.byteLength,
       `attachments in this request total more than the ${formatBytes(limits.maxTotalBytes)} limit`,
       limits.onUnreadable,
+      soFar,
     );
   }
 
   const format = sniffFormat(bytes, site.declaredMediaType, site.filename);
-  const mediaType = site.declaredMediaType ?? mediaTypeForFormat(format);
+
+  // Checked before extraction, not after: there is no point decoding a document
+  // we would then have to refuse to place, and refusing early keeps an
+  // unplaceable attachment from spending an extractor's time.
+  if (!isRedactable(redacts, site.path)) {
+    return refuse(
+      site,
+      format,
+      normaliseMediaType(site.declaredMediaType) ?? mediaTypeForFormat(format),
+      bytes.byteLength,
+      'this attachment sits where redaction does not reach, so its text could not be pseudonymised',
+      limits.onUnreadable,
+      soFar,
+    );
+  }
+
+  const mediaType = normaliseMediaType(site.declaredMediaType) ?? mediaTypeForFormat(format);
   const context = {
     format,
     mediaType: site.declaredMediaType,
-    maxChars: limits.maxTextChars,
+    // One character of headroom, so that a document which filled the budget can
+    // be told apart from one that merely ended there. Without it every
+    // extractor clamps to exactly the limit, `cleaned.length > maxTextChars` is
+    // never true, and a document cut to a fraction of itself is recorded as
+    // having been read in full.
+    maxChars: limits.maxTextChars + 1,
     timeoutMs: limits.timeoutMs,
   };
 
@@ -148,13 +202,20 @@ async function handleSite(
       continue;
     }
 
-    const verdict = assessText(result.value.text, result.value.pages);
+    // An external PDF extractor need not report a page count, and without one
+    // the per-page floor — the check that catches a 400-page scan yielding a
+    // line of text — never runs. The structural probe knows the count without
+    // reading a word of the content.
+    const pages = result.value.pages ?? (format === 'pdf' ? probePdf(bytes).pages : null);
+
+    const readable = stripInvisible(result.value.text);
+    const verdict = assessText(readable, pages);
     if (!verdict.ok) {
       lastReason = verdict.reason;
       continue;
     }
 
-    const cleaned = tidy(result.value.text);
+    const cleaned = tidy(readable);
     const truncated = cleaned.length > limits.maxTextChars;
     const text = truncated ? cleaned.slice(0, limits.maxTextChars) : cleaned;
 
@@ -164,18 +225,18 @@ async function handleSite(
         mediaType,
         bytes: bytes.byteLength,
         chars: text.length,
-        pages: result.value.pages,
+        pages,
         extractor: result.value.extractor,
         outcome: truncated ? 'truncated' : 'extracted',
         reason: truncated
           ? `text was cut at the ${limits.maxTextChars} character limit`
           : null,
       },
-      replacement: textPart(header(site.filename, mediaType, result.value.pages, truncated), text),
+      replacement: textPart(header(site.filename, mediaType, pages, truncated), text),
     };
   }
 
-  return refuse(site, format, mediaType, bytes.byteLength, lastReason, limits.onUnreadable);
+  return refuse(site, format, mediaType, bytes.byteLength, lastReason, limits.onUnreadable, soFar);
 }
 
 /**
@@ -195,8 +256,18 @@ function refuse(
   bytes: number,
   reason: string,
   action: UnreadableAction,
+  soFar: readonly AttachmentReport[],
 ): SiteOutcome {
-  if (action === 'block') throw new AttachmentBlockedError(mediaType, bytes, reason);
+  if (action === 'block') {
+    // The attachments already handled travel with the error. Without them the
+    // audit record for a blocked request would claim the request carried one
+    // attachment when it carried five, and the four that were read — and whose
+    // contents hushgate decoded — would leave no trace at all.
+    throw new AttachmentBlockedError(mediaType, bytes, reason, format, [
+      ...soFar,
+      { format, mediaType, bytes, chars: 0, pages: null, extractor: null, outcome: 'blocked', reason },
+    ]);
+  }
 
   const report = { format, mediaType, bytes, chars: 0, pages: null, extractor: null, reason };
 
@@ -247,6 +318,29 @@ function describeFile(filename: string | null, mediaType: string): string {
  * same character is just a page break, and leaving a run of them in the middle
  * of a prompt spends the model's attention on nothing.
  */
+/**
+ * Remove the characters that are invisible to a reader and fatal to a detector.
+ *
+ * A zero-width space between every two letters renders as ordinary prose and
+ * leaves `anna.schmidt@nordlicht.example` matching no e-mail pattern — while
+ * sailing past the fragmentation check, because to that check the letters are
+ * still one long run. Extractors emit these for real: soft hyphens from
+ * justified text, word joiners from PDF ligature handling, byte-order marks
+ * from concatenated parts. Stripping them is what makes the text mean what it
+ * looks like it means.
+ *
+ * Done before the quality check rather than after, so that what is judged is
+ * what will be scanned.
+ */
+function stripInvisible(text: string): string {
+  // Soft hyphen, zero-width space/non-joiner/joiner, LTR/RTL marks and
+  // embeddings, word joiner, invisible operators, and the byte-order mark.
+  return text.replaceAll(
+    /\u00AD|\u034F|[\u200B-\u200F]|[\u2060-\u2064]|[\u206A-\u206F]|\uFEFF/gu,
+    '',
+  );
+}
+
 function tidy(text: string): string {
   return text
     .replaceAll('\r\n', '\n')

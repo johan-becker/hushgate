@@ -46,6 +46,12 @@ export const ANTHROPIC_MESSAGES_RULES: readonly PathRule[] = [
   'system.*.text',
   'messages.*.content',
   'messages.*.content.*.text',
+  // A "custom content" document carries blocks of text the caller extracted
+  // themselves. Nothing else reaches inside `source`, so without these two the
+  // document body is forwarded verbatim — and it is a document, so it is
+  // exactly the kind of text that carries names and account numbers.
+  'messages.*.content.*.source.content',
+  'messages.*.content.*.source.content.*.text',
   'messages.*.content.*.content',
   'messages.*.content.*.content.*.text',
   'messages.*.content.*.input.**',

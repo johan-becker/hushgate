@@ -45,3 +45,23 @@ describe('trusting extracted text', () => {
     expect(assessText('Rechnung an Anna Schmidt und Kollegen.', 0).ok).toBe(true);
   });
 });
+
+describe('fragmentation that hides inside good prose', () => {
+  const prose =
+    'Sehr geehrte Damen und Herren, hiermit bestaetigen wir den Eingang Ihrer ' +
+    'Unterlagen und melden uns nach Pruefung des Vorgangs erneut bei Ihnen. ' +
+    'Mit freundlichen Gruessen, die Sachbearbeitung des Hauses Nordlicht. ';
+
+  it('rejects a shredded contact block surrounded by clean paragraphs', () => {
+    // The document-wide average is fine; the block that carries the name and
+    // the address is not, and that is the part a detector has to read.
+    const shredded = 'S a c h b e a r b e i t e r i n : A n n a S c h m i d t\n';
+    const verdict = assessText(prose + shredded + prose, 1);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain('fragmented');
+  });
+
+  it('still accepts a document that is simply prose', () => {
+    expect(assessText(prose.repeat(3), 1).ok).toBe(true);
+  });
+});

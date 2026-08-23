@@ -220,9 +220,115 @@ describe('what the walk deliberately ignores', () => {
     expect(sites).toHaveLength(1);
   });
 
-  it('survives a body nested past the depth guard without throwing', () => {
+  it('refuses a body nested past the depth guard rather than walking it', () => {
+    // The refusal is the safe direction: see the test below for why giving up
+    // quietly would be a leak.
     let deep: unknown = { type: 'text', text: 'x' };
     for (let index = 0; index < 200; index += 1) deep = { content: [deep] };
-    expect(() => findAttachmentSites({ messages: [deep] })).not.toThrow();
+    expect(() => findAttachmentSites({ messages: [deep] })).toThrow(/deeper than/u);
+  });
+});
+
+describe('shapes the review found hushgate was blind to', () => {
+  it('finds an Anthropic custom-content document, whose text no rule reaches', () => {
+    const sites = findAttachmentSites({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              title: 'kuendigung.txt',
+              source: {
+                type: 'content',
+                content: [{ type: 'text', text: 'Anna Schmidt, IBAN DE89370400440532013000' }],
+              },
+              citations: { enabled: true },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(sites).toHaveLength(1);
+    expect(Buffer.from(sites[0]?.data ?? '', 'base64').toString('utf8')).toContain('Anna Schmidt');
+  });
+
+  it('finds the Responses API spelling of an inline image', () => {
+    const sites = findAttachmentSites({
+      input: [
+        { role: 'user', content: [{ type: 'input_image', image_url: 'data:image/png;base64,iVBOR' }] },
+      ],
+    });
+    expect(sites).toHaveLength(1);
+    expect(sites[0]?.data).toBe('iVBOR');
+  });
+
+  it('percent-decodes a text data URL, so the address is an address again', () => {
+    const sites = findAttachmentSites({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              file: { filename: 'x.txt', file_data: 'data:text/plain,anna.schmidt%40nordlicht.example' },
+            },
+          ],
+        },
+      ],
+    });
+    expect(Buffer.from(sites[0]?.data ?? '', 'base64').toString('utf8')).toBe(
+      'anna.schmidt@nordlicht.example',
+    );
+  });
+
+  it('survives a stray percent sign instead of turning the request into a 500', () => {
+    expect(() =>
+      findAttachmentSites({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'file', file: { filename: 'a.txt', file_data: 'data:text/plain,100% off for Anna' } },
+            ],
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('normalises the caller’s media type, which reaches the audit trail', () => {
+    const sites = findAttachmentSites({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'Patient Anna Schmidt, born 1974-03-02',
+                data: 'QQ==',
+              },
+            },
+          ],
+        },
+      ],
+    });
+    // Not a media type, so it is not kept at all: the fallback is the type
+    // sniffing infers from the bytes.
+    expect(sites[0]?.declaredMediaType).toBeNull();
+  });
+
+  it('refuses a body nested past the guard instead of quietly skipping it', () => {
+    // Giving up silently would forward the document with an audit record
+    // claiming the request carried no attachment at all.
+    let deep: unknown = {
+      type: 'document',
+      source: { type: 'base64', media_type: 'text/plain', data: 'QQ==' },
+    };
+    for (let index = 0; index < 60; index += 1) deep = { content: [deep] };
+    expect(() => findAttachmentSites({ messages: [deep] })).toThrow(/deeper than/u);
   });
 });

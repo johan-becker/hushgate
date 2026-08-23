@@ -103,6 +103,11 @@ interface RunOutcome {
  * Resolves exactly once and never rejects: a failed extraction is an answer,
  * not an exception, and the caller turns this into a reason string.
  */
+/** Drop a pipe, whether or not it was ever opened or is already gone. */
+const release = (stream: { destroy: () => void } | null): void => {
+  stream?.destroy();
+};
+
 const runChild = async (request: RunRequest): Promise<RunOutcome> => {
   let child: ChildProcess;
 
@@ -166,6 +171,16 @@ const runChild = async (request: RunRequest): Promise<RunOutcome> => {
       clearTimeout(deadline);
       if (killTimer !== null) clearTimeout(killTimer);
       if (flushTimer !== null) clearTimeout(flushTimer);
+      // Closing the pipes is what actually returns the descriptors. Waiting
+      // for `close` does not: a grandchild that inherited stdout holds it
+      // open, so the flush grace settles the request while two handles stay in
+      // this process for as long as the grandchild lives. Every buffered chunk
+      // has already been read into `stdoutChunks`/`stderrChunks`, so there is
+      // nothing left to lose, and `destroy()` on an already-destroyed stream is
+      // a no-op.
+      release(child.stdout);
+      release(child.stderr);
+      release(child.stdin);
       resolve({
         stdout: Buffer.concat(stdoutChunks),
         truncated,
@@ -255,16 +270,6 @@ const normaliseMediaType = (mediaType: string): string => {
   return type.trim().toLowerCase();
 };
 
-/** One line of stderr, stripped of anything that could reshape a log line. */
-const firstStderrLine = (stderr: string): string | null => {
-  const [first = ''] = stderr.split('\n', 1);
-  const cleaned = first.slice(0, 200).replaceAll(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
-  return cleaned.length === 0 ? null : cleaned;
-};
-
-const withDetail = (reason: string, detail: string | null): string =>
-  detail === null ? reason : `${reason}: ${detail}`;
-
 /**
  * Cut to the character budget without ending on a lone surrogate: half a pair
  * decodes to U+FFFD everywhere downstream, which quality.ts would then read as
@@ -333,8 +338,11 @@ export function externalExtractor(spec: ExternalExtractorSpec): Extractor {
         maxStdoutBytes: maxChars * 4,
       });
 
-      const detail = firstStderrLine(outcome.stderr);
-
+      // Every reason below is the mechanical fact and nothing else. The child's
+      // stderr is deliberately not quoted: poppler echoes the bytes it choked
+      // on, so a malformed document would write its own contents into the
+      // audit record and into the 422 body that goes back over the wire.
+      // `outcome.stderr` is bounded and then dropped on purpose.
       if (outcome.startError !== null) {
         return { ok: false, reason: `could not start ${label}: ${outcome.startError}` };
       }
@@ -347,18 +355,15 @@ export function externalExtractor(spec: ExternalExtractorSpec): Extractor {
           return { ok: false, reason: `${label} did not finish within ${budget} ms and was killed` };
         }
         if (outcome.signal !== null) {
-          return { ok: false, reason: withDetail(`${label} was killed by ${outcome.signal}`, detail) };
+          return { ok: false, reason: `${label} was killed by ${outcome.signal}` };
         }
         if (outcome.code !== 0) {
-          return {
-            ok: false,
-            reason: withDetail(`${label} exited with status ${outcome.code ?? 'unknown'}`, detail),
-          };
+          return { ok: false, reason: `${label} exited with status ${outcome.code ?? 'unknown'}` };
         }
       }
 
       if (outcome.stdout.length === 0) {
-        return { ok: false, reason: withDetail(`${label} produced no output`, detail) };
+        return { ok: false, reason: `${label} produced no output` };
       }
 
       const text = clampChars(decodeUtf8(outcome.stdout), maxChars);

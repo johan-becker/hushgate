@@ -15,14 +15,24 @@
  * providers add a content-part type next quarter, the shape matcher will
  * usually already see it.
  */
+import { TraversalDepthError } from '../errors.js';
 import { parseDataUrl } from './decode.js';
+import { normaliseMediaType } from './sniff.js';
 import type { Attachment, UnresolvableAttachment } from './types.js';
 
 /** Where the walk is allowed to look. Everything else is configuration. */
 const CONTENT_ROOTS = new Set(['messages', 'system', 'input', 'prompt']);
 
-/** Deeper than this is not a conversation; it is someone probing the parser. */
-const MAX_DEPTH = 24;
+/**
+ * Deeper than this is not a conversation; it is someone probing the parser.
+ *
+ * Matched to the redactor's own guard, and it *throws* rather than giving up
+ * quietly. Returning early here would mean a document nested past the limit is
+ * neither found nor redacted nor recorded — forwarded whole, with an audit
+ * entry saying the request carried no attachments. A refusal the caller can see
+ * is the only safe way to run out of depth.
+ */
+const MAX_DEPTH = 32;
 
 export interface AttachmentSite {
   readonly path: readonly (string | number)[];
@@ -53,7 +63,7 @@ export function findAttachmentSites(body: Json): AttachmentSite[] {
   const sites: AttachmentSite[] = [];
 
   const walk = (node: Json, path: (string | number)[], depth: number): void => {
-    if (depth > MAX_DEPTH) return;
+    if (depth > MAX_DEPTH) throw new TraversalDepthError(MAX_DEPTH);
 
     if (Array.isArray(node)) {
       for (const [index, item] of node.entries()) {
@@ -97,7 +107,7 @@ function matchSite(part: Record<string, Json>, path: readonly (string | number)[
 
   if (type === 'document' || type === 'image') return anthropicSource(part, path, type);
   if (type === 'file' || type === 'input_file') return openaiFile(part, path);
-  if (type === 'image_url') return openaiImageUrl(part, path);
+  if (type === 'image_url' || type === 'input_image') return openaiImageUrl(part, path);
   if (type === 'input_audio') return openaiAudio(part, path);
 
   return null;
@@ -121,7 +131,11 @@ function anthropicSource(
   if (source === null) return null;
 
   const sourceType = asString(source['type']);
-  const mediaType = asString(source['media_type']);
+  // Normalised at the boundary, not where it is used. This string is the
+  // caller's, it reaches the audit record and the 422 body, and a caller who
+  // puts a patient's name in `media_type` must not thereby write it into the
+  // evidence file.
+  const mediaType = normaliseMediaType(asString(source['media_type']));
   const filename = asString(part['title']) ?? asString(part['filename']);
   const base = { path: [...path], declaredMediaType: mediaType, filename };
 
@@ -139,6 +153,28 @@ function anthropicSource(
     return {
       ...base,
       data: Buffer.from(data, 'utf8').toString('base64'),
+      declaredMediaType: mediaType ?? 'text/plain',
+      unresolvable: null,
+    };
+  }
+
+  if (sourceType === 'content') {
+    // A "custom content" document: the caller has already done the extraction
+    // and handed over blocks of text. It is still an attachment — text the user
+    // attached rather than typed — and the redaction rules do not reach inside
+    // `source.content`, so leaving it here would forward it verbatim.
+    const blocks = part['source'] === undefined ? null : source['content'];
+    if (!Array.isArray(blocks)) return null;
+
+    const text = blocks
+      .map((block) => asString(asObject(block)?.['text'] ?? null))
+      .filter((value): value is string => value !== null)
+      .join('\n');
+
+    if (text === '') return null;
+    return {
+      ...base,
+      data: Buffer.from(text, 'utf8').toString('base64'),
       declaredMediaType: mediaType ?? 'text/plain',
       unresolvable: null,
     };
@@ -173,16 +209,13 @@ function openaiFile(part: Record<string, Json>, path: readonly (string | number)
   if (fileData !== null) {
     const url = parseDataUrl(fileData);
     if (url !== null) {
-      if (!url.base64) {
-        return {
-          path: [...path],
-          data: Buffer.from(decodeURIComponent(url.payload), 'utf8').toString('base64'),
-          declaredMediaType: url.mediaType,
-          filename,
-          unresolvable: null,
-        };
-      }
-      return { path: [...path], data: url.payload, declaredMediaType: url.mediaType, filename, unresolvable: null };
+      return {
+        path: [...path],
+        data: payloadOf(url),
+        declaredMediaType: normaliseMediaType(url.mediaType),
+        filename,
+        unresolvable: null,
+      };
     }
     return { path: [...path], data: fileData, declaredMediaType: null, filename, unresolvable: null };
   }
@@ -219,11 +252,35 @@ function openaiImageUrl(part: Record<string, Json>, path: readonly (string | num
 
   return {
     path: [...path],
-    data: parsed.base64 ? parsed.payload : Buffer.from(parsed.payload, 'utf8').toString('base64'),
-    declaredMediaType: parsed.mediaType,
+    data: payloadOf(parsed),
+    declaredMediaType: normaliseMediaType(parsed.mediaType),
     filename: null,
     unresolvable: null,
   };
+}
+
+/**
+ * The base64 payload of a data URL, whatever form it arrived in.
+ *
+ * A non-base64 data URL is percent-encoded, and it has to be decoded here: left
+ * escaped, `anna.schmidt%40nordlicht.example` reaches the detectors as a string
+ * with no `@` in it, matches no e-mail pattern, and is forwarded — which is a
+ * leak dressed up as a successful extraction.
+ *
+ * `decodeURIComponent` throws on a lone `%`, and a caller writing "100% off" in
+ * a text data URL is not an internal error. A malformed escape falls back to the
+ * raw payload, which is worse text but is still text the detectors can read.
+ */
+function payloadOf(url: { readonly base64: boolean; readonly payload: string }): string {
+  if (url.base64) return url.payload;
+
+  let decoded = url.payload;
+  try {
+    decoded = decodeURIComponent(url.payload);
+  } catch {
+    // Keep the raw payload: a bad escape must not turn a request into a 500.
+  }
+  return Buffer.from(decoded, 'utf8').toString('base64');
 }
 
 /** OpenAI `input_audio`. hushgate has no speech recognition, so this is a refusal. */
@@ -233,7 +290,7 @@ function openaiAudio(part: Record<string, Json>, path: readonly (string | number
   return {
     path: [...path],
     data: null,
-    declaredMediaType: 'audio/*',
+    declaredMediaType: 'audio/basic',
     filename: null,
     unresolvable: 'audio cannot be transcribed by hushgate, so its contents cannot be pseudonymised',
   };

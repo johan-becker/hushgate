@@ -108,6 +108,15 @@ export class AttachmentBlockedError extends HushgateError {
     readonly mediaType: string,
     readonly bytes: number,
     readonly detail: string,
+    readonly format: string = 'unknown',
+    /**
+     * Every attachment in the request, including the ones already handled
+     * before this one failed. Carried on the error because the audit record is
+     * written in a `finally` that never sees the value the rewrite would have
+     * returned, and a blocked request whose trail lists only the offending file
+     * understates what hushgate decoded.
+     */
+    readonly reports: readonly unknown[] = [],
   ) {
     super(`attachment (${mediaType}, ${bytes} bytes) could not be pseudonymised: ${detail}`);
   }
