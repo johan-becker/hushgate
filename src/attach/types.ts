@@ -40,14 +40,12 @@ export type AttachmentOutcome =
   | 'extracted'
   /** Text was extracted, then cut at `maxTextChars`. Still forwarded. */
   | 'truncated'
-  /** No tier could produce trustworthy text. The `onUnreadable` policy decided. */
-  | 'unreadable'
-  /** Removed from the request; the rest of the request went on. */
+  /** Replaced by a note saying a document was withheld. */
   | 'withheld'
-  /** Larger than the configured cap; never decoded. */
-  | 'oversize'
   /** Forwarded as it arrived, because the operator configured `forward`. */
-  | 'forwarded';
+  | 'forwarded'
+  /** The request was refused because of it. Nothing left the machine. */
+  | 'blocked';
 
 /** What to do with an attachment whose text hushgate could not read. */
 export type UnreadableAction =
@@ -132,6 +130,12 @@ export interface AttachmentReport {
   /** Which extractor answered, or `null` when none could. */
   readonly extractor: string | null;
   readonly outcome: AttachmentOutcome;
+  /**
+   * Why, for any outcome that is not plain success. Assembled from fixed
+   * phrases, sizes and media types — never from the document, and never from
+   * the filename, so it is as safe to write to the trail as the counts are.
+   */
+  readonly reason: string | null;
 }
 
 /**

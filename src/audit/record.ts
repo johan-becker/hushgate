@@ -7,6 +7,7 @@
  * data hushgate exists to keep out of it: categories and counts, never values.
  */
 import { createHash } from 'node:crypto';
+import type { AttachmentOutcome, AttachmentReport } from '../attach/types.js';
 import type { EnforcementMode } from '../residency/policy.js';
 import type { Policy } from '../types.js';
 
@@ -38,6 +39,29 @@ export interface AuditResidency {
   readonly controls: readonly string[];
 }
 
+/**
+ * One attachment, as the trail records it.
+ *
+ * Deliberately shaped like the rest of the record: categories, counts and
+ * sizes, never content. The omission worth naming is the **filename**. A
+ * filename is routinely personal data all by itself — `Kuendigung_Anna_Schmidt.pdf`
+ * names a person and discloses an employment event — and a trail an auditor is
+ * meant to read must not be the one place hushgate writes such a thing down.
+ * The filename does reach the outbound prompt, where the detectors pseudonymise
+ * it like any other text.
+ */
+export interface AuditAttachment {
+  readonly format: string;
+  readonly mediaType: string;
+  readonly bytes: number;
+  /** Characters of text extracted. A length, not the text. */
+  readonly chars: number;
+  readonly pages: number | null;
+  readonly extractor: string | null;
+  readonly outcome: AttachmentOutcome;
+  readonly reason: string | null;
+}
+
 /** What a caller reports. Timestamp and id are stamped by the log itself. */
 export interface AuditEvent {
   /** Tenant the request was authenticated as, or `null` in single-tenant mode. */
@@ -60,6 +84,12 @@ export interface AuditEvent {
   readonly tokens: number;
   /** The residency decision, when the request got as far as one. */
   readonly residency: AuditResidency | null;
+  /**
+   * One entry per attachment the request carried, in the order they appeared.
+   * Optional because most requests carry none, and a caller should not have to
+   * say so; the record always writes the list, empty or not.
+   */
+  readonly attachments?: readonly AuditAttachment[];
 }
 
 /** An event plus the fields the log stamps on it. */
@@ -111,6 +141,7 @@ export function toRecord(
             jurisdiction: String(event.residency.jurisdiction),
             controls: event.residency.controls.map(String),
           },
+    attachments: (event.attachments ?? []).map(attachmentOnly),
     prev,
   };
 
@@ -225,4 +256,24 @@ function policiesOnly(policies: Readonly<Record<string, Policy>>): Record<string
   const out: Record<string, Policy> = {};
   for (const [kind, policy] of Object.entries(policies)) out[kind] = policy;
   return out;
+}
+
+/**
+ * Copy an attachment report field by field.
+ *
+ * Same reasoning as {@link countsOnly}: an explicit field list is what stops a
+ * future caller from handing the trail a richer object and having the extra —
+ * a filename, a snippet, an extractor's stderr — ride along into the evidence.
+ */
+function attachmentOnly(report: AttachmentReport | AuditAttachment): AuditAttachment {
+  return {
+    format: String(report.format),
+    mediaType: String(report.mediaType),
+    bytes: Number(report.bytes),
+    chars: Number(report.chars),
+    pages: report.pages === null ? null : Number(report.pages),
+    extractor: report.extractor === null ? null : String(report.extractor),
+    outcome: report.outcome,
+    reason: report.reason === null ? null : String(report.reason),
+  };
 }

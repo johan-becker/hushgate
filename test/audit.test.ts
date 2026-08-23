@@ -48,6 +48,7 @@ describe('record construction', () => {
     const smuggled = { ...event(), value: 'johan@example.com' } as AuditEvent;
     const record = toRecord(smuggled, '2026-01-01T00:00:00.000Z', 'id-1');
     expect(Object.keys(record).toSorted()).toEqual([
+      'attachments',
       'findings',
       'hash',
       'id',

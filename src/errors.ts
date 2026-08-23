@@ -95,6 +95,24 @@ export class ResidencyBlockedError extends HushgateError {
   }
 }
 
+/**
+ * Thrown when an attachment could not be read and the configured policy is to
+ * refuse rather than forward.
+ *
+ * Like {@link BlockedContentError} it carries a description of the file and
+ * never its contents, so it is safe to log and safe to return to the caller —
+ * who needs to know *which* attachment to fix.
+ */
+export class AttachmentBlockedError extends HushgateError {
+  constructor(
+    readonly mediaType: string,
+    readonly bytes: number,
+    readonly detail: string,
+  ) {
+    super(`attachment (${mediaType}, ${bytes} bytes) could not be pseudonymised: ${detail}`);
+  }
+}
+
 /** No usable tenant credential was presented. */
 export class AuthenticationError extends HushgateError {}
 
