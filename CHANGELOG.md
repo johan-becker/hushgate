@@ -64,6 +64,19 @@ and the re-hydration mappings that already exist.
 
 ### Fixed
 
+- Anthropic **custom content documents** were never redacted. A
+  `{"type":"document","source":{"type":"content","content":[…]}}` block — the
+  shape the Messages API documents for citations — carries its text at
+  `messages[].content[].source.content[].text`, and no rule in
+  `ANTHROPIC_MESSAGES_RULES` reached it, so the whole document body was
+  forwarded to the provider byte for byte while the audit record showed
+  `findings: {}`. This predates the attachment work and applies to any caller
+  using citations. Two rules now cover it, and the attachment stage extracts
+  such a document rather than walking past it.
+- `hushgate scan` now exits 1, not 0, when a file it was asked to scan could
+  not be read. Reporting "no personal data found" about a file nothing ever
+  read is the wrong answer, and in a CI gate it is the dangerous one.
+
 - The plain-language licence summaries in [`README.md`](README.md) §13,
   [`COMMERCIAL.md`](COMMERCIAL.md) and this file described a licence stricter
   than the one in [`LICENSE`](LICENSE). They said production use was forbidden
