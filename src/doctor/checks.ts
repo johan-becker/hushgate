@@ -5,7 +5,8 @@
  * terminal output. Each check answers one question an operator would otherwise
  * only discover in production, and each one says what to do about it.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { delimiter, isAbsolute as isAbsolutePath, join } from 'node:path';
 import { parseAuditLines } from '../audit/log.js';
 import { verifyChain } from '../audit/record.js';
 import type { HushgateConfig } from '../config.js';
@@ -31,6 +32,8 @@ export interface DoctorInput {
   readonly auditPath: string;
   /** Injected so the tests do not need a file on disk. */
   readonly readTrail?: (path: string) => string | null;
+  /** Injected so the tests do not depend on what is installed on the machine. */
+  readonly onPath?: (command: string) => boolean;
 }
 
 export function runChecks(input: DoctorInput): Finding[] {
@@ -39,8 +42,102 @@ export function runChecks(input: DoctorInput): Finding[] {
     ...residency(input),
     ...enforcement(input),
     ...security(input),
+    ...attachments(input),
     ...audit(input),
   ];
+}
+
+/**
+ * Whether documents are actually being read.
+ *
+ * The failure this section exists to catch is a quiet one. An operator enables
+ * hushgate, points their application at it, and their users start attaching
+ * PDFs. If no extractor can read a PDF, every one of those requests is refused
+ * — which is safe, and which the operator will experience as "hushgate is
+ * broken" rather than "hushgate has nothing to read PDFs with". So the state is
+ * reported before it is discovered.
+ */
+function attachments({ config, onPath }: DoctorInput): Finding[] {
+  const out: Finding[] = [];
+  const section = 'attachments';
+  const { attachments: settings } = config;
+
+  if (!settings.enabled) {
+    out.push({
+      section,
+      severity: 'warn',
+      message: 'attachment handling is off, so a document in a request is forwarded unread',
+      remedy: 'set attachments.enabled to true unless you have another control in front of hushgate',
+    });
+    return out;
+  }
+
+  out.push({ section, severity: 'ok', message: 'attachment handling is on' });
+
+  if (settings.onUnreadable === 'forward') {
+    out.push({
+      section,
+      severity: 'fail',
+      message:
+        'attachments.onUnreadable is "forward", so a document hushgate cannot read is sent to the provider as it arrived',
+      remedy: 'set it to "block" to refuse, or "withhold" to drop the file and forward the rest',
+    });
+  } else if (settings.onUnreadable === 'withhold') {
+    out.push({
+      section,
+      severity: 'note',
+      message: 'unreadable attachments are dropped from the request rather than refusing it',
+    });
+  }
+
+  const handled = new Set(
+    settings.extractors.flatMap((spec) => [...spec.mediaTypes, ...spec.formats]),
+  );
+  if (!handled.has('application/pdf') && !handled.has('pdf')) {
+    out.push({
+      section,
+      severity: 'note',
+      message: 'no extractor claims PDF, so PDF attachments will be refused rather than read',
+      remedy:
+        'add { "mediaTypes": ["application/pdf"], "command": "pdftotext", "args": ["-q", "-enc", "UTF-8", "-", "-"] } to attachments.extractors',
+    });
+  }
+
+  // Whether the configured commands actually exist. A spec naming a command
+  // that is not installed behaves correctly — the attachment is refused — but
+  // the operator meant to have PDF support and should hear about it here
+  // rather than from a user whose invoice was rejected.
+  const lookup = onPath ?? isOnPath;
+  for (const spec of settings.extractors) {
+    if (lookup(spec.command)) {
+      out.push({ section, severity: 'ok', message: `extractor ${spec.command} found on PATH` });
+      continue;
+    }
+    // A note, not a warning: an extractor that is not installed makes hushgate
+    // refuse those attachments, which is the safe direction. Nothing here is
+    // unsafe — it is a capability the operator may or may not have meant to
+    // have — so it must not make `doctor` exit non-zero.
+    out.push({
+      section,
+      severity: 'note',
+      message: `extractor ${spec.command} is configured but is not on PATH, so ${describeClaim(spec)} will be refused`,
+      remedy:
+        spec.command === 'pdftotext'
+          ? 'install it with "apt install poppler-utils" or "brew install poppler"'
+          : `install ${spec.command}, or remove it from attachments.extractors`,
+    });
+  }
+
+  if (config.limits.maxBodyBytes < settings.maxBytes) {
+    out.push({
+      section,
+      severity: 'warn',
+      message: `limits.maxBodyBytes (${config.limits.maxBodyBytes}) is below attachments.maxBytes (${settings.maxBytes}), so the largest allowed attachment could never arrive`,
+      remedy: 'raise limits.maxBodyBytes to at least attachments.maxBytes plus room for the prompt',
+    });
+  }
+
+  return out;
 }
 
 function configuration({ config, configPath }: DoctorInput): Finding[] {
@@ -303,4 +400,40 @@ export function tally(findings: readonly Finding[]): Record<Severity, number> {
   const counts: Record<Severity, number> = { ok: 0, note: 0, warn: 0, fail: 0 };
   for (const finding of findings) counts[finding.severity] += 1;
   return counts;
+}
+
+/** What an extractor spec claims, for a message an operator can act on. */
+function describeClaim(spec: {
+  readonly mediaTypes: readonly string[];
+  readonly formats: readonly string[];
+}): string {
+  const claims = [...spec.mediaTypes, ...spec.formats];
+  return claims.length === 0 ? 'the attachments it handles' : claims.join(', ');
+}
+
+/**
+ * Whether a command could be executed.
+ *
+ * Deliberately a PATH walk rather than spawning the command with `--version`:
+ * doctor runs on an operator's terminal against their real config, and running
+ * every configured extractor to find out whether it exists would execute
+ * arbitrary configured programs as a side effect of asking for a health check.
+ */
+function isOnPath(command: string): boolean {
+  if (command.includes('/') || isAbsolutePath(command)) return executable(command);
+
+  const path = process.env['PATH'] ?? '';
+  return path
+    .split(delimiter)
+    .filter((entry) => entry !== '')
+    .some((entry) => executable(join(entry, command)));
+}
+
+function executable(candidate: string): boolean {
+  try {
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }

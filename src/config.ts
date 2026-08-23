@@ -295,7 +295,20 @@ export function defaultConfig(): HushgateConfig {
       maxTextChars: 200_000,
       timeoutMs: 20_000,
       onUnreadable: 'block',
-      extractors: [],
+      // Configured by default so the Docker image, which installs
+      // poppler-utils, reads PDFs with no config at all. On a host without
+      // pdftotext the spawn fails, the attachment is unreadable, and the
+      // request is refused with a reason naming the missing command — which is
+      // the same outcome as not listing it, but explains itself.
+      extractors: [
+        {
+          mediaTypes: ['application/pdf'],
+          formats: [],
+          command: 'pdftotext',
+          args: ['-q', '-enc', 'UTF-8', '-', '-'],
+          timeoutMs: 20_000,
+        },
+      ],
     },
     residency: defaultResidencyConfig(),
     tenants: [],
