@@ -834,18 +834,18 @@ export function applyEnv(
   config: HushgateConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): HushgateConfig {
-  const host = env['HUSHGATE_HOST'];
-  const port = env['HUSHGATE_PORT'];
-  const openai = env['HUSHGATE_UPSTREAM_OPENAI'];
-  const anthropic = env['HUSHGATE_UPSTREAM_ANTHROPIC'];
-  const defaultPolicy = env['HUSHGATE_DEFAULT_POLICY'];
-  const hmacKey = env['HUSHGATE_HMAC_KEY'];
-  const maxBodyBytes = env['HUSHGATE_MAX_BODY_BYTES'];
-  const maxResponseBytes = env['HUSHGATE_MAX_RESPONSE_BYTES'];
-  const upstreamTimeoutMs = env['HUSHGATE_UPSTREAM_TIMEOUT_MS'];
-  const auditPath = env['HUSHGATE_AUDIT_PATH'];
-  const auditEnabled = env['HUSHGATE_AUDIT'];
-  const residencyMode = env['HUSHGATE_RESIDENCY_MODE'];
+  const host = envValue(env, 'HUSHGATE_HOST');
+  const port = envValue(env, 'HUSHGATE_PORT');
+  const openai = envValue(env, 'HUSHGATE_UPSTREAM_OPENAI');
+  const anthropic = envValue(env, 'HUSHGATE_UPSTREAM_ANTHROPIC');
+  const defaultPolicy = envValue(env, 'HUSHGATE_DEFAULT_POLICY');
+  const hmacKey = envValue(env, 'HUSHGATE_HMAC_KEY');
+  const maxBodyBytes = envValue(env, 'HUSHGATE_MAX_BODY_BYTES');
+  const maxResponseBytes = envValue(env, 'HUSHGATE_MAX_RESPONSE_BYTES');
+  const upstreamTimeoutMs = envValue(env, 'HUSHGATE_UPSTREAM_TIMEOUT_MS');
+  const auditPath = envValue(env, 'HUSHGATE_AUDIT_PATH');
+  const auditEnabled = envValue(env, 'HUSHGATE_AUDIT');
+  const residencyMode = envValue(env, 'HUSHGATE_RESIDENCY_MODE');
 
   return {
     ...config,
@@ -1087,6 +1087,21 @@ export function normaliseUrl(value: string, where: string): string {
     throw new ConfigError(`${where} must not carry a query string or fragment, got "${value}"`);
   }
   return `${url.origin}${url.pathname}`.replace(/\/+$/u, '');
+}
+
+/**
+ * Read one variable, treating an empty or whitespace-only value as absent.
+ *
+ * That is how a container passes "unset": `HUSHGATE_PORT=${PORT}` in a compose
+ * file or a Kubernetes manifest expands to "" when PORT is not set. Reading ""
+ * as a value is worse than ignoring it — Number("") is 0, which envPort accepts,
+ * and the proxy then binds a random ephemeral port while looking healthy. An
+ * empty string is not a host, a URL, a key or a path either, so every read goes
+ * through here rather than only the ones that happen to throw.
+ */
+function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name];
+  return value === undefined || value.trim() === '' ? undefined : value;
 }
 
 function envPort(value: string, name: string): number {

@@ -202,6 +202,33 @@ describe('applyEnv', () => {
     expect(applyEnv(defaultConfig(), {})).toEqual(defaultConfig());
   });
 
+  it('treats an empty variable as unset, not as a value', () => {
+    // A compose file or Kubernetes manifest with HUSHGATE_PORT=${PORT} and PORT
+    // unset passes "", not nothing. Number("") is 0, which used to slip past
+    // envPort and bind a random ephemeral port while the proxy looked healthy.
+    const empty = applyEnv(defaultConfig(), {
+      HUSHGATE_HOST: '',
+      HUSHGATE_PORT: '',
+      HUSHGATE_UPSTREAM_OPENAI: '',
+      HUSHGATE_DEFAULT_POLICY: '',
+      HUSHGATE_HMAC_KEY: '',
+      HUSHGATE_MAX_BODY_BYTES: '',
+      HUSHGATE_AUDIT: '',
+      HUSHGATE_AUDIT_PATH: '',
+      HUSHGATE_RESIDENCY_MODE: '',
+    });
+
+    expect(empty).toEqual(defaultConfig());
+    expect(empty.port).toBe(defaultConfig().port);
+    expect(empty.host).toBe(defaultConfig().host);
+  });
+
+  it('treats a whitespace-only variable as unset too', () => {
+    expect(applyEnv(defaultConfig(), { HUSHGATE_PORT: '   ', HUSHGATE_HOST: '\t' })).toEqual(
+      defaultConfig(),
+    );
+  });
+
   it('rejects a malformed environment value', () => {
     expect(() => applyEnv(defaultConfig(), { HUSHGATE_PORT: 'eighty' })).toThrow(ConfigError);
     expect(() => applyEnv(defaultConfig(), { HUSHGATE_DEFAULT_POLICY: 'nope' })).toThrow(

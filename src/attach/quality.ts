@@ -23,6 +23,13 @@ export interface QualityLimits {
   readonly maxReplacementRatio: number;
   /** Share of control characters above which this is binary, not text. */
   readonly maxNonPrintableRatio: number;
+  /**
+   * Share of one- and two-character alphabetic runs above which the extractor
+   * was shredding words rather than reading them.
+   */
+  readonly maxFragmentRatio: number;
+  /** Below this many alphabetic runs, the fragment ratio is not meaningful. */
+  readonly minRunsForFragmentCheck: number;
 }
 
 export const DEFAULT_QUALITY_LIMITS: QualityLimits = {
@@ -30,12 +37,59 @@ export const DEFAULT_QUALITY_LIMITS: QualityLimits = {
   minCharsPerPage: 8,
   maxReplacementRatio: 0.1,
   maxNonPrintableRatio: 0.3,
+  maxFragmentRatio: 0.4,
+  minRunsForFragmentCheck: 40,
 };
 
 /** Either the text may be trusted, or an operator is told why it may not. */
 export type QualityVerdict =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
+
+/**
+ * Whether the words came out whole.
+ *
+ * This is the check that matters most, and it guards a different failure from
+ * the floors above. An extractor that loses a paragraph costs the model
+ * context, and nothing more: the text it dropped is text hushgate never
+ * forwards either, so nothing leaks.
+ *
+ * An extractor that *shreds* words is the opposite. `johan.beck er@klinik.de`
+ * is forwarded, matches no e-mail pattern, and reaches the provider as
+ * personal data that hushgate reported as clean. Splitting on glyph advance
+ * widths is a known failure of several PDF paths, so text whose alphabetic
+ * runs are overwhelmingly one and two characters long is refused, however
+ * fluent the character counts make it look.
+ */
+function fragmentRatio(text: string): { ratio: number; runs: number } {
+  let runs = 0;
+  let short = 0;
+  let current = 0;
+
+  const finish = (): void => {
+    if (current === 0) return;
+    runs += 1;
+    if (current <= 2) short += 1;
+    current = 0;
+  };
+
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0;
+    if (isLetter(code)) current += 1;
+    else finish();
+  }
+  finish();
+
+  return { ratio: runs === 0 ? 0 : short / runs, runs };
+}
+
+/** Letters in the ranges European business documents actually use. */
+const isLetter = (code: number): boolean =>
+  (code >= 0x41 && code <= 0x5a) ||
+  (code >= 0x61 && code <= 0x7a) ||
+  (code >= 0xc0 && code <= 0x24f) ||
+  (code >= 0x370 && code <= 0x3ff) ||
+  (code >= 0x400 && code <= 0x4ff);
 
 /**
  * Separators outside the ASCII range. A page of non-breaking spaces is as
@@ -101,6 +155,9 @@ const resolveLimits = (limits: Partial<QualityLimits> | undefined): QualityLimit
   minCharsPerPage: limits?.minCharsPerPage ?? DEFAULT_QUALITY_LIMITS.minCharsPerPage,
   maxReplacementRatio: limits?.maxReplacementRatio ?? DEFAULT_QUALITY_LIMITS.maxReplacementRatio,
   maxNonPrintableRatio: limits?.maxNonPrintableRatio ?? DEFAULT_QUALITY_LIMITS.maxNonPrintableRatio,
+  maxFragmentRatio: limits?.maxFragmentRatio ?? DEFAULT_QUALITY_LIMITS.maxFragmentRatio,
+  minRunsForFragmentCheck:
+    limits?.minRunsForFragmentCheck ?? DEFAULT_QUALITY_LIMITS.minRunsForFragmentCheck,
 });
 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
@@ -162,6 +219,16 @@ export function assessText(
   if (nonPrintableRatio > active.maxNonPrintableRatio) {
     return reject(
       `${percent(nonPrintableRatio)} of the extracted text is control characters, above the limit of ${percent(active.maxNonPrintableRatio)}`,
+    );
+  }
+
+  const fragments = fragmentRatio(text);
+  if (
+    fragments.runs >= active.minRunsForFragmentCheck &&
+    fragments.ratio > active.maxFragmentRatio
+  ) {
+    return reject(
+      `${percent(fragments.ratio)} of the extracted words are one or two characters long, so the text is fragmented and identifiers in it would not be recognised`,
     );
   }
 

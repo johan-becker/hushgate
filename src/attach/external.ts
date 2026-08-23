@@ -20,12 +20,7 @@
 import { Buffer } from 'node:buffer';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { basename, extname } from 'node:path';
-import type {
-  AttachmentFormat,
-  ExtractionContext,
-  ExtractionResult,
-  Extractor,
-} from './types.js';
+import type { AttachmentFormat, ExternalExtractorSpec, ExtractionContext, ExtractionResult, Extractor } from './types.js';
 
 /** How long a child that ignored SIGTERM gets before it is not asked again. */
 const SIGKILL_GRACE_MS = 2_000;
@@ -48,16 +43,9 @@ const FLUSH_GRACE_MS = 1_000;
 const PROBE_TIMEOUT_MS = 2_000;
 const PROBE_STDOUT_LIMIT_BYTES = 64 * 1024;
 
-/** How an operator configures one external tool. Never request-derived. */
-export interface ExternalExtractorSpec {
-  /** Media types this tool is willing to be given, lowercased. */
-  readonly mediaTypes: readonly string[];
-  /** Formats it also accepts, for attachments whose media type says nothing. */
-  readonly formats?: readonly AttachmentFormat[];
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly timeoutMs: number;
-}
+// The spec itself lives in ./types.js: the config layer validates it, and must
+// be able to do so without importing node:child_process.
+export type { ExternalExtractorSpec };
 
 /**
  * The child's entire environment.

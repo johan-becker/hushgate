@@ -70,6 +70,12 @@ export async function rewriteAttachments(
   let spent = 0;
 
   for (const site of sites) {
+    // Sequential on purpose. `spent` is a running total against
+    // `maxTotalBytes`, which only means anything if each attachment is measured
+    // against what the ones before it already cost; and extraction may spawn a
+    // child process, so a request carrying twenty documents must not become
+    // twenty concurrent processes.
+    // oxlint-disable-next-line no-await-in-loop
     const outcome = await handleSite(site, options, spent);
     spent += outcome.report.bytes;
     reports.push(outcome.report);
@@ -131,6 +137,11 @@ async function handleSite(
   for (const extractor of options.extractors) {
     if (!extractor.supports(format, site.declaredMediaType)) continue;
 
+    // Sequential on purpose: extractors are tried in priority order and the
+    // first one that produces trustworthy text wins, so running the rest would
+    // be work whose result is discarded — and for external extractors, a child
+    // process spawned for nothing.
+    // oxlint-disable-next-line no-await-in-loop
     const result = await extractor.extract(bytes, context);
     if (!result.ok) {
       lastReason = result.reason;
