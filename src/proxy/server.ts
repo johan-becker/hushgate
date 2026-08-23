@@ -10,6 +10,7 @@ import { nullAuditLog, type AuditSink } from '../audit/log.js';
 import type { AuditOutcome, AuditResidency } from '../audit/record.js';
 import { redactionOptions, type HushgateConfig } from '../config.js';
 import {
+  AttachmentBlockedError,
   AuthenticationError,
   BlockedContentError,
   ConfigError,
@@ -38,6 +39,9 @@ import {
   type ResidencyVerdict,
 } from '../residency/policy.js';
 import { countByKind, Session, type SessionOptions } from '../redact/session.js';
+import { buildExtractors } from '../attach/registry.js';
+import { rewriteAttachments } from '../attach/rewrite.js';
+import type { AttachmentReport } from '../attach/types.js';
 import { redactJson, restoreJson, type JsonValue } from '../redact/traverse.js';
 import { SseRehydrator } from '../stream/sse.js';
 import type { Finding, Policy } from '../types.js';
@@ -134,6 +138,10 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     options.createSession ??
     ((_route: Route, tenant: Tenant | null): Session =>
       new Session(tenant === null ? globalProfile : (profiles.get(tenant.id) ?? globalProfile)));
+
+  // Built once: an external extractor spec becomes a closure over its command
+  // and arguments, and nothing about it varies per request.
+  const extractors = buildExtractors(config.attachments.extractors);
 
   const audit = options.audit ?? nullAuditLog;
   const auditFor = options.auditFor ?? ((): AuditSink => audit);
@@ -263,6 +271,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     let blockedCounts: Record<string, number> | null = null;
     let residency: AuditResidency | null = null;
     let tokens = 0;
+    let attachments: readonly AttachmentReport[] = [];
 
     try {
       // Authentication happens before the body is read: an unauthenticated
@@ -273,12 +282,37 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
       if (tenant !== null) quotas.admit(tenant);
 
       const body = await readBody(request, config.limits.maxBodyBytes);
-      const parsed = parseJsonObject(body);
       const session = createSession(route, tenant);
+
+      // Attachments first, and the result is what everything downstream sees.
+      // A document becomes a text content part here, so by the time the
+      // redactor runs there is nothing left in the body but prose — which is
+      // the only thing it knows how to protect.
+      //
+      // Note that `parsed` itself is rebound. The residency `warn` and `allow`
+      // modes forward `parsed` rather than the redacted body, deliberately, so
+      // an operator can see what would be redacted before it is. That
+      // concession is about redaction; it must not extend to forwarding a
+      // document hushgate never read, so both bodies descend from the rewritten
+      // one.
+      const rewritten = await rewriteAttachments(parseJsonObject(body) as JsonValue, {
+        limits: config.attachments,
+        extractors,
+      });
+      const parsed = rewritten.body;
+      attachments = rewritten.reports;
+      for (const report of attachments) {
+        metrics.observeAttachment({
+          format: report.format,
+          outcome: report.outcome,
+          extractor: report.extractor,
+          bytes: report.bytes,
+        });
+      }
 
       // Outbound: only the content-bearing leaves are rewritten. A `block`
       // policy throws here, before a single byte has left the machine.
-      const redacted = redactJson(parsed as JsonValue, session, route.rules);
+      const redacted = redactJson(parsed, session, route.rules);
       findings = redacted.findings;
 
       const verdict = residencyByProvider[route.provider];
@@ -363,6 +397,30 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
           error instanceof ResidencyBlockedError ? 'residency' : 'policy',
           error instanceof ResidencyBlockedError ? error.rule : 'redaction.policies',
         );
+      } else if (error instanceof AttachmentBlockedError) {
+        // Nothing was sent: the refusal happens before the body is serialised.
+        outcome = 'blocked';
+        reached = null;
+        attachments = [
+          ...attachments,
+          {
+            format: 'unknown',
+            mediaType: error.mediaType,
+            bytes: error.bytes,
+            chars: 0,
+            pages: null,
+            extractor: null,
+            outcome: 'blocked',
+            reason: error.detail,
+          },
+        ];
+        metrics.observeBlocked('attachment', 'attachments.onUnreadable');
+        metrics.observeAttachment({
+          format: 'unknown',
+          outcome: 'blocked',
+          extractor: null,
+          bytes: error.bytes,
+        });
       } else if (error instanceof UpstreamError) {
         outcome = 'failed';
       } else if (outcome === 'forwarded') {
@@ -396,6 +454,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         findings: blockedCounts ?? countByKind(findings),
         policies: blockedCounts === null ? policiesOf(findings) : policiesForBlock(blockedCounts),
         residency,
+        attachments,
       });
     }
   }
@@ -624,6 +683,7 @@ export function statusOf(error: unknown): number {
   if (error instanceof AuthenticationError) return 401;
   if (error instanceof QuotaExceededError) return 429;
   if (error instanceof BlockedContentError) return 403;
+  if (error instanceof AttachmentBlockedError) return 422;
   if (error instanceof ResidencyBlockedError) return 403;
   if (error instanceof RequestError) return error.status;
   if (error instanceof TraversalDepthError) return 400;
@@ -694,6 +754,22 @@ export function respondWithError(response: ServerResponse, error: unknown): void
       errorPayload('hushgate_policy_blocked', error.message, {
         kinds: error.kinds,
         counts: error.counts,
+      }),
+    );
+    return;
+  }
+
+  if (error instanceof AttachmentBlockedError) {
+    // 422 rather than 403: the request was well-formed and permitted, but it
+    // carried something hushgate could not process. The caller's fix is to send
+    // a readable document, or for their operator to configure an extractor —
+    // so the message names the media type and the reason.
+    sendJson(
+      response,
+      statusOf(error),
+      errorPayload('hushgate_attachment_unreadable', error.message, {
+        mediaType: error.mediaType,
+        bytes: error.bytes,
       }),
     );
     return;
