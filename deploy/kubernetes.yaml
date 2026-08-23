@@ -53,6 +53,20 @@ data:
         ]
       },
 
+      "attachments": {
+        "enabled": true,
+        "onUnreadable": "block",
+        "extractors": [
+          {
+            "mediaTypes": ["application/pdf"],
+            "formats": ["pdf"],
+            "command": "pdftotext",
+            "args": ["-q", "-enc", "UTF-8", "-", "-"],
+            "timeoutMs": 20000
+          }
+        ]
+      },
+
       "audit": {
         "enabled": true,
         "path": "/var/lib/hushgate/hushgate-audit.jsonl"
@@ -162,13 +176,19 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # Attachments raise the ceiling: a request may carry 16 MiB of body,
+          # which is decoded, extracted and re-serialised, and pdftotext runs
+          # beside it. 512Mi holds a handful of concurrent document requests;
+          # raise it, or lower attachments.maxBytes, if yours are larger.
+          # /tmp below is a writable emptyDir, which the extractor subprocess
+          # needs given readOnlyRootFilesystem.
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
+              memory: 256Mi
             limits:
               cpu: '1'
-              memory: 512Mi
+              memory: 768Mi
           livenessProbe:
             httpGet:
               path: /healthz
