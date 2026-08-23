@@ -917,6 +917,15 @@ examples/ticket.txt
 12 findings in 1 file: CREDIT_CARD 1, DATE_OF_BIRTH 1, EMAIL 1, EMPLOYEE_ID 1, GERMAN_TAX_ID 1, IBAN 1, IPV4 1, MAC 1, NAME 1, PHONE 2, TERM 1
 ```
 
+Nothing in that file belongs to anybody. The identifiers are the published
+documentation values, chosen so that they pass their checksums — which is the
+whole point of the demo — without designating a real account, person or
+machine: `DE89 3704 0044 0532 0130 00` is the ISO 13616 example IBAN,
+`86095742719` the BZSt example Steuer-ID, `4111 1111 1111 1111` the standard
+test card, `030 23125 45` a number from the block the Bundesnetzagentur
+reserves for scripts and documentation, `00:00:5e:00:53:2a` from the range
+RFC 7042 reserves for documentation, and `10.14.2.7` is RFC 1918 private space.
+
 Values are masked by default (`An••••••dt`), so scan output is safe to paste
 into a ticket; `--show-values` opts out. Run the invalid line on its own to see
 what the checksums did:
