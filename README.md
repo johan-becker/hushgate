@@ -18,7 +18,7 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 948 tests
+network calls of its own beyond the upstream you configure, and its 979 tests
 pass with the cable pulled out.
 
 Attachments go through the same door: a PDF or a Word file in a request is
@@ -640,7 +640,7 @@ produce; delete it and re-run them and you get the same records, though the
 hashes differ because the chain covers timestamps.
 
 ```json
-{"ts":"2026-08-22T14:55:49.202Z","id":"0b09493d-574b-4e83-b0ef-30eded2145b1","tenant":null,"route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":18,"stream":false,"upstream":"127.0.0.1:9099","tokens":64,"findings":{"TERM":1,"NAME":1,"EMAIL":1,"PHONE":1,"IBAN":1},"policies":{"TERM":"pseudonymize","NAME":"pseudonymize","EMAIL":"pseudonymize","PHONE":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"LOCAL","controls":[]},"prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"0fdf40db84a026a99c3c908ec7bbb0bcc979bef6760ef39d9a5cbd72ab722059"}
+{"ts":"2026-08-23T10:40:09.900Z","id":"fa47a947-5723-4c1a-be43-2a9fdc10dca5","tenant":null,"route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":25,"stream":false,"upstream":"127.0.0.1:9099","tokens":64,"findings":{"TERM":1,"NAME":1,"EMAIL":1,"PHONE":1,"IBAN":1},"policies":{"TERM":"pseudonymize","NAME":"pseudonymize","EMAIL":"pseudonymize","PHONE":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"LOCAL","controls":[]},"attachments":[],"prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"2db1a2b738345c5762bb12c02d1a5b514b3118015850af81035c086e2a042139"}
 ```
 
 `hushgate audit verify` walks the chain:
@@ -1279,7 +1279,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-948 tests across 36 files, and **none of them touch the network**. Every proxy
+979 tests across 36 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`
