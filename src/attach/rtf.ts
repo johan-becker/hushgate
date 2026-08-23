@@ -156,7 +156,8 @@ export function rtfToText(bytes: Uint8Array, maxChars: number): string {
   let pending = 0;
   let table = codePageTable(DEFAULT_CODE_PAGE);
 
-  while (index < bytes.length && !full) {
+  while (index < bytes.length) {
+    if (full) break;
     const byte = bytes[index] ?? 0;
 
     if (byte === 0x7b) {

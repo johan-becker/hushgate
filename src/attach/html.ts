@@ -22,12 +22,23 @@ import type { Extractor } from './types.js';
 /** Elements whose content is instructions for the machine, never text for a reader. */
 const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set(['script', 'style']);
 
-/** Elements that end the current line, on the way in and on the way out. */
-const BLOCK_ELEMENTS: ReadonlySet<string> = new Set([
-  'address', 'article', 'aside', 'blockquote', 'br', 'dd', 'div', 'dl', 'dt',
-  'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4',
-  'h5', 'h6', 'header', 'hr', 'li', 'main', 'nav', 'ol', 'p', 'pre', 'section',
-  'table', 'tbody', 'tfoot', 'thead', 'title', 'tr', 'ul',
+/**
+ * How many newlines an element asks for, opening or closing.
+ *
+ * Two tiers rather than one, because the request is the *most* any tag in a run
+ * asked for and not their sum: `</p><p>` would otherwise be a different gap
+ * from `</p>\n<p>`, and `</tr><tr>` would put a blank line between every row of
+ * a table. A paragraph earns a blank line; a row, a list item or a `<br>` earns
+ * a line.
+ */
+const LINE_BREAKS: ReadonlyMap<string, number> = new Map([
+  ['br', 1], ['dd', 1], ['dt', 1], ['li', 1], ['tr', 1],
+  ['address', 2], ['article', 2], ['aside', 2], ['blockquote', 2], ['div', 2],
+  ['dl', 2], ['fieldset', 2], ['figcaption', 2], ['figure', 2], ['footer', 2],
+  ['form', 2], ['h1', 2], ['h2', 2], ['h3', 2], ['h4', 2], ['h5', 2], ['h6', 2],
+  ['header', 2], ['hr', 2], ['main', 2], ['nav', 2], ['ol', 2], ['p', 2],
+  ['pre', 2], ['section', 2], ['table', 2], ['tbody', 2], ['tfoot', 2],
+  ['thead', 2], ['title', 2], ['ul', 2],
 ]);
 
 /**
@@ -328,9 +339,8 @@ export function htmlToText(html: string, maxChars: number): string {
 
   const emitText = (raw: string): void => {
     let index = 0;
-    // `full` is set by `append`, which the linter cannot see from here.
-    // oxlint-disable-next-line no-unmodified-loop-condition
-    while (index < raw.length && !full) {
+    while (index < raw.length) {
+      if (full) break;
       if (isHtmlSpace(raw.codePointAt(index) ?? 0)) {
         pendingSpace = true;
         index += 1;
@@ -348,9 +358,8 @@ export function htmlToText(html: string, maxChars: number): string {
   let inHead = false;
   let inTitle = false;
 
-  // As above: `append` flips `full` once the character budget is spent.
-  // oxlint-disable-next-line no-unmodified-loop-condition
-  while (index < html.length && !full) {
+  while (index < html.length) {
+    if (full) break;
     if (html.codePointAt(index) !== 0x3c) {
       const open = html.indexOf('<', index);
       const end = open === -1 ? html.length : open;
@@ -399,8 +408,9 @@ export function htmlToText(html: string, maxChars: number): string {
     if (tag.name === 'head') inHead = !tag.closing;
     if (tag.name === 'title') inTitle = !tag.closing;
 
-    if (BLOCK_ELEMENTS.has(tag.name)) {
-      pendingNewlines = Math.min(pendingNewlines + 1, MAX_CONSECUTIVE_NEWLINES);
+    const newlines = LINE_BREAKS.get(tag.name);
+    if (newlines !== undefined) {
+      pendingNewlines = Math.max(pendingNewlines, Math.min(newlines, MAX_CONSECUTIVE_NEWLINES));
     } else if (tag.closing && (tag.name === 'td' || tag.name === 'th')) {
       pendingTab = true;
     }

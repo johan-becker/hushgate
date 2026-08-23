@@ -104,8 +104,15 @@ const buildZip = (fixtures: readonly Fixture[]): Uint8Array => {
   return concat([...locals, directory, eocd]);
 };
 
-/** Remove ten bytes from the front of the central directory, leaving it short. */
-const truncateDirectory = (zip: Uint8Array): Uint8Array => {
+/** Claim a central directory a megabyte long inside a file of a few hundred bytes. */
+const overstateDirectory = (zip: Uint8Array): Uint8Array => {
+  const copy = zip.slice();
+  new DataView(copy.buffer).setUint32(copy.length - 10, 0x10_0000, true);
+  return copy;
+};
+
+/** Cut ten bytes off the front of the central directory, so its first entry is not one. */
+const shiftDirectory = (zip: Uint8Array): Uint8Array => {
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const start = view.getUint32(zip.length - 6, true);
   return concat([zip.subarray(0, start), zip.subarray(start + 10)]);
@@ -162,9 +169,15 @@ describe('the zip reader', () => {
   });
 
   it('refuses a central directory that runs past the end of the file', () => {
-    const zip = truncateDirectory(buildZip([{ name: 'a.txt', content: 'a'.repeat(64) }]));
+    const zip = overstateDirectory(buildZip([{ name: 'a.txt', content: 'a'.repeat(64) }]));
 
     expect(() => readZip(zip, () => true)).toThrow(/central directory is truncated/);
+  });
+
+  it('refuses a central directory whose first entry is not one', () => {
+    const zip = shiftDirectory(buildZip([{ name: 'a.txt', content: 'a'.repeat(64) }]));
+
+    expect(() => readZip(zip, () => true)).toThrow(/central directory entry has a bad signature/);
   });
 
   it('refuses more entries than the limit allows before reading any of them', () => {
@@ -394,7 +407,7 @@ describe('refusing what it cannot read', () => {
   });
 
   it('turns a broken container into a reason rather than an exception', () => {
-    const broken = truncateDirectory(buildZip([{ name: 'word/document.xml', content: DOCUMENT_XML }]));
+    const broken = overstateDirectory(buildZip([{ name: 'word/document.xml', content: DOCUMENT_XML }]));
 
     expect(reasonOf(extractOoxml(broken, 'docx', 4096))).toMatch(/central directory is truncated/);
   });
