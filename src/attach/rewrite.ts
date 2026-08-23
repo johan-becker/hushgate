@@ -18,7 +18,7 @@ import { AttachmentBlockedError } from '../errors.js';
 import { selectByRules, type JsonValue, type Path, type PathRule } from '../redact/traverse.js';
 import { decodeBase64, formatBytes } from './decode.js';
 import { probePdf } from './pdf.js';
-import { assessText } from './quality.js';
+import { assessText, hidesIdentifiers } from './quality.js';
 import { findAttachmentSites, type AttachmentSite } from './shapes.js';
 import { mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
 import type {
@@ -344,50 +344,6 @@ function describeFile(filename: string | null, mediaType: string): string {
  * same character is just a page break, and leaving a run of them in the middle
  * of a prompt spends the model's attention on nothing.
  */
-/** Characters of context per probe, and how far the probe advances each time. */
-const PROBE_WINDOW = 240;
-const PROBE_STEP = 120;
-
-/**
- * Does this text's spacing hide an identifier that is really in the document?
- *
- * The ratios in `quality.ts` measure a proxy for the thing that matters — how
- * short the words are — and every proxy can be walked around. Real kerning is
- * enough to do it: a PDF whose address block carries ordinary `TJ` offsets
- * comes out of `pdftotext` as `E-M ail : a nna .sc hmi dt@ nor dli cht`, which
- * has no one- or two-letter words at all, reads as fluent to every ratio, and
- * leaves the address matching nothing.
- *
- * So this asks the question directly. Run the detectors over a window of the
- * text, then over the same window with its spacing closed up, and see whether
- * closing the gaps reveals something that was not visible before. If it does,
- * the gaps were what hid it.
- *
- * A window rather than the whole document, because closing every gap in a page
- * of prose runs the words together and destroys the boundaries the detectors
- * need — done globally the check finds nothing and quietly never fires. A
- * window also keeps the honest cases honest: a column of country codes closes
- * up into `DEATCHFRIT`, which is not an identifier and reveals nothing, so a
- * table is not mistaken for a shredded address.
- *
- * It errs towards refusing, which is the direction this product errs in
- * everywhere else, and the operator is told which document and why.
- */
-function hidesIdentifiers(text: string, count: RewriteOptions['countFindings']): boolean {
-  if (count === undefined) return false;
-
-  for (let start = 0; start < text.length; start += PROBE_STEP) {
-    const window = text.slice(start, start + PROBE_WINDOW);
-    // Horizontal space only, and blank-line runs collapsed rather than removed:
-    // a line break is a boundary a detector may legitimately rely on.
-    const closed = window.replaceAll(/[^\S\n]+/gu, '').replaceAll(/\n+/gu, '\n');
-    if (closed.length === window.length) continue;
-    if (count(closed) > count(window)) return true;
-  }
-
-  return false;
-}
-
 /**
  * Remove the characters that are invisible to a reader and fatal to a detector.
  *

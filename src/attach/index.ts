@@ -9,7 +9,12 @@ export { htmlToText } from './html.js';
 export { extractOoxml } from './ooxml.js';
 export { probePdf, type PdfProbe } from './pdf.js';
 export { decodeText } from './plaintext.js';
-export { assessText, DEFAULT_QUALITY_LIMITS, type QualityVerdict } from './quality.js';
+export {
+  assessText,
+  DEFAULT_QUALITY_LIMITS,
+  hidesIdentifiers,
+  type QualityVerdict,
+} from './quality.js';
 export { BUILTIN_EXTRACTORS, buildExtractors } from './registry.js';
 export {
   rewriteAttachments,

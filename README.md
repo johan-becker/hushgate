@@ -18,7 +18,7 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 993 tests
+network calls of its own beyond the upstream you configure, and its 997 tests
 pass with the cable pulled out.
 
 Attachments go through the same door: a PDF or a Word file in a request is
@@ -477,8 +477,13 @@ IBAN: [IBAN_1]
 Betrag: 1.240,00 EUR
 ```
 
+It refuses what the proxy would refuse, so the two never disagree about a
+document.
+
 `hushgate scan` reads documents too, so a folder of contracts can be checked for
-what it holds before any of it goes near a model.
+what it holds before any of it goes near a model. A file it cannot read is named
+as unreadable and is never counted as scanned — reporting "no personal data
+found" about a file nothing ever read is the one answer a sweep must not give.
 
 ### Limits
 
@@ -1305,7 +1310,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-993 tests across 36 files, and **none of them touch the network**. Every proxy
+997 tests across 36 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`

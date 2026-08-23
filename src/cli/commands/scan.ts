@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve as joinPath } from 'node:path';
-import { assessText } from '../../attach/quality.js';
+import { assessText, hidesIdentifiers } from '../../attach/quality.js';
 import { buildExtractors } from '../../attach/registry.js';
 import { mediaTypeForFormat, sniffFormat } from '../../attach/sniff.js';
 import type { Extractor } from '../../attach/types.js';
@@ -79,7 +79,7 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
     let text: string;
     try {
       // oxlint-disable-next-line no-await-in-loop
-      text = await readTarget(cli, target, config, extractors);
+      text = await readTarget(cli, target, config, extractors, session);
     } catch (error) {
       if (!(error instanceof HushgateError)) throw error;
       // Written to stderr as well as recorded in the report: the report is the
@@ -131,6 +131,7 @@ async function readTarget(
   target: string,
   config: HushgateConfig,
   extractors: readonly Extractor[],
+  session: Session,
 ): Promise<string> {
   if (target === '-') {
     if (cli.stdin === undefined) throw new HushgateError('no standard input to read');
@@ -176,6 +177,14 @@ async function readTarget(
     const verdict = assessText(result.value.text, result.value.pages);
     if (!verdict.ok) {
       reason = verdict.reason;
+      continue;
+    }
+
+    // The same question the proxy asks. This command exists to show what
+    // hushgate would send, so a document the proxy would refuse must be
+    // refused here too rather than printed as though it were readable.
+    if (hidesIdentifiers(result.value.text, (text) => session.countFindings(text))) {
+      reason = 'the spacing in this document splits identifiers, so they would not be recognised';
       continue;
     }
     return result.value.text;

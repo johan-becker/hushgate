@@ -330,3 +330,80 @@ describe('an extractor configured the way the README documents it', () => {
     expect(c.out()).not.toContain('no extractor handles');
   });
 });
+
+describe('the command line and the proxy give the same answer', () => {
+  /**
+   * What ordinary PDF kerning does to an address block: three-character groups
+   * with no short words at all. The proxy refuses this, and `extract` exists to
+   * show what the proxy would send — so printing it as though it were readable
+   * would make the command lie about the thing it is for.
+   */
+  const shredded =
+    'Sac hbe arb eit eri n: Ann a S chm idt\n' +
+    'E-M ail : a nna .sc hmi dt@ nor dli cht .ex amp le\n' +
+    'IBA N: DE8 937 040 044 053 201 300 0\n';
+
+  it('extract refuses a document whose spacing splits its identifiers', async () => {
+    const dir = workspace({ 'brief.txt': shredded });
+    const c = capture(['extract', 'brief.txt'], { cwd: dir });
+
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.err()).toContain('splits identifiers');
+    expect(c.out()).not.toContain('nordlicht');
+  });
+
+  it('scan refuses it when it came out of an extractor', async () => {
+    // Through an extractor the spacing is hushgate's own doing, so the file is
+    // reported as unreadable rather than as scanned.
+    const dir = workspace();
+    const path = join(dir, 'brief.pdf');
+    writeFileSync(path, `%PDF-1.7\n${shredded}\ntrailer\n<< >>\n%%EOF\n`);
+    writeFileSync(
+      join(dir, 'hushgate.config.json'),
+      JSON.stringify({
+        attachments: {
+          extractors: [
+            {
+              formats: ['pdf'],
+              command: process.execPath,
+              args: ['-e', `process.stdout.write(${JSON.stringify(shredded)})`],
+              timeoutMs: 5000,
+            },
+          ],
+        },
+      }),
+    );
+
+    const c = capture(['scan', '-c', 'hushgate.config.json', 'brief.pdf'], { cwd: dir });
+
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.out()).toContain('unreadable');
+  });
+
+  it('but reads a plain text file as the file it is', async () => {
+    // Not an extraction failure: nothing of hushgate's mangled this, the
+    // spacing is what the file says. scan reports what it can find, as it does
+    // for any text, and §10 of the README is where its detection limits live.
+    const dir = workspace({ 'brief.txt': shredded });
+    const c = capture(['scan', 'brief.txt'], { cwd: dir });
+
+    expect(await run(c.cli)).toBe(EXIT.findings);
+    expect(c.out()).not.toContain('unreadable');
+  });
+
+  it('and both still read the same letter set properly', async () => {
+    const clean =
+      'Sachbearbeiterin: Anna Schmidt\n' +
+      'E-Mail: anna.schmidt@nordlicht.example\n' +
+      'IBAN: DE89370400440532013000\n';
+    const dir = workspace({ 'brief.txt': clean });
+
+    const extracted = capture(['extract', 'brief.txt'], { cwd: dir });
+    expect(await run(extracted.cli)).toBe(EXIT.ok);
+    expect(extracted.out()).toContain('[EMAIL_1]');
+
+    const scanned = capture(['scan', 'brief.txt'], { cwd: dir });
+    expect(await run(scanned.cli)).toBe(EXIT.findings);
+    expect(scanned.out()).toContain('EMAIL');
+  });
+});

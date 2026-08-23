@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve as joinPath } from 'node:path';
 import { buildExtractors } from '../../attach/registry.js';
-import { assessText } from '../../attach/quality.js';
+import { assessText, hidesIdentifiers } from '../../attach/quality.js';
 import { mediaTypeForFormat, sniffFormat } from '../../attach/sniff.js';
 import { formatBytes } from '../../attach/decode.js';
 import { loadConfig, redactionOptions } from '../../config.js';
@@ -46,6 +46,7 @@ export async function extract(cli: Cli, argv: readonly string[]): Promise<number
 
   const format = sniffFormat(bytes, null, target);
   const extractors = buildExtractors(config.attachments.extractors);
+  const session = new Session(redactionOptions(config));
   const context = {
     format,
     // No caller declared anything here, so the type sniffing inferred stands in
@@ -74,8 +75,15 @@ export async function extract(cli: Cli, argv: readonly string[]): Promise<number
       continue;
     }
 
+    // The same question the proxy asks. This command exists to show what
+    // hushgate would send, so a document the proxy would refuse must be
+    // refused here too rather than printed as though it were readable.
+    if (hidesIdentifiers(result.value.text, (text) => session.countFindings(text))) {
+      reason = 'the spacing in this document splits identifiers, so they would not be recognised';
+      continue;
+    }
+
     const raw = result.value.text;
-    const session = new Session(redactionOptions(config));
     const { text, findings } = session.redact(raw);
     const shown = boolFlag(parsed, 'raw') ? raw : text;
 
