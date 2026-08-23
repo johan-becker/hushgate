@@ -12,6 +12,56 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+### Added
+
+- **Attachment pseudonymisation.** A PDF, Word file, spreadsheet, presentation,
+  e-mail or HTML document in a request is turned into text, the text is
+  pseudonymised by the existing detector pipeline, and the document itself
+  never reaches the provider. This closes a gap rather than only adding a
+  feature: `messages[].content[]` attachments were forwarded byte for byte
+  before, because the redaction layer selects the leaves that carry prose and a
+  base64 document is not one.
+- `attachments.onUnreadable` decides what happens to a document whose text
+  hushgate could not read — a scan with no text layer, an encrypted file, a
+  photograph, a remote URL it will not fetch. The default is `block`: the
+  request is refused with **422** and nothing leaves the machine. `withhold`
+  drops the file and forwards the rest; `forward` sends the original bytes and
+  is reported as unsafe by `hushgate doctor`.
+- Extraction is trusted only after it is checked. An extractor that "succeeds"
+  on a scanned page — `pdftotext` exits 0 and prints one form feed — is caught
+  by floors on characters overall and per page, on replacement characters, on
+  control characters, and on the share of one- and two-letter words. That last
+  check guards the failure that actually leaks: text shredded into
+  `johan.beck er@klinik.de` is forwarded and matches no detector, whereas text
+  merely dropped is text hushgate never forwards either.
+- PDF is extracted by an operator-configured external command rather than
+  in-process. The document is piped to its standard input, nothing derived from
+  the request reaches its arguments, no temporary file is written, and the child
+  runs with a minimal environment rather than hushgate's — which holds the
+  provider API key. The Docker image now installs `poppler-utils`, so PDFs work
+  there with no configuration.
+- `hushgate extract <file>` prints the text a document would be sent as, with
+  and without pseudonymisation, offline and without an upstream.
+- `hushgate scan` reads documents, so a folder of contracts can be checked for
+  what it holds before any of it goes near a model.
+- Audit records carry one entry per attachment: format, media type, size,
+  characters extracted, pages, which extractor answered, the outcome, and the
+  reason. Never the filename — `Kuendigung_Anna_Schmidt.pdf` is personal data,
+  and the trail is the one place hushgate must not write it down. The Article 30
+  report gains an **Attachments** section that counts, in particular, any
+  document forwarded without being read.
+- `hushgate_attachments_total` and `hushgate_attachment_bytes_total` metrics,
+  labelled by format, outcome and extractor.
+
+### Changed
+
+- `limits.maxBodyBytes` now defaults to **16 MiB**, up from 4 MiB. Base64
+  inflates a document by a third, and the old cap refused most real attachments
+  before an extractor could look at them. Set it back explicitly if the old
+  ceiling was load-bearing for you.
+- The Docker runtime image installs one distribution package, `poppler-utils`.
+  The npm package still has zero runtime dependencies.
+
 ### Fixed
 
 - The plain-language licence summaries in [`README.md`](README.md) §13,
