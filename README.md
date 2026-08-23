@@ -409,9 +409,10 @@ anything that only checks the exit status.
 
 So every extraction is asked a second question before it is believed: enough
 characters overall, enough per page, few enough replacement characters, few
-enough control characters, and words that are not overwhelmingly one and two
-letters long. Failing any of those makes the document unreadable, and
-`attachments.onUnreadable` decides what happens:
+enough control characters, and — in any passage of it, not merely on average —
+words that are not overwhelmingly one and two letters long. Failing any of
+those makes the document unreadable, and `attachments.onUnreadable` decides
+what happens:
 
 | Setting | Behaviour |
 | --- | --- |
@@ -1138,6 +1139,15 @@ What it does **not** do:
 - **Anything inside images.** There is no OCR, so a photograph or a scanned
   page has no text hushgate can read. It is refused rather than forwarded —
   see §4 — but refusing it is all hushgate can do.
+- **Every way an extractor can mangle a document.** The check described in §4
+  catches the failure that was actually measured: text shredded into one- and
+  two-character fragments, which is what splitting on glyph advance widths
+  produces. An extractor that instead broke a document into four- or
+  five-character pieces would defeat the detectors and hushgate would not
+  notice — it has no short words to count. Such a document is also unreadable
+  to the model, so the failure is visible rather than silent, and the audit
+  trail names the extractor that produced it. But the guarantee is "gross
+  fragmentation is caught", not "no mangling can ever hide an identifier".
 - **Re-identification by combination.** Removing the name does not stop
   "the customer in Ravensburg who ordered the ZX-40 on Tuesday" from being
   exactly one person. Pseudonymisation is not anonymisation.
