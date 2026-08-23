@@ -59,9 +59,26 @@ export interface ProcessingReport {
     readonly byEnforcement: Readonly<Record<string, number>>;
   };
   readonly categories: readonly CategoryRow[];
+  readonly attachments: readonly AttachmentRow[];
   readonly recipients: readonly RecipientRow[];
   readonly tenants: readonly { readonly id: string; readonly requests: number; readonly tokens: number }[];
   readonly chain: ChainVerification;
+}
+
+/**
+ * Documents handled in the period, by format and by what became of them.
+ *
+ * The row an auditor will stop on is `forwarded`: it counts the documents that
+ * reached a provider without hushgate having read them, which is the only way
+ * this feature can fail against the claim the rest of the report makes.
+ */
+export interface AttachmentRow {
+  readonly format: string;
+  readonly count: number;
+  readonly bytes: number;
+  /** How many of each outcome, e.g. `{ extracted: 12, withheld: 1 }`. */
+  readonly outcomes: Readonly<Record<string, number>>;
+  readonly extractors: readonly string[];
 }
 
 export interface ReportOptions {
@@ -98,6 +115,10 @@ export function buildReport(
     { jurisdiction: string; requests: number; tokens: number; controls: Set<string> }
   >();
   const tenants = new Map<string, { requests: number; tokens: number }>();
+  const attachments = new Map<
+    string,
+    { count: number; bytes: number; outcomes: Record<string, number>; extractors: Set<string> }
+  >();
   let tokens = 0;
 
   for (const record of selected) {
@@ -115,6 +136,20 @@ export function buildReport(
       const policy = record.policies?.[kind];
       if (policy !== undefined) row.policies.add(policy);
       findings.set(kind, row);
+    }
+
+    for (const item of record.attachments ?? []) {
+      const row = attachments.get(item.format) ?? {
+        count: 0,
+        bytes: 0,
+        outcomes: {},
+        extractors: new Set<string>(),
+      };
+      row.count += 1;
+      row.bytes += item.bytes ?? 0;
+      row.outcomes[item.outcome] = (row.outcomes[item.outcome] ?? 0) + 1;
+      if (item.extractor !== null && item.extractor !== undefined) row.extractors.add(item.extractor);
+      attachments.set(item.format, row);
     }
 
     // A blocked request reached no recipient, which is the point of recording it.
@@ -157,6 +192,15 @@ export function buildReport(
         policies: [...row.policies].toSorted(),
       }))
       .toSorted((a, b) => b.findings - a.findings || (a.kind < b.kind ? -1 : 1)),
+    attachments: [...attachments.entries()]
+      .map(([format, row]) => ({
+        format,
+        count: row.count,
+        bytes: row.bytes,
+        outcomes: { ...row.outcomes },
+        extractors: [...row.extractors].toSorted(),
+      }))
+      .toSorted((a, b) => b.count - a.count || (a.format < b.format ? -1 : 1)),
     recipients: [...recipients.entries()]
       .map(([host, row]) => {
         const where = jurisdiction(row.jurisdiction);
@@ -243,6 +287,29 @@ export function renderMarkdown(report: ProcessingReport): string {
         (row) =>
           `| ${row.kind} | ${row.findings} | ${row.requests} | ${row.policies.join(', ') || 'n/a'} |`,
       ),
+      '',
+    );
+  }
+
+  if (report.attachments.length > 0) {
+    const unread = report.attachments.reduce(
+      (sum, row) => sum + (row.outcomes['forwarded'] ?? 0),
+      0,
+    );
+
+    lines.push(
+      '## Attachments',
+      '',
+      '| Format | Documents | Bytes | Outcomes | Read by |',
+      '| --- | ---: | ---: | --- | --- |',
+      ...report.attachments.map(
+        (row) =>
+          `| ${row.format} | ${row.count} | ${row.bytes} | ${describeCounts(row.outcomes)} | ${row.extractors.join(', ') || 'n/a'} |`,
+      ),
+      '',
+      unread === 0
+        ? 'Every document was either read and pseudonymised, or refused. None reached a provider unread.'
+        : `**${unread} document${unread === 1 ? '' : 's'} reached a provider without being read**, because attachments.onUnreadable is set to "forward". Personal data in those documents was not pseudonymised.`,
       '',
     );
   }

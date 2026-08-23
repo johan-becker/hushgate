@@ -45,8 +45,14 @@ describe('the Dockerfile', () => {
     expect(dockerfile).toContain('HEALTHCHECK');
     expect(dockerfile).toContain('/healthz');
     expect(dockerfile).toMatch(/HEALTHCHECK[^\n]*\n\s+CMD node -e/u);
-    // Nothing is installed into the runtime stage; the probe runs on Node.
-    expect(dockerfile).not.toContain('apk add');
+    // The probe runs on Node, so no curl and no shell tooling is installed for
+    // it. The runtime stage does install one package — poppler-utils, for
+    // pdftotext — and that is the only one it is allowed to install.
+    const installs = [...dockerfile.matchAll(/apk add[^\n]*/gu)].map((match) => match[0]);
+    expect(installs).toEqual(['apk add --no-cache poppler-utils']);
+    // In particular no curl: the probe is Node, and an HTTP client in the image
+    // is reachable by anything that gets a foothold in it.
+    expect(installs.join(' ')).not.toMatch(/\bcurl\b/u);
   });
 
   it('keeps the audit trail outside the image layers', () => {

@@ -104,6 +104,33 @@ const STARTER = `{
     "allow": []
   },
 
+  // A document in a request is turned into text, the text is pseudonymised,
+  // and the file itself never reaches the provider.
+  "attachments": {
+    "enabled": true,
+
+    // What to do when a document cannot be read at all — a scan with no text
+    // layer, an encrypted PDF, a photograph. "block" refuses the request;
+    // "withhold" drops the file and forwards the rest; "forward" sends the
+    // original bytes, which is the one setting that lets a document hushgate
+    // has not read reach the provider.
+    "onUnreadable": "block",
+
+    // PDF is not parsed in-process. Point this at a tool that does it properly;
+    // the document is piped to its standard input and never written to disk,
+    // and nothing from the request ever reaches its arguments.
+    // The Docker image ships pdftotext, so this works there as written.
+    "extractors": [
+      {
+        "mediaTypes": ["application/pdf"],
+        "formats": ["pdf"],
+        "command": "pdftotext",
+        "args": ["-q", "-enc", "UTF-8", "-", "-"],
+        "timeoutMs": 20000
+      }
+    ]
+  },
+
   // Categories and counts, never values. This is the evidence.
   "audit": {
     "enabled": true,

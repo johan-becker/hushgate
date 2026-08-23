@@ -29,8 +29,26 @@
   },
 
   "limits": {
-    "maxBodyBytes": 4194304,
+    "maxBodyBytes": 16777216,
     "upstreamTimeoutMs": 120000
+  },
+
+  "attachments": {
+    "enabled": true,
+    "maxBytes": 10485760,
+    "maxTotalBytes": 33554432,
+    "maxTextChars": 200000,
+    "timeoutMs": 20000,
+    "onUnreadable": "block",
+    "extractors": [
+      {
+        "mediaTypes": ["application/pdf"],
+        "formats": ["pdf"],
+        "command": "pdftotext",
+        "args": ["-q", "-enc", "UTF-8", "-", "-"],
+        "timeoutMs": 20000
+      }
+    ]
   },
 
   "audit": {

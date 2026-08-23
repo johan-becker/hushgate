@@ -1,8 +1,17 @@
 # syntax=docker/dockerfile:1
 
-# hushgate has zero runtime dependencies, so the final image is Node plus the
-# compiled output and nothing else — no package manager, no build toolchain, no
-# transitive supply chain to audit.
+# hushgate has zero runtime dependencies, so the final image is Node, the
+# compiled output, and one distribution package — no npm dependencies, no build
+# toolchain, no transitive supply chain to audit.
+#
+# The one package is poppler-utils, for `pdftotext`. hushgate does not parse
+# PDFs itself: a from-scratch extractor was written while the attachment
+# feature was designed and it failed silently on ordinary documents, dropping
+# names and addresses out of text that still read fluently. Refusing to guess
+# is the position the rest of the product takes, so PDF extraction is delegated
+# to a tool that has been doing it for twenty years, run as a separate process
+# with the document on stdin, no temporary files, no network, and no access to
+# this process's environment.
 
 FROM node:22-alpine AS build
 WORKDIR /src
@@ -18,6 +27,11 @@ RUN npm run build
 
 
 FROM node:22-alpine AS runtime
+
+# `pdftotext` only. The rest of poppler-utils is not installed, and tesseract is
+# deliberately absent: it links libcurl and will fetch a URL handed to it, which
+# is not a thing that belongs inside this trust boundary.
+RUN apk add --no-cache poppler-utils
 
 ENV NODE_ENV=production \
     # Containers are reached from outside themselves. hushgate refuses to bind
