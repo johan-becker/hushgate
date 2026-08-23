@@ -415,7 +415,60 @@ export function sniffFormat(
   const named = fromFilename(filename);
   if (named !== null) return named;
 
+  // Last, and only once nothing better has answered: two formats that are
+  // "text" to a byte test but whose personal data is unreadable unless the
+  // right extractor takes them. An .eml handed to the plaintext extractor goes
+  // upstream with its bodies still base64 and quoted-printable, and an HTML
+  // page goes upstream as tag soup — in both cases extraction is recorded as a
+  // success and no detector can see a thing.
+  if (looksLikeRfc822(bytes)) return 'eml';
+  if (looksLikeHtml(bytes)) return 'html';
+
   return looksLikeText(bytes) ? 'text' : 'unknown';
+}
+
+/** How far into a file the shape tests below are willing to look. */
+const SHAPE_WINDOW = 4096;
+
+const headOf = (bytes: Uint8Array): string =>
+  new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, SHAPE_WINDOW));
+
+/**
+ * A leading RFC 822 header block.
+ *
+ * Requires both the shape — `Field-Name: value` lines, folding allowed, ending
+ * at a blank line — and at least one field a real message always carries, so
+ * that a colon-separated config file or a CSV with a header row is not mistaken
+ * for a mailbox.
+ */
+function looksLikeRfc822(bytes: Uint8Array): boolean {
+  const head = headOf(bytes);
+  const names = new Set<string>();
+
+  for (const raw of head.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (line === '') break;
+    if (line.startsWith(' ') || line.startsWith('\t')) continue;
+
+    const colon = line.indexOf(':');
+    if (colon <= 0) return false;
+    const name = line.slice(0, colon);
+    if (!/^[\u0021-\u0039\u003B-\u007E]+$/u.test(name)) return false;
+    names.add(name.toLowerCase());
+  }
+
+  return ['from', 'to', 'subject', 'date', 'message-id'].some((field) => names.has(field));
+}
+
+/** Markup that `sniffMarkup` did not catch because it does not start the file. */
+function looksLikeHtml(bytes: Uint8Array): boolean {
+  const head = headOf(bytes).toLowerCase();
+  if (/<(?:!doctype\s+html|html[\s>]|head[\s>]|body[\s>])/u.test(head)) return true;
+
+  // No document element, but enough ordinary tags that this is a fragment
+  // rather than prose that happens to contain an angle bracket.
+  const tags = head.match(/<\/?(?:p|div|span|a|br|table|tr|td|li|ul|ol|h[1-6]|img)[\s/>]/gu);
+  return tags !== null && tags.length >= 3;
 }
 
 /**

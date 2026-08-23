@@ -58,7 +58,7 @@ export async function extract(cli: Cli, argv: readonly string[]): Promise<number
 
   let reason = `no extractor handles ${format}`;
   for (const extractor of extractors) {
-    if (!extractor.supports(format, null)) continue;
+    if (!extractor.supports(format, context.mediaType)) continue;
     // Sequential on purpose: the first extractor that produces trustworthy text
     // is the one the proxy would have used, so the rest must not run.
     // oxlint-disable-next-line no-await-in-loop

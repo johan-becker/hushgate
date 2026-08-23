@@ -221,3 +221,112 @@ describe('hushgate check', () => {
     expect(c.err()).toContain('hushgate scan');
   });
 });
+
+describe('scanning a folder that is not all text', () => {
+  /** A 1x1 PNG: real bytes, no text layer, nothing can read it. */
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  const folder = (): string => {
+    const dir = workspace({
+      'a.txt': 'Mail an anna.schmidt@nordlicht.example\n',
+      'c.txt': 'IBAN DE89370400440532013000\n',
+    });
+    writeFileSync(join(dir, 'b.png'), PNG);
+    return dir;
+  };
+
+  it('keeps going past a file it cannot read, and still reports the rest', async () => {
+    // The whole point of reading documents is sweeping a folder. One logo among
+    // two hundred contracts must not turn the run into silence.
+    const dir = folder();
+    const c = capture(['scan', 'a.txt', 'b.png', 'c.txt'], { cwd: dir });
+    const code = await run(c.cli);
+
+    expect(code).toBe(EXIT.findings);
+    expect(c.out()).toContain('EMAIL');
+    expect(c.out()).toContain('IBAN');
+  });
+
+  it('says which file it could not read rather than implying it was clean', async () => {
+    const dir = folder();
+    const c = capture(['scan', 'a.txt', 'b.png', 'c.txt'], { cwd: dir });
+    await run(c.cli);
+
+    expect(c.out()).toContain('unreadable');
+    expect(c.out()).toContain('b.png');
+    expect(c.err()).toContain('b.png');
+  });
+
+  it('does not exit 0 when the only file was never scanned', async () => {
+    const dir = folder();
+    const c = capture(['scan', 'b.png'], { cwd: dir });
+
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.out()).not.toContain('no personal data found in 1 file');
+  });
+
+  it('names the unreadable files in the JSON report', async () => {
+    const dir = folder();
+    const c = capture(['scan', '--json', 'a.txt', 'b.png'], { cwd: dir });
+    await run(c.cli);
+
+    const report = JSON.parse(c.out()) as {
+      unreadable: number;
+      files: { path: string; unreadable?: string }[];
+    };
+    expect(report.unreadable).toBe(1);
+    expect(report.files.find((file) => file.path === 'b.png')?.unreadable).toBeTruthy();
+    expect(report.files.find((file) => file.path === 'a.txt')?.unreadable).toBeUndefined();
+  });
+});
+
+const configFor = (dir: string): string => {
+  const path = join(dir, 'hushgate.config.json');
+  writeFileSync(
+    path,
+    JSON.stringify({
+      attachments: {
+        extractors: [
+          {
+            mediaTypes: ['application/pdf'],
+            command: process.execPath,
+            args: ['-e', 'process.stdout.write("Kundin Anna Schmidt, IBAN DE89370400440532013000")'],
+            timeoutMs: 5000,
+          },
+        ],
+      },
+    }),
+  );
+  return path;
+};
+
+const pdfIn = (dir: string): string => {
+  const path = join(dir, 'rechnung.pdf');
+  writeFileSync(path, '%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF\n');
+  return path;
+};
+
+describe('an extractor configured the way the README documents it', () => {
+  // `{"mediaTypes": ["application/pdf"], "command": ...}` with no `formats`.
+  // Through the proxy the caller declares a media type; on the command line
+  // nobody does, so the type inferred from the bytes has to stand in for one.
+  it('is used by scan', async () => {
+    const dir = workspace();
+    const c = capture(['scan', '-c', configFor(dir), pdfIn(dir)], { cwd: dir });
+
+    expect(await run(c.cli)).toBe(EXIT.findings);
+    expect(c.out()).toContain('IBAN');
+  });
+
+  it('is used by extract', async () => {
+    const dir = workspace();
+    const c = capture(['extract', '-c', configFor(dir), pdfIn(dir)], { cwd: dir });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(c.out()).toContain('[IBAN_1]');
+    expect(c.out()).not.toContain('no extractor handles');
+  });
+});

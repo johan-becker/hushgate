@@ -5,7 +5,7 @@
  * terminal output. Each check answers one question an operator would otherwise
  * only discover in production, and each one says what to do about it.
  */
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute as isAbsolutePath, join } from 'node:path';
 import { parseAuditLines } from '../audit/log.js';
 import { verifyChain } from '../audit/record.js';
@@ -432,7 +432,11 @@ function isOnPath(command: string): boolean {
 function executable(candidate: string): boolean {
   try {
     accessSync(candidate, constants.X_OK);
-    return true;
+    // A directory satisfies X_OK, so the access check alone would report a
+    // directory named `pdftotext` on the PATH as an installed extractor while
+    // every PDF was in fact being refused. `statSync` follows symlinks, so a
+    // symlinked binary still counts.
+    return statSync(candidate).isFile();
   } catch {
     return false;
   }

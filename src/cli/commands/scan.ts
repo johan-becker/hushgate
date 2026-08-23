@@ -43,6 +43,8 @@ interface Hit {
 interface FileReport {
   readonly path: string;
   readonly hits: readonly Hit[];
+  /** Why this file could not be read, when it could not be. */
+  readonly unreadable?: string;
 }
 
 export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
@@ -69,8 +71,25 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   for (const target of targets) {
     // Sequential on purpose: the report has to follow the order of the
     // arguments, and a scan is bounded by the files the user named.
-    // oxlint-disable-next-line no-await-in-loop
-    const text = await readTarget(cli, target, config, extractors);
+    //
+    // One target that cannot be read must not discard the run. The command
+    // exists to sweep a folder of documents, and a single logo among two
+    // hundred contracts would otherwise print nothing at all — the operator
+    // sees silence and concludes the folder is clean.
+    let text: string;
+    try {
+      // oxlint-disable-next-line no-await-in-loop
+      text = await readTarget(cli, target, config, extractors);
+    } catch (error) {
+      if (!(error instanceof HushgateError)) throw error;
+      // Written to stderr as well as recorded in the report: the report is the
+      // result, but a file that could not be read is a diagnostic, and a
+      // pipeline redirecting stdout to a findings file still has to see it.
+      cli.stderr(`hushgate: ${error.message}\n`);
+      reports.push({ path: target, hits: [], unreadable: reasonOf(error, target) });
+      continue;
+    }
+
     const hits = detect(text, detectors).map((span) =>
       toHit(span, text, session.policyFor(span.kind), showValues),
     );
@@ -78,6 +97,7 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   }
 
   const total = reports.reduce((sum, report) => sum + report.hits.length, 0);
+  const unreadable = reports.filter((report) => report.unreadable !== undefined).length;
 
   if (boolFlag(parsed, 'json')) {
     cli.stdout(`${JSON.stringify(jsonReport(cli, reports, total), null, 2)}\n`);
@@ -85,7 +105,17 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
     cli.stdout(textReport(cli, reports, total, boolFlag(parsed, 'quiet')));
   }
 
-  return total === 0 ? EXIT.ok : EXIT.findings;
+  // A file that could not be read is not a file that was found clean, so the
+  // run does not report success on it. Findings still win the exit code,
+  // because a pipeline that fails a build on personal data must keep doing so.
+  if (total > 0) return EXIT.findings;
+  return unreadable > 0 ? EXIT.failure : EXIT.ok;
+}
+
+/** The message an operator can act on, with the path they typed left in it. */
+function reasonOf(error: HushgateError, target: string): string {
+  const prefix = `cannot read ${target}: `;
+  return error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message;
 }
 
 /**
@@ -134,7 +164,7 @@ async function readTarget(
 
   let reason = `no extractor handles ${format}`;
   for (const extractor of extractors) {
-    if (!extractor.supports(format, null)) continue;
+    if (!extractor.supports(format, context.mediaType)) continue;
     // Sequential on purpose: the first extractor to produce trustworthy text is
     // the one the proxy would have used.
     // oxlint-disable-next-line no-await-in-loop
@@ -200,9 +230,13 @@ function jsonReport(cli: Cli, reports: readonly FileReport[], total: number): un
       path: display(cli, report.path),
       findings: report.hits,
       counts: countKinds(report.hits),
+      // Present only when the file could not be read, so a consumer can tell a
+      // clean file from one that was never scanned. An absent key means it was.
+      ...(report.unreadable === undefined ? {} : { unreadable: report.unreadable }),
     })),
     counts: countKinds(reports.flatMap((report) => report.hits)),
     findings: total,
+    unreadable: reports.filter((report) => report.unreadable !== undefined).length,
   };
 }
 
@@ -216,6 +250,10 @@ function textReport(
 
   if (!quiet) {
     for (const report of reports) {
+      if (report.unreadable !== undefined) {
+        lines.push(display(cli, report.path), `  unreadable  ${report.unreadable}`, '');
+        continue;
+      }
       if (report.hits.length === 0) continue;
       lines.push(display(cli, report.path));
 
@@ -236,11 +274,20 @@ function textReport(
     .map(([kind, count]) => `${kind} ${count}`)
     .join(', ');
 
+  const unreadable = reports.filter((report) => report.unreadable !== undefined).length;
+  const scanned = reports.length - unreadable;
+
   lines.push(
     total === 0
-      ? `no personal data found in ${plural(reports.length, 'file')}`
-      : `${plural(total, 'finding')} in ${plural(reports.length, 'file')}: ${breakdown}`,
+      ? `no personal data found in ${plural(scanned, 'file')}`
+      : `${plural(total, 'finding')} in ${plural(scanned, 'file')}: ${breakdown}`,
   );
+
+  // Said out loud, and never folded into the "no personal data found" line: a
+  // file that was not read is not a file that was found clean.
+  if (unreadable > 0) {
+    lines.push(`${plural(unreadable, 'file')} could not be read and ${unreadable === 1 ? 'was' : 'were'} not scanned`);
+  }
 
   return `${lines.join('\n')}\n`;
 }

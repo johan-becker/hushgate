@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -303,5 +303,57 @@ describe('the --allow-warnings summary', () => {
     // A failure is never accepted by the flag, so the advice still applies.
     expect(await run(c.cli)).toBe(EXIT.failure);
     expect(c.out()).toContain('re-run with --allow-warnings');
+  });
+});
+
+describe('reporting the attachment extractors', () => {
+  it('does not call a directory an installed extractor', () => {
+    // A directory satisfies X_OK, so an access check on its own reports
+    // "pdftotext found on PATH" while every PDF is in fact being refused.
+    const dir = mkdtempSync(join(tmpdir(), 'hushgate-path-'));
+    mkdirSync(join(dir, 'pdftotext'));
+
+    try {
+      // The real PATH walk is exercised by pointing PATH at the directory that
+      // holds the decoy.
+      const withDecoy = ((): Finding[] => {
+        const saved = process.env['PATH'];
+        process.env['PATH'] = dir;
+        try {
+          return runChecks({
+            config: defaultConfig(),
+            configPath: '/srv/hushgate.config.json',
+            auditPath: '/srv/audit.jsonl',
+            readTrail: () => null,
+          });
+        } finally {
+          process.env['PATH'] = saved;
+        }
+      })();
+
+      expect(withDecoy.some((finding) => finding.message.includes('found on PATH'))).toBe(false);
+      expect(withDecoy.some((finding) => finding.message.includes('is not on PATH'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports forwarding an unread document as a failure', () => {
+    const base = defaultConfig();
+    const findings = check(
+      { ...base, attachments: { ...base.attachments, onUnreadable: 'forward' } },
+      { onPath: () => true },
+    );
+    const fail = findings.find((finding) => finding.severity === 'fail');
+    expect(fail?.message).toContain('sent to the provider as it arrived');
+  });
+
+  it('warns when attachment handling is off, because documents then go unread', () => {
+    const base = defaultConfig();
+    const findings = check(
+      { ...base, attachments: { ...base.attachments, enabled: false } },
+      { onPath: () => true },
+    );
+    expect(findings.some((finding) => finding.message.includes('forwarded unread'))).toBe(true);
   });
 });
