@@ -18,7 +18,7 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 997 tests
+network calls of its own beyond the upstream you configure, and its 1000 tests
 pass with the cable pulled out.
 
 Attachments go through the same door: a PDF or a Word file in a request is
@@ -1165,10 +1165,17 @@ What it does **not** do:
 - **Every way an extractor can mangle a document.** The checks in §4 catch a
   document that is fragmented throughout, and — by asking whether closing up
   the spacing reveals an identifier that was not visible before — a passage of
-  shredding inside an otherwise clean page. What that second check can see is
-  bounded by what the detectors can see: an identifier hushgate would not have
-  recognised in the first place, such as a street address, is not one it can
-  notice the loss of.
+  shredding inside an otherwise clean page. That covers what real extractors do:
+  ordinary PDF kerning, and every invisible or blank-rendering separator
+  measured against it.
+
+  Two limits are worth naming. The check can only miss what the detectors would
+  have missed anyway — an identifier hushgate does not recognise in the first
+  place, such as a street address, is not one it can notice the loss of. And it
+  closes up *spacing*, not line breaks: an extractor that broke an address
+  across a line every few characters would defeat it. Line breaks are left
+  alone deliberately, because the alternative refuses invoices with a narrow
+  column of figures, which is the document this is most often pointed at.
 - **Re-identification by combination.** Removing the name does not stop
   "the customer in Ravensburg who ordered the ZX-40 on Tuesday" from being
   exactly one person. Pseudonymisation is not anonymisation.
@@ -1310,7 +1317,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-997 tests across 36 files, and **none of them touch the network**. Every proxy
+1000 tests across 36 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`

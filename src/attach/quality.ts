@@ -248,6 +248,9 @@ export function assessText(
   return { ok: true };
 }
 
+/** Assigned, printing characters that nevertheless render as a blank gap. */
+const BLANK_LOOKALIKES = /[\u2800\u3164\u115F\u1160\u17B4\u17B5\uFFA0]/gu;
+
 /** Characters of context per probe, and how far the probe advances each time. */
 const PROBE_WINDOW = 240;
 const PROBE_STEP = 120;
@@ -287,7 +290,16 @@ export function hidesIdentifiers(
     const window = text.slice(start, start + PROBE_WINDOW);
     // Horizontal space only, and blank-line runs collapsed rather than removed:
     // a line break is a boundary a detector may legitimately rely on.
-    const closed = window.replaceAll(/[^\S\n]+/gu, '').replaceAll(/\n+/gu, '\n');
+    //
+    // BLANK_LOOKALIKES are in here because they separate text without being
+    // whitespace to a regex or default-ignorable to Unicode. A braille cell
+    // with no dots is the awkward one: it is a real, assigned, printing
+    // character that renders as a gap, so nothing upstream strips it and it
+    // would otherwise be the one separator left that hides an identifier.
+    const closed = window
+      .replaceAll(BLANK_LOOKALIKES, '')
+      .replaceAll(/[^\S\n]+/gu, '')
+      .replaceAll(/\n+/gu, '\n');
     if (closed.length === window.length) continue;
     if (findings(closed) > findings(window)) return true;
   }

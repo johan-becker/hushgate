@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assessText } from '../src/attach/quality.js';
+import { assessText, hidesIdentifiers } from '../src/attach/quality.js';
 
 describe('trusting extracted text', () => {
   it('accepts ordinary prose', () => {
@@ -71,5 +71,27 @@ describe('fragmentation across a whole document', () => {
   it('accepts a bibliography, which is mostly initials and abbreviations', () => {
     const bib = 'Meyer, H. u. a. (2019), S. 4 f.\na. a. O., Bd. 3, Nr. 7, S. 12 ff.\n';
     expect(assessText(prose + bib + prose, 1).ok).toBe(true);
+  });
+});
+
+/** A stand-in detector: the real ones are exercised through the proxy tests. */
+const findings = (text: string): number =>
+  (text.match(/anna\.schmidt@nordlicht\.example/gu) ?? []).length;
+
+describe('separators that are not whitespace and not invisible', () => {
+  it('sees through a braille blank, which is a printing character that renders as a gap', () => {
+    // Neither whitespace to a regex nor default-ignorable to Unicode, so
+    // nothing upstream strips it — it was the last separator that worked.
+    const hidden = [...'anna.schmidt@nordlicht.example'].join('⠀');
+    expect(hidesIdentifiers(hidden, findings)).toBe(true);
+  });
+
+  it('sees through a Hangul filler', () => {
+    const hidden = [...'anna.schmidt@nordlicht.example'].join('ㅤ');
+    expect(hidesIdentifiers(hidden, findings)).toBe(true);
+  });
+
+  it('leaves a document alone when closing its spacing reveals nothing', () => {
+    expect(hidesIdentifiers('DE AT CH FR IT ES NL BE PL CZ', findings)).toBe(false);
   });
 });
