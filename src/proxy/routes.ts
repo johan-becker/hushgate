@@ -37,6 +37,14 @@ export const ROUTES: readonly Route[] = [
   },
 ];
 
+/**
+ * Every label {@link ROUTES} serves, in one place because the config parser has
+ * to reject a residency rule naming a route hushgate does not have. Derived
+ * from ROUTES rather than written out again: two lists would drift, and the
+ * drift would show up as a rule that silently enforces nothing.
+ */
+export const ROUTE_LABELS: readonly string[] = ROUTES.map((route) => route.label);
+
 export function findRoute(pathname: string): Route | undefined {
   return ROUTES.find((route) => route.path === pathname);
 }

@@ -30,7 +30,9 @@
 
   "limits": {
     "maxBodyBytes": 16777216,
-    "upstreamTimeoutMs": 120000
+    "upstreamTimeoutMs": 120000,
+    "requestTimeoutMs": 60000,
+    "idleTimeoutMs": 60000
   },
 
   "attachments": {
@@ -81,7 +83,10 @@
 
   "residency": {
     "mode": "sanitize",
-    "routes": {},
+    "routes": {
+      "openai.chat.completions": "sanitize",
+      "anthropic.messages": "sanitize"
+    },
     "categories": {
       "GERMAN_TAX_ID": "block"
     },

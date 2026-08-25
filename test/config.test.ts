@@ -352,3 +352,69 @@ describe('attachment configuration', () => {
     ).toThrow(/HUSHGATE_ATTACHMENTS_ON_UNREADABLE/u);
   });
 });
+
+describe('residency rule keys', () => {
+  it('refuses a route the proxy does not serve, naming the ones it does', () => {
+    // The singular/plural slip that started this: "openai.chat.completion"
+    // parsed, enforced nothing, and looked exactly like protection.
+    expect(() =>
+      parseConfig({ residency: { routes: { 'openai.chat.completion': 'block' } } }),
+    ).toThrow(/openai\.chat\.completions, anthropic\.messages/u);
+  });
+
+  it('accepts the labels hushgate actually serves', () => {
+    const config = parseConfig({
+      residency: {
+        routes: { 'openai.chat.completions': 'block', 'anthropic.messages': 'warn' },
+      },
+    });
+    expect(config.residency.routes['openai.chat.completions']).toBe('block');
+    expect(config.residency.routes['anthropic.messages']).toBe('warn');
+  });
+
+  it('refuses a lowercase category and says what to write instead', () => {
+    // A rule spelled "phone" let a phone number through with a 200.
+    expect(() => parseConfig({ residency: { categories: { phone: 'block' } } })).toThrow(
+      /did you mean "PHONE"/u,
+    );
+  });
+
+  it('accepts built-in kinds and the kinds custom rules report', () => {
+    const config = parseConfig({
+      residency: { categories: { PHONE: 'block', EMPLOYEE_ID: 'warn' } },
+    });
+    expect(config.residency.categories['PHONE']).toBe('block');
+    // Custom rules contribute their own names, so the key set cannot be closed
+    // — only the spelling can.
+    expect(config.residency.categories['EMPLOYEE_ID']).toBe('warn');
+  });
+
+  it('refuses a category whose spelling no detector could ever report', () => {
+    expect(() => parseConfig({ residency: { categories: { 'employee id': 'block' } } })).toThrow(
+      ConfigError,
+    );
+    expect(() => parseConfig({ residency: { categories: { EMPLOYEE_ID_: 'block' } } })).toThrow(
+      ConfigError,
+    );
+  });
+});
+
+describe('limits.idleTimeoutMs', () => {
+  it('defaults to a minute, above what a pooled client keeps a socket for', () => {
+    expect(defaultConfig().limits.idleTimeoutMs).toBe(60_000);
+  });
+
+  it('is settable from the file and from the environment', () => {
+    expect(parseConfig({ limits: { idleTimeoutMs: 5_000 } }).limits.idleTimeoutMs).toBe(5_000);
+    expect(
+      applyEnv(defaultConfig(), { HUSHGATE_IDLE_TIMEOUT_MS: '7000' }).limits.idleTimeoutMs,
+    ).toBe(7_000);
+  });
+
+  it('refuses a value that would disable the reaper', () => {
+    expect(() => parseConfig({ limits: { idleTimeoutMs: 0 } })).toThrow(ConfigError);
+    expect(() => applyEnv(defaultConfig(), { HUSHGATE_IDLE_TIMEOUT_MS: 'soon' })).toThrow(
+      /HUSHGATE_IDLE_TIMEOUT_MS/u,
+    );
+  });
+});

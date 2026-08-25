@@ -5,7 +5,7 @@
  * Point your SDK's base URL at it and nothing else in your application changes.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { nullAuditLog, type AuditSink } from '../audit/log.js';
 import type { AuditOutcome, AuditResidency } from '../audit/record.js';
 import { redactionOptions, type HushgateConfig } from '../config.js';
@@ -458,9 +458,83 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     }
   }
 
-  // Bound so a slow or stalled client cannot hold a connection open forever.
+  // Node's two knobs bound less than their names promise: `requestTimeout` is
+  // re-checked only at request boundaries and `headersTimeout` is pushed
+  // forward by every arriving byte, and both are polled on an interval of
+  // their own. A client that drips one byte every few hundred milliseconds, or
+  // that connects and then says nothing at all, is reaped by neither. They stay
+  // because they still cost nothing and still catch the cases they catch; the
+  // sweeper below is what actually bounds a hostile connection.
   server.requestTimeout = config.limits.requestTimeoutMs;
   server.headersTimeout = Math.min(config.limits.requestTimeoutMs, 60_000);
+
+  // What a connection is currently entitled to spend time on.
+  //
+  // The distinction is the whole point: `receiving` is the client's turn to
+  // talk and is bounded by `requestTimeoutMs`, `idle` is nobody's turn and is
+  // bounded by `idleTimeoutMs` — but `serving` is hushgate's turn, and is
+  // deliberately not bounded here. A model can think in silence for minutes
+  // before the first SSE token arrives, and an upstream request that is
+  // retrying is silent for longer still; reaping on quiet alone would kill
+  // streaming, which is why a plain `socket.setTimeout` is not enough on its
+  // own. What bounds that phase is `upstreamTimeoutMs`, one layer down.
+  type Phase = 'idle' | 'receiving' | 'serving';
+  const connections = new Map<Socket, { phase: Phase; since: number }>();
+
+  server.on('connection', (socket: Socket) => {
+    // Accepted but silent counts against the idle budget from the first
+    // moment: a socket that never sends a request line is the cheapest
+    // file-descriptor exhaustion there is.
+    connections.set(socket, { phase: 'idle', since: Date.now() });
+    socket.once('close', () => connections.delete(socket));
+  });
+
+  // Prepended so the phase is set before the handler can answer: a request
+  // served synchronously would otherwise finish before anything was listening
+  // for it, and the socket would stay stuck in the phase it had left.
+  server.prependListener('request', (request: IncomingMessage, response: ServerResponse) => {
+    const state = connections.get(request.socket as Socket);
+    if (state === undefined) return;
+
+    // The headers are in and the body is not: the clock now running is the
+    // client's, and it is never restamped on incoming data. Restamping is
+    // exactly what lets a drip live forever.
+    state.phase = 'receiving';
+    state.since = Date.now();
+
+    request.once('end', () => {
+      state.phase = 'serving';
+      state.since = Date.now();
+    });
+    // Finished, or the caller hung up mid-response: either way the socket is
+    // back in the keep-alive pool and the idle budget applies to it again.
+    const settle = (): void => {
+      state.phase = 'idle';
+      state.since = Date.now();
+    };
+    response.once('finish', settle);
+    response.once('close', settle);
+  });
+
+  // One timer for the whole server. A timer per socket would make this attack
+  // cheaper rather than dearer — every squatting connection would allocate its
+  // own — which is the same amplification the sweeper exists to prevent.
+  const sweepMs = Math.min(
+    1_000,
+    Math.max(25, Math.floor(Math.min(config.limits.idleTimeoutMs, config.limits.requestTimeoutMs) / 4)),
+  );
+  const sweeper = setInterval(() => {
+    const now = Date.now();
+    for (const [socket, state] of connections) {
+      if (state.phase === 'serving') continue;
+      const budget =
+        state.phase === 'receiving' ? config.limits.requestTimeoutMs : config.limits.idleTimeoutMs;
+      if (now - state.since >= budget) socket.destroy();
+    }
+  }, sweepMs);
+  // This timer exists to end connections, never to wait for them: unref'd, it
+  // cannot be the reason a CLI run refuses to exit.
+  sweeper.unref();
 
   return {
     server,
@@ -487,6 +561,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
 
         server.close((error) => {
           clearTimeout(forced);
+          clearInterval(sweeper);
           if (error !== undefined && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
             reject(error);
             return;

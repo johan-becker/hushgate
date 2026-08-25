@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { reportFailure } from '../src/proxy/server.js';
 import { VERSION } from '../src/version.js';
 import { startHarness, type Harness } from './helpers/proxy-harness.js';
 import { replyJson, type FakeReply } from './helpers/fake-upstream.js';
@@ -288,6 +289,61 @@ describe('malformed requests', () => {
     const response = await harness.post('/v1/chat/completions', { model: 'm', messages: deep });
     expect(response.status).toBe(400);
     expect((await errorOf(response)).message).toMatch(/nested deeper/u);
+  });
+
+  // V8 answers this body with `Unexpected token 'A', ..."essages": Anna Schmi"...`
+  // — a slice of the body, quoted before redaction has run. Repeating it would
+  // echo a name back to the caller and, worse, print it to stderr, which ops
+  // ships to a log aggregator that processes personal data of its own.
+  it('refuses a body broken mid-name without quoting the name', async () => {
+    const logged: unknown[] = [];
+    harness = await startHarness({
+      proxy: { onInternalError: (error) => reportFailure(error, (value) => logged.push(value)) },
+    });
+
+    const response = await harness.post('/v1/chat/completions', '{"messages": Anna Schmidt}');
+    expect(response.status).toBe(400);
+
+    const raw = await response.text();
+    expect(raw).not.toContain('Anna');
+    expect(raw).not.toContain('Schmi');
+
+    const failure = (JSON.parse(raw) as ErrorEnvelope).error;
+    expect(failure.type).toBe('invalid_request_error');
+    expect(failure.message).toBe('request body is not valid JSON');
+    expect(logged).toEqual(['hushgate: request body is not valid JSON']);
+  });
+
+  it('reports where a truncated body stopped, and nothing else the parser said', async () => {
+    harness = await startHarness();
+
+    const response = await harness.post(
+      '/v1/chat/completions',
+      '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Anna Schmidt',
+    );
+    expect(response.status).toBe(400);
+
+    const raw = await response.text();
+    expect(raw).not.toContain('Anna');
+    expect(raw).not.toContain('Schmi');
+    // The offset is the only part of the parser's message a client author can
+    // act on, and the only part that cannot spell a person's name.
+    expect((JSON.parse(raw) as ErrorEnvelope).error.message).toMatch(
+      /^request body is not valid JSON \(at position \d+\)$/u,
+    );
+  });
+
+  it('names no part of a body that parses but is not an object', async () => {
+    harness = await startHarness();
+
+    const response = await harness.post('/v1/chat/completions', '["Anna Schmidt"]');
+    expect(response.status).toBe(400);
+
+    const raw = await response.text();
+    expect(raw).not.toContain('Anna');
+    expect((JSON.parse(raw) as ErrorEnvelope).error.message).toBe(
+      'request body must be a JSON object',
+    );
   });
 });
 

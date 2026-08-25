@@ -14,10 +14,15 @@ import {
   type ExternalExtractorSpec,
   type UnreadableAction,
 } from './attach/types.js';
-import type { CustomRule } from './detectors/custom.js';
+import { normaliseKindName, type CustomRule } from './detectors/custom.js';
 import type { DictionaryInput } from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
 import { ConfigError } from './errors.js';
+// Importing from proxy/ is safe in this direction: routes.ts reaches only the
+// shape tables, none of which import this file, so nothing here closes a cycle.
+// The alternative — a second hand-written copy of the labels — is what let a
+// misspelled rule pass in the first place.
+import { ROUTE_LABELS } from './proxy/routes.js';
 import type { SessionOptions } from './redact/session.js';
 import {
   defaultResidencyConfig,
@@ -28,7 +33,7 @@ import {
 } from './residency/policy.js';
 import type { DataControl, EndpointEntry } from './residency/registry.js';
 import { hashKey, type Tenant, type TenantQuotas } from './tenants/tenant.js';
-import { isPolicy, type Policy } from './types.js';
+import { BUILTIN_KINDS, isPolicy, type Policy } from './types.js';
 
 /**
  * Remove `//` and block comments from JSON text.
@@ -134,6 +139,15 @@ export interface LimitsConfig {
   readonly upstreamTimeoutMs: number;
   /** How long a client may take to deliver its request. */
   readonly requestTimeoutMs: number;
+  /**
+   * How long a connection may sit with nothing happening on it before it is
+   * closed — accepted and silent, or pooled between two requests.
+   *
+   * Distinct from {@link requestTimeoutMs}, which bounds a request already in
+   * progress. Neither bounds the wait for an answer: a model may think in
+   * silence for a long time, and that is the upstream timeout's job.
+   */
+  readonly idleTimeoutMs: number;
   /** How many times to retry an upstream that never answered. */
   readonly upstreamRetries: number;
   /** Base delay for the retry backoff, doubled each attempt. */
@@ -277,6 +291,14 @@ export function defaultConfig(): HushgateConfig {
       maxResponseBytes: 16 * 1024 * 1024,
       upstreamTimeoutMs: 120_000,
       requestTimeoutMs: 60_000,
+      // A pooled keep-alive socket between two turns of a conversation is
+      // ordinary; a socket that has not said a word for a minute is not one a
+      // client is still using. A minute sits above what mainstream HTTP clients
+      // keep a free socket for, and matches the idle timeout the load balancers
+      // in front of a deployment like this already impose — so nothing
+      // legitimate is reaped, and a squatter costs one descriptor per minute
+      // instead of one descriptor forever.
+      idleTimeoutMs: 60_000,
       upstreamRetries: 2,
       retryBackoffMs: 250,
     },
@@ -337,6 +359,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       'maxResponseBytes',
       'upstreamTimeoutMs',
       'requestTimeoutMs',
+      'idleTimeoutMs',
       'upstreamRetries',
       'retryBackoffMs',
     ]),
@@ -372,6 +395,9 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
       requestTimeoutMs:
         optionalPositiveInt(limits['requestTimeoutMs'], `${where}: "limits.requestTimeoutMs"`) ??
         base.limits.requestTimeoutMs,
+      idleTimeoutMs:
+        optionalPositiveInt(limits['idleTimeoutMs'], `${where}: "limits.idleTimeoutMs"`) ??
+        base.limits.idleTimeoutMs,
       upstreamRetries:
         optionalCount(limits['upstreamRetries'], `${where}: "limits.upstreamRetries"`) ??
         base.limits.upstreamRetries,
@@ -532,8 +558,8 @@ function parseResidency(raw: unknown, where: string, base: ResidencyConfig): Res
 
   return {
     mode: optionalMode(node['mode'], `${scope}.mode`) ?? base.mode,
-    routes: parseModeMap(node['routes'], `${scope}.routes`),
-    categories: parseModeMap(node['categories'], `${scope}.categories`),
+    routes: parseModeMap(node['routes'], `${scope}.routes`, assertRouteLabel),
+    categories: parseModeMap(node['categories'], `${scope}.categories`, assertKindName),
     allow: parseAllowList(node['allow'], `${scope}.allow`),
     requireDataControls:
       optionalBoolean(node['requireDataControls'], `${scope}.requireDataControls`) ??
@@ -542,17 +568,66 @@ function parseResidency(raw: unknown, where: string, base: ResidencyConfig): Res
   };
 }
 
-function parseModeMap(raw: unknown, where: string): Record<string, EnforcementMode> {
+/**
+ * The shape `normaliseKindName` produces: UPPER_SNAKE_CASE, starting with a
+ * letter, with single underscores between segments and none at either end.
+ * A residency rule may legitimately name a custom rule's kind, so the key set
+ * cannot be closed — but the spelling can be, and `phone` is not it.
+ */
+const CUSTOM_KIND_SHAPE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$/u;
+
+/**
+ * Both residency maps key on names hushgate has to recognise later, and a key
+ * it does not recognise enforces nothing at all. Silence there is the worst
+ * failure this file can produce: the operator reads their own rule back, sees
+ * `block`, and is one typo away from an unprotected proxy. So a key that will
+ * never match is a load error, and the error says what to write instead.
+ */
+function parseModeMap(
+  raw: unknown,
+  where: string,
+  assertKey: (key: string, where: string) => void,
+): Record<string, EnforcementMode> {
   if (raw === undefined || raw === null) return {};
   const node = asObject(raw, where);
   const out: Record<string, EnforcementMode> = {};
 
   for (const [key, value] of Object.entries(node)) {
+    assertKey(key, where);
     const mode = optionalMode(value, `${where}.${key}`);
     if (mode !== undefined) out[key] = mode;
   }
 
   return out;
+}
+
+function assertRouteLabel(key: string, where: string): void {
+  if (ROUTE_LABELS.includes(key)) return;
+  throw new ConfigError(
+    `${where}: "${key}" is not a route hushgate serves; expected one of ${ROUTE_LABELS.join(', ')}`,
+  );
+}
+
+function assertKindName(key: string, where: string): void {
+  if ((BUILTIN_KINDS as readonly string[]).includes(key)) return;
+  // A custom rule contributes its own kind, so an unknown-but-well-formed name
+  // is accepted; the rule may live in a tenant's section, or in no section at
+  // all yet. What is refused is a spelling no detector can ever report.
+  if (CUSTOM_KIND_SHAPE.test(key)) return;
+
+  // The suggestion is produced by the same function a custom rule's name goes
+  // through, so what it prints is exactly what would have matched. It refuses
+  // names it cannot normalise at all, and a key like "42" has no suggestion.
+  let suggestion = '';
+  try {
+    const upper = normaliseKindName(key);
+    if (upper !== key) suggestion = ` (did you mean "${upper}"?)`;
+  } catch {
+    suggestion = '';
+  }
+  throw new ConfigError(
+    `${where}: "${key}" is not a finding kind${suggestion}; kinds are UPPER_SNAKE_CASE — either a built-in (${BUILTIN_KINDS.join(', ')}) or the kind a custom rule reports`,
+  );
 }
 
 function parseAllowList(raw: unknown, where: string): AllowEntry[] {
@@ -843,6 +918,7 @@ export function applyEnv(
   const maxBodyBytes = envValue(env, 'HUSHGATE_MAX_BODY_BYTES');
   const maxResponseBytes = envValue(env, 'HUSHGATE_MAX_RESPONSE_BYTES');
   const upstreamTimeoutMs = envValue(env, 'HUSHGATE_UPSTREAM_TIMEOUT_MS');
+  const idleTimeoutMs = envValue(env, 'HUSHGATE_IDLE_TIMEOUT_MS');
   const auditPath = envValue(env, 'HUSHGATE_AUDIT_PATH');
   const auditEnabled = envValue(env, 'HUSHGATE_AUDIT');
   const residencyMode = envValue(env, 'HUSHGATE_RESIDENCY_MODE');
@@ -901,6 +977,13 @@ export function applyEnv(
         upstreamTimeoutMs === undefined
           ? config.limits.upstreamTimeoutMs
           : envPositiveInt(upstreamTimeoutMs, 'HUSHGATE_UPSTREAM_TIMEOUT_MS'),
+      // Settable from the environment because a deployment that has to tighten
+      // the reaper — the one knob standing between a hostile client and the
+      // file-descriptor budget — should not need a new config file to do it.
+      idleTimeoutMs:
+        idleTimeoutMs === undefined
+          ? config.limits.idleTimeoutMs
+          : envPositiveInt(idleTimeoutMs, 'HUSHGATE_IDLE_TIMEOUT_MS'),
     },
     audit: {
       enabled:
