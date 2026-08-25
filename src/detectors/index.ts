@@ -11,6 +11,7 @@ import { createDobDetector, defaultDobYearRange, type DobYearRange } from './dob
 import { emailDetector } from './email.js';
 import { ibanDetector } from './iban.js';
 import { ipv4Detector, ipv6Detector, macDetector } from './network.js';
+import { normaliseForScan } from './normalise.js';
 import { phoneDetector } from './phone.js';
 import { resolveSpans } from './resolve.js';
 import { secretDetector } from './secret.js';
@@ -25,6 +26,7 @@ export { createDobDetector, defaultDobYearRange, isLeapYear, isRealDate } from '
 export { emailDetector, isValidEmail } from './email.js';
 export { ibanChecksum, ibanDetector, IBAN_LENGTHS, isValidIban } from './iban.js';
 export { ipv4Detector, ipv6Detector, isValidIpv4, isValidIpv6, macDetector } from './network.js';
+export { normaliseForScan } from './normalise.js';
 export { classifyPhone, phoneDetector } from './phone.js';
 export { isJwtHeaderSegment, secretDetector } from './secret.js';
 export {
@@ -35,6 +37,7 @@ export {
 } from './taxid.js';
 export { urlCredentialsDetector } from './urlcredentials.js';
 export type { CustomRule } from './custom.js';
+export type { NormalisedText } from './normalise.js';
 export type { DictionaryEntry, DictionaryInput } from './dictionary.js';
 export type { DobYearRange } from './dob.js';
 
@@ -84,6 +87,13 @@ export function createDetectors(options: DetectorSetOptions = {}): Detector[] {
  *
  * This is the only entry point callers should use: individual detectors return
  * *candidates*, and candidates overlap.
+ *
+ * Every detector sees the text twice: once as written, and once through
+ * {@link normaliseForScan}, which drops invisible characters and folds
+ * full-width and decomposed spellings. Detectors match on the raw string, so
+ * without the second look a zero-width space between two letters is a complete
+ * bypass — and the worst kind, because the value then leaves the machine
+ * verbatim while the audit record says nothing was found.
  */
 export function detect(text: string, detectors: readonly Detector[]): Span[] {
   const candidates: Span[] = [];
@@ -95,5 +105,56 @@ export function detect(text: string, detectors: readonly Detector[]): Span[] {
   for (const detector of detectors) {
     for (const span of detector.find(text)) candidates.push(span);
   }
+
+  // The guard is load-bearing, not an optimisation: the second pass runs every
+  // detector a second time, and the overwhelmingly common body is ASCII prose
+  // where normalisation cannot change anything. Paying for it there would
+  // double the cost of the proxy's hot path — a single-threaded event loop
+  // shared with every other tenant — to find nothing. `changed` is decided by
+  // one linear scan, so the ordinary request pays for that and no more.
+  const norm = normaliseForScan(text);
+  if (norm.changed) {
+    // Two passes can report the same finding — a value that survives
+    // normalisation untouched is found in both copies. `resolveSpans` would
+    // collapse the pair anyway (it de-duplicates on range and kind), but the
+    // candidate list is what a caller counts, so the double never gets made.
+    const seen = new Set<string>();
+    for (const span of candidates) seen.add(keyOf(span));
+
+    for (const detector of detectors) {
+      for (const span of detector.find(norm.text)) {
+        const original = toOriginal(span, text, norm.offsets);
+        if (original === null) continue;
+        const key = keyOf(original);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(original);
+      }
+    }
+  }
+
   return resolveSpans(candidates);
+}
+
+const keyOf = (span: Span): string =>
+  `${span.start}:${span.end}:${span.kind}:${span.detector}`;
+
+/**
+ * Move a span found in the normalised copy back onto the original text.
+ *
+ * The value is re-sliced from the *original* string and never carried over
+ * from the normalised one. That is the invariant the whole mechanism rests on:
+ * rehydration replaces a placeholder with this exact string, so a value that
+ * silently lost a soft hyphen or gained a composed umlaut would hand the user
+ * back a document that is not the one they sent.
+ *
+ * Null when the mapped range is empty — which happens when a span covers only
+ * part of an expansion, where the original has no character boundary to cut
+ * at — or when a detector returned offsets outside the copy it was given.
+ */
+function toOriginal(span: Span, text: string, offsets: readonly number[]): Span | null {
+  const start = offsets[span.start];
+  const end = offsets[span.end];
+  if (start === undefined || end === undefined || end <= start) return null;
+  return { ...span, start, end, value: text.slice(start, end) };
 }
