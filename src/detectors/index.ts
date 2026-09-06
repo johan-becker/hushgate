@@ -199,6 +199,7 @@ function* scanCopies(text: string): Generator<NormalisedText> {
   yield normaliseForScan(text, SCAN_PROFILES.skeleton);
   yield normaliseForScan(text, SCAN_PROFILES.identifier);
   yield normaliseForScan(text, SCAN_PROFILES.wordShape);
+  yield normaliseForScan(text, SCAN_PROFILES.shredded);
   yield* decodeCopies(text);
 }
 

@@ -52,6 +52,11 @@ export interface NormaliseOptions {
   readonly separators?: boolean;
   /** Upper-case identifier runs. Default false. */
   readonly caseFold?: boolean;
+  /**
+   * Delete the separators inside a kerning-shredded run rather than
+   * normalising them. Default false; see {@link READABLE_GROUP}.
+   */
+  readonly closeGaps?: boolean;
   /** Collapse `N o r d l i c h t` back into one word. Default false. */
   readonly spacedOut?: boolean;
   /** Split `ProjektNordlicht` at the case boundary. Default false. */
@@ -78,6 +83,8 @@ export const SCAN_PROFILES = {
   identifier: { separators: true, caseFold: true },
   /** Words pulled apart or spelled with digits. */
   wordShape: { spacedOut: true, camelCase: true, leet: true },
+  /** Identifiers a kerning extractor cut into pieces no detector reads. */
+  shredded: { separators: true, caseFold: true, closeGaps: true },
 } as const satisfies Record<string, NormaliseOptions>;
 
 /**
@@ -151,9 +158,14 @@ export function normaliseForScan(text: string, options: NormaliseOptions = {}): 
   if (options.spacedOut === true) copy = applyStage(copy, collapseSpacedOut);
   if (options.camelCase === true) copy = applyStage(copy, splitCamelCase);
   if (options.leet === true) copy = applyStage(copy, foldLeet);
-  if (options.separators === true || options.caseFold === true) {
+  if (options.separators === true || options.caseFold === true || options.closeGaps === true) {
     copy = applyStage(copy, (input) =>
-      foldIdentifierRuns(input, options.separators === true, options.caseFold === true),
+      foldIdentifierRuns(
+        input,
+        options.separators === true,
+        options.caseFold === true,
+        options.closeGaps === true,
+      ),
     );
   }
 
@@ -637,6 +649,32 @@ const GROUPED_NUMBER =
 const MIN_RUN_ALNUM = 9;
 const MIN_RUN_DIGITS = 6;
 
+/**
+ * The shortest group the detectors read on their own.
+ *
+ * Measured, not assumed: the IBAN detector recognises
+ * `DE89370400440532013000` written in groups of four, five, six, seven and
+ * eight, and does not recognise it in groups of three or two. Four is
+ * therefore the boundary between a grouping a human chose and a grouping an
+ * extractor inflicted — and two- and three-character groups are exactly what
+ * kerning shredding produces, which `attach/quality.ts` already refuses a
+ * document for. The same text arrives as a plain request body too, where there
+ * is no extractor to refuse it, so it has to be read rather than rejected.
+ */
+const READABLE_GROUP = 4;
+
+/**
+ * The longest group that may be mostly letters and still belong to a chain.
+ *
+ * `DE8` is one digit in three characters, so the half-digits rule below throws
+ * it away — and with it the country code that makes the rest an IBAN rather
+ * than a run of numbers. A short group carrying a digit and no lower-case
+ * letter is the shape of a country or issuer prefix, not of a word: `Sac`,
+ * `hbe` and `arb` from a shredded letter all carry no digit and are still
+ * refused.
+ */
+const MAX_PREFIX_GROUP = 4;
+
 const isAsciiDigit = (ch: string): boolean => ch >= '0' && ch <= '9';
 const isAsciiAlnum = (ch: string): boolean =>
   isAsciiDigit(ch) || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
@@ -659,8 +697,8 @@ const isAsciiAlnum = (ch: string): boolean =>
  * already readable by the IBAN detector, so it produces no copy and no
  * second pass.
  */
-function identifierChains(text: string): Array<readonly [number, number]> {
-  const chains: Array<readonly [number, number]> = [];
+function identifierChains(text: string): Array<readonly [number, number, boolean]> {
+  const chains: Array<readonly [number, number, boolean]> = [];
 
   let start = -1;
   let end = -1;
@@ -668,16 +706,26 @@ function identifierChains(text: string): Array<readonly [number, number]> {
   let digits = 0;
   let foldable = false;
   let lower = false;
+  let groups = 0;
+  let shortGroups = 0;
 
   const flush = (): void => {
+    // A chain of mostly-short groups is the shredded shape, and worth a copy
+    // even when every gap is a plain space that the fold would otherwise treat
+    // as already readable. MOST groups, not any group: a conventionally
+    // grouped IBAN ends in a two-character remainder — `DE89 3704 0044 0532
+    // 0130 00` — and one trailing short group must not drag the commonest
+    // shape of all onto a second pass.
+    const shredded = shortGroups * 2 > groups;
+
     if (
       start >= 0 &&
       alnum >= MIN_RUN_ALNUM &&
       digits >= MIN_RUN_DIGITS &&
-      (foldable || lower) &&
+      (foldable || lower || shredded) &&
       !GROUPED_NUMBER.test(text.slice(start, end))
     ) {
-      chains.push([start, end] as const);
+      chains.push([start, end, shredded] as const);
     }
     start = -1;
     end = -1;
@@ -685,6 +733,8 @@ function identifierChains(text: string): Array<readonly [number, number]> {
     digits = 0;
     foldable = false;
     lower = false;
+    groups = 0;
+    shortGroups = 0;
   };
 
   let i = 0;
@@ -706,7 +756,11 @@ function identifierChains(text: string): Array<readonly [number, number]> {
     }
 
     const groupLength = i - groupStart;
-    if (groupDigits * 2 < groupLength) {
+    // Either mostly digits, or a short all-caps prefix carrying one — the
+    // second arm is what keeps `DE8` attached to the IBAN it begins.
+    const carriesDigits = groupDigits * 2 >= groupLength;
+    const isPrefix = groupLength <= MAX_PREFIX_GROUP && groupDigits >= 1 && !groupLower;
+    if (!carriesDigits && !isPrefix) {
       flush();
       continue;
     }
@@ -715,6 +769,8 @@ function identifierChains(text: string): Array<readonly [number, number]> {
     end = i;
     alnum += groupLength;
     digits += groupDigits;
+    groups += 1;
+    if (groupLength < READABLE_GROUP) shortGroups += 1;
     if (groupLower) lower = true;
 
     const gap = text[i];
@@ -737,7 +793,12 @@ function identifierChains(text: string): Array<readonly [number, number]> {
   return chains;
 }
 
-function foldIdentifierRuns(text: string, separators: boolean, caseFold: boolean): Stage | null {
+function foldIdentifierRuns(
+  text: string,
+  separators: boolean,
+  caseFold: boolean,
+  closeGaps: boolean,
+): Stage | null {
   const chains = identifierChains(text);
   if (chains.length === 0) return null;
 
@@ -745,11 +806,25 @@ function foldIdentifierRuns(text: string, separators: boolean, caseFold: boolean
   let changed = false;
   let cursor = 0;
 
-  for (const [start, end] of chains) {
+  for (const [start, end, shredded] of chains) {
     rewriter.keep(text, cursor, start);
 
     for (let i = start; i < end; i += 1) {
       const ch = text[i] as string;
+
+      // Closing the gaps is a SEPARATE copy, not a variant of this one. The
+      // identifier fold normalises a separator to a space and keeps the group
+      // boundaries, which is what hands the detectors the conventional spelling
+      // they already read; deleting instead would let two adjacent identifiers
+      // run into one another. Shredding is the case where the boundaries
+      // themselves are the lie — no grouping below four characters is one the
+      // detectors read — so it gets its own copy where the gaps close, and both
+      // readings are offered rather than one being sacrificed for the other.
+      if (closeGaps && shredded && (ch === ' ' || FOLDABLE_SEPARATORS.has(ch))) {
+        rewriter.drop(i, i + 1);
+        changed = true;
+        continue;
+      }
 
       if (separators && ch !== ' ' && FOLDABLE_SEPARATORS.has(ch)) {
         rewriter.replace(' ', i, i + 1, text);
