@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createDetectors, detect } from '../src/detectors/index.js';
 import { emailDetector, isValidEmail } from '../src/detectors/email.js';
 import { classifyPhone, phoneDetector } from '../src/detectors/phone.js';
 import {
@@ -36,8 +37,128 @@ describe('EMAIL', () => {
     expect(values('Write to johan@example.com.', emailDetector)).toEqual(['johan@example.com']);
   });
 
-  it('does not start the local part inside a non-ASCII word', () => {
-    expect(values('ünal@example.de', emailDetector)).toEqual([]);
+  it.each([
+    'владимир@example.com',
+    '测试@example.com',
+    'ünal.yilmaz@example.de',
+    'zoë@example.org',
+    'lukasz.kowalski@example.pl',
+    'γιώργος@example.gr',
+  ])('accepts the non-ASCII local part %s', (address) => {
+    expect(values(`Kontakt: ${address} melden`, emailDetector)).toEqual([address]);
+  });
+
+  it('accepts a non-ASCII top-level domain', () => {
+    expect(values('mail an иван@пример.рф bitte', emailDetector)).toEqual([
+      'иван@пример.рф',
+    ]);
+  });
+
+  it('reports the whole non-ASCII local part, never a truncation of it', () => {
+    // The lookbehind used to be the only thing standing between an ASCII-only
+    // local part and a reported `nal@example.de`; now the whole word matches.
+    expect(values('ünal@example.de', emailDetector)).toEqual(['ünal@example.de']);
+    expect(values('ünal@example.de', emailDetector)).not.toContain('nal@example.de');
+  });
+
+  it('never begins a local part in the middle of a word', () => {
+    // The whole token or nothing: a match that started after `Kontakt` would
+    // hand the redactor a value that is not the address the reader sees.
+    expect(values('Kontaktünal@example.de', emailDetector)).toEqual([
+      'Kontaktünal@example.de',
+    ]);
+  });
+
+  it('reports a quoted local part as EMAIL, not as the name inside it', () => {
+    expect(values('von "max mustermann"@example.com heute', emailDetector)).toEqual([
+      '"max mustermann"@example.com',
+    ]);
+  });
+
+  it('outranks a dictionary NAME hiding inside a quoted local part', () => {
+    const detectors = createDetectors({ dictionary: { names: ['Max Mustermann'] } });
+    const spans = detect('von "max mustermann"@example.com heute', detectors);
+    expect(spans.map((s) => `${s.kind}:${s.value}`)).toEqual([
+      'EMAIL:"max mustermann"@example.com',
+    ]);
+  });
+
+  it('does not open a quoted local part in the middle of a word', () => {
+    expect(emailDetector.find('x"max mustermann"@example.com')).toEqual([]);
+  });
+
+  it.each([
+    ['max.mustermann @ example.com', 'max.mustermann @ example.com'],
+    ['max.mustermann@example .com', 'max.mustermann@example .com'],
+    ['max.mustermann @example.com', 'max.mustermann @example.com'],
+    ['max.mustermann@ example.com', 'max.mustermann@ example.com'],
+    ['anna.schmidt @ sub.example .co.uk', 'anna.schmidt @ sub.example .co.uk'],
+  ])('reads the layout-broken address in %s', (text, expected) => {
+    expect(values(`E-Mail ${text} Telefon`, emailDetector)).toEqual([expected]);
+  });
+
+  it('keeps the spans of a layout-broken address on the original characters', () => {
+    const text = 'E-Mail max.mustermann @ example.com Telefon';
+    const [span] = emailDetector.find(text);
+    expect(span).toBeDefined();
+    expect(text.slice(span!.start, span!.end)).toBe(span!.value);
+  });
+
+  it.each([
+    'Bitte schreiben Sie an Herrn Meier @ der Zentrale.',
+    'Das Kickoff findet @ zoom.us statt.',
+    'Wir liefern 10 Kartons @ 12.90 EUR netto.',
+    'Der Termin ist @ Halle.Nord.',
+    'Release 3.4 @ jenkins.example.com ausgerollt.',
+    'Doku v2.1 @ wiki.example.com abgelegt.',
+    'Sehr geehrte Damen und Herren, anbei die Rechnung. Mit freundlichen Grüßen',
+  ])('does not fire on the business prose %s', (text) => {
+    expect(emailDetector.find(text)).toEqual([]);
+  });
+
+  it('does not swallow the next sentence through a spaced dot', () => {
+    expect(values('Antwort an max.mustermann@firma.de .Die Rechnung folgt.', emailDetector)).toEqual([
+      'max.mustermann@firma.de',
+    ]);
+    expect(emailDetector.find('Antwort an max.mustermann@firma .Die Rechnung folgt.')).toEqual([]);
+  });
+
+  it('refuses a spaced address whose local part is a single word', () => {
+    // Deliberate miss: `info` and `Meeting` are the same shape, and one of them
+    // is an address only in the writer's head. Documented so a later widening
+    // is a decision rather than an accident.
+    expect(emailDetector.find('Rückfragen bitte an info @ example.com')).toEqual([]);
+  });
+
+  it('finds nothing in a business letter full of "@ place" idioms', () => {
+    // The whole point of the spaced grammar's guards, in one body: if this ever
+    // fires, the operator switches the detector off and the customer is worse
+    // off than with the miss it was widened to fix.
+    const letter = [
+      'Sehr geehrte Frau Dr. Schneider,',
+      'wir bestätigen den Termin @ Werk 2, Halle Nord.',
+      'Die Lieferung umfasst 10 Paletten @ 1.250,00 EUR netto zzgl. MwSt.',
+      'Release 3.4 wurde @ jenkins.intern ausgerollt; die Doku v2.1 liegt @ wiki.intern .',
+      'Das Kickoff findet @ zoom.us statt, Beginn 09:00 Uhr.',
+      'Bei Rückfragen wenden Sie sich an Herrn Meier @ der Zentrale in Karlsruhe.',
+      'Ein Blick in Abschnitt 4.2 . Die Fristen entnehmen Sie bitte der Anlage.',
+      'Mit freundlichen Grüßen',
+    ].join('\n');
+    expect(emailDetector.find(letter)).toEqual([]);
+  });
+
+  it('reads the address out of a shredded signature block', () => {
+    const signature = [
+      'Anna Schmidt | Vertrieb',
+      'Beispiel GmbH & Co. KG',
+      'Tel. +49 721 1234-56   anna.schmidt @ beispiel-gmbh .de',
+    ].join('\n');
+    expect(values(signature, emailDetector)).toEqual(['anna.schmidt @ beispiel-gmbh .de']);
+  });
+
+  it('does not stretch a spaced address across a line break', () => {
+    expect(emailDetector.find('max.mustermann\n@ example.com')).toEqual([]);
+    expect(emailDetector.find('max.mustermann @\nexample.com')).toEqual([]);
   });
 
   it('rejects a local part over 64 characters', () => {
