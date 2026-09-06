@@ -1,4 +1,5 @@
-import { DEFAULT_PRIORITIES, type Detector, type Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
+import { labelNear } from './normalise.js';
 
 /** IPv4 in dotted-quad notation. Octets are validated, not just counted. */
 export function isValidIpv4(value: string): boolean {
@@ -136,7 +137,64 @@ const MAC_COLON_PATTERN =
 const MAC_CISCO_PATTERN =
   /(?<![0-9A-Fa-f.])[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}(?![0-9A-Fa-f.])/gu;
 
-/** MAC addresses in `00:1A:2B:3C:4D:5E`, `00-1A-…` and Cisco `001a.2b3c.4d5e` form. */
+/**
+ * The undelimited spelling, `001A2B3C4D5E`.
+ *
+ * No scan copy can reach this one: it holds no separator to fold and no case
+ * change to normalise, so a MAC written the way `ip link` and every Windows
+ * inventory export write it survived every fold phase 1 added. It has to be
+ * matched here or not at all.
+ *
+ * The guards exclude the neighbours that would make the twelve characters part
+ * of something longer — a hex digit either side, a word character either side,
+ * or a MAC separator with another hex digit behind it, which is what keeps the
+ * twelve-hex tail of `…-a716-446655440000` from being read as an address. The
+ * trailing full stop of a sentence is deliberately still allowed.
+ */
+const MAC_BARE_PATTERN =
+  /(?<![0-9A-Za-z_:.-])[0-9A-Fa-f]{12}(?![0-9A-Za-z_])(?![:.-][0-9A-Fa-f])/gu;
+
+/**
+ * The words that license the undelimited form.
+ *
+ * THE CHOICE, and it is a deliberate one: twelve bare hex characters is also
+ * the shape of a truncated git hash, half a Mongo ObjectId, a session id, a
+ * colour table and any number of internal part numbers. Accepting them
+ * unaccompanied would buy one evasion — an attacker deleting five colons — at
+ * the price of a detector that fires somewhere in most log files, and a
+ * detector the customer switches off protects nothing. So the bare form is
+ * gated on context and the three delimited forms stay unconditional, because
+ * those carry their own evidence in the separators.
+ *
+ * Only the labels that are not substrings of one another are listed: the
+ * comparison folds punctuation away and asks for containment, so `MAC` already
+ * matches `MAC-Adresse`, `MAC address` and `MAC-ID`. It also matches inside
+ * `machen`, which is the cost of a three-letter label — bounded, because the
+ * value must still be exactly twelve hex characters at a token boundary.
+ *
+ * Declared once at module level, never inside `find`: `labelNear` caches the
+ * folded forms against this array's identity.
+ */
+export const MAC_LABELS: readonly string[] = [
+  'MAC',
+  'BSSID',
+  'hwaddr',
+  'Hardware-Adresse',
+  'Netzwerkadresse',
+  'physical address',
+  'Ethernet',
+];
+
+const MAC_LABEL_PROXIMITY: LabelProximity = { labels: MAC_LABELS };
+
+/**
+ * MAC addresses in `00:1A:2B:3C:4D:5E`, `00-1A-…`, Cisco `001a.2b3c.4d5e` and
+ * undelimited `001A2B3C4D5E` form.
+ *
+ * The label check is inline rather than a `requiresLabel` declaration because
+ * that field is all-or-nothing per detector, and gating the delimited forms on
+ * a nearby word would be a straight regression.
+ */
 export const macDetector: Detector = {
   name: 'mac',
   priority: DEFAULT_PRIORITIES.MAC,
@@ -144,8 +202,9 @@ export const macDetector: Detector = {
   find(text: string): Span[] {
     const out: Span[] = [];
 
-    for (const pattern of [MAC_COLON_PATTERN, MAC_CISCO_PATTERN]) {
+    for (const pattern of [MAC_COLON_PATTERN, MAC_CISCO_PATTERN, MAC_BARE_PATTERN]) {
       const re = new RegExp(pattern.source, pattern.flags);
+      const bare = pattern === MAC_BARE_PATTERN;
       let match: RegExpExecArray | null;
 
       while ((match = re.exec(text)) !== null) {
@@ -154,9 +213,12 @@ export const macDetector: Detector = {
         const separators = new Set(value.replaceAll(/[0-9A-Fa-f]/gu, ''));
         if (separators.size > 1) continue;
 
+        const end = match.index + value.length;
+        if (bare && !labelNear(text, match.index, end, MAC_LABEL_PROXIMITY)) continue;
+
         out.push({
           start: match.index,
-          end: match.index + value.length,
+          end,
           kind: 'MAC',
           value,
           detector: 'mac',

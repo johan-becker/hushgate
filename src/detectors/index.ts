@@ -7,11 +7,17 @@ import {
   type DictionaryEntry,
   type DictionaryInput,
 } from './dictionary.js';
+import { decodeCopies } from './decode.js';
 import { createDobDetector, defaultDobYearRange, type DobYearRange } from './dob.js';
 import { emailDetector } from './email.js';
 import { ibanDetector } from './iban.js';
 import { ipv4Detector, ipv6Detector, macDetector } from './network.js';
-import { normaliseForScan } from './normalise.js';
+import {
+  labelNear,
+  normaliseForScan,
+  SCAN_PROFILES,
+  type NormalisedText,
+} from './normalise.js';
 import { phoneDetector } from './phone.js';
 import { resolveSpans } from './resolve.js';
 import { secretDetector } from './secret.js';
@@ -26,7 +32,21 @@ export { createDobDetector, defaultDobYearRange, isLeapYear, isRealDate } from '
 export { emailDetector, isValidEmail } from './email.js';
 export { ibanChecksum, ibanDetector, IBAN_LENGTHS, isValidIban } from './iban.js';
 export { ipv4Detector, ipv6Detector, isValidIpv4, isValidIpv6, macDetector } from './network.js';
-export { normaliseForScan } from './normalise.js';
+export {
+  foldForCompare,
+  isScanSeparator,
+  labelNear,
+  normaliseForScan,
+  SCAN_PROFILES,
+} from './normalise.js';
+export {
+  decodeBase64Text,
+  decodeBase64Runs,
+  decodeCopies,
+  decodeHtmlEntities,
+  decodePercentRuns,
+  isBase64Shaped,
+} from './decode.js';
 export { classifyPhone, phoneDetector } from './phone.js';
 export { isJwtHeaderSegment, secretDetector } from './secret.js';
 export {
@@ -37,7 +57,7 @@ export {
 } from './taxid.js';
 export { urlCredentialsDetector } from './urlcredentials.js';
 export type { CustomRule } from './custom.js';
-export type { NormalisedText } from './normalise.js';
+export type { NormalisedText, NormaliseOptions } from './normalise.js';
 export type { DictionaryEntry, DictionaryInput } from './dictionary.js';
 export type { DobYearRange } from './dob.js';
 
@@ -88,42 +108,73 @@ export function createDetectors(options: DetectorSetOptions = {}): Detector[] {
  * This is the only entry point callers should use: individual detectors return
  * *candidates*, and candidates overlap.
  *
- * Every detector sees the text twice: once as written, and once through
- * {@link normaliseForScan}, which drops invisible characters and folds
- * full-width and decomposed spellings. Detectors match on the raw string, so
- * without the second look a zero-width space between two letters is a complete
- * bypass — and the worst kind, because the value then leaves the machine
- * verbatim while the audit record says nothing was found.
+ * Detectors match the raw string, so any rewriting of a value that a reader
+ * still recognises is a complete bypass — and the worst kind, because the value
+ * then leaves the machine verbatim while the audit record says nothing was
+ * found. So every detector sees the text as written, and then again through
+ * each *scan copy* that applies: one fold family per copy, each with an offset
+ * map that puts a span found in it back onto the exact original characters.
+ *
+ * THE COST ARGUMENT, which is the reason this is written the way it is: a copy
+ * only costs anything if its detectors run, and its detectors only run if the
+ * fold actually changed the text. Every fold is therefore *aimed*, and the aim
+ * is chosen so that ordinary prose changes nothing:
+ *
+ *  - invisibles and NFKC change nothing in ASCII, which is decided by one
+ *    linear scan (`\P{ASCII}`);
+ *  - the look-alike copy folds Cyrillic and Greek twins, which German prose
+ *    does not contain, and diacritics only inside tokens holding an `@`, so
+ *    `Grüße aus München` still produces no copy;
+ *  - the identifier copy folds separators and case only inside runs that are at
+ *    least nine alphanumerics and six digits of mostly-digit groups, so a date,
+ *    a price and a sentence produce nothing;
+ *  - the word-shape copy folds leetspeak only inside mostly-letter tokens, and
+ *    splits or collapses only at shapes prose does not have;
+ *  - the decode copies do nothing unless the text carries a base64 blob of the
+ *    right length and alphabet, a `%XX` escape or a character reference.
+ *
+ * An ASCII prose body therefore pays exactly what it paid before this existed:
+ * one detector pass plus a handful of linear scans. A body written to evade
+ * pays one extra pass per fold family it actually triggers — at most seven, and
+ * only for text that already looks like an attack. A copy whose text a previous
+ * copy already produced is skipped outright, which is what keeps two folds that
+ * happen to agree from costing two passes.
  */
 export function detect(text: string, detectors: readonly Detector[]): Span[] {
   const candidates: Span[] = [];
+  // Two copies can report the same finding — a value that survives a fold
+  // untouched is found in both. `resolveSpans` would collapse the pair anyway
+  // (it de-duplicates on range and kind), but the candidate list is what a
+  // caller counts, so the double never gets made.
+  const seen = new Set<string>();
+
   // Appended one at a time rather than spread: `push(...spans)` passes every
   // span as a function argument, and a dense body can carry well over the
   // hundred thousand arguments an engine will accept — a 1 MB request, a
   // quarter of the default body limit, is enough to turn a normal request into
   // a RangeError that no HushgateError maps.
   for (const detector of detectors) {
-    for (const span of detector.find(text)) candidates.push(span);
+    for (const span of detector.find(text)) {
+      if (!labelSatisfied(detector, text, span)) continue;
+      const key = keyOf(span);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(span);
+    }
   }
 
-  // The guard is load-bearing, not an optimisation: the second pass runs every
-  // detector a second time, and the overwhelmingly common body is ASCII prose
-  // where normalisation cannot change anything. Paying for it there would
-  // double the cost of the proxy's hot path — a single-threaded event loop
-  // shared with every other tenant — to find nothing. `changed` is decided by
-  // one linear scan, so the ordinary request pays for that and no more.
-  const norm = normaliseForScan(text);
-  if (norm.changed) {
-    // Two passes can report the same finding — a value that survives
-    // normalisation untouched is found in both copies. `resolveSpans` would
-    // collapse the pair anyway (it de-duplicates on range and kind), but the
-    // candidate list is what a caller counts, so the double never gets made.
-    const seen = new Set<string>();
-    for (const span of candidates) seen.add(keyOf(span));
+  const scanned = new Set<string>([text]);
+  for (const copy of scanCopies(text)) {
+    if (!copy.changed || scanned.has(copy.text)) continue;
+    scanned.add(copy.text);
 
     for (const detector of detectors) {
-      for (const span of detector.find(norm.text)) {
-        const original = toOriginal(span, text, norm.offsets);
+      for (const span of detector.find(copy.text)) {
+        // The label is looked for in the copy, not in the original: a span the
+        // identifier copy found is a span whose label may only be legible
+        // there too.
+        if (!labelSatisfied(detector, copy.text, span)) continue;
+        const original = toOriginal(span, text, copy.offsets);
         if (original === null) continue;
         const key = keyOf(original);
         if (seen.has(key)) continue;
@@ -134,6 +185,36 @@ export function detect(text: string, detectors: readonly Detector[]): Span[] {
   }
 
   return resolveSpans(candidates);
+}
+
+/**
+ * The scan copies, in the order they are tried.
+ *
+ * A generator rather than an array: a copy that is never reached is never
+ * built, and the ones that are built are dropped again as soon as their pass is
+ * over rather than all being held at once for a body that may be megabytes.
+ */
+function* scanCopies(text: string): Generator<NormalisedText> {
+  yield normaliseForScan(text, SCAN_PROFILES.unicode);
+  yield normaliseForScan(text, SCAN_PROFILES.skeleton);
+  yield normaliseForScan(text, SCAN_PROFILES.identifier);
+  yield normaliseForScan(text, SCAN_PROFILES.wordShape);
+  yield* decodeCopies(text);
+}
+
+/**
+ * Central enforcement of {@link Detector.requiresLabel}.
+ *
+ * Weak numeric formats — the eleven digits of a Steuer-ID, the ten of a KVNR,
+ * the fifteen of an IMEI — are only safe to report when their label is next to
+ * them, and a detector that has to remember to check that itself is a detector
+ * that will one day forget. Detectors that declare nothing are not touched, and
+ * pay one property read.
+ */
+function labelSatisfied(detector: Detector, text: string, span: Span): boolean {
+  const proximity = detector.requiresLabel;
+  if (proximity === undefined) return true;
+  return labelNear(text, span.start, span.end, proximity);
 }
 
 const keyOf = (span: Span): string =>

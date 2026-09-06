@@ -51,6 +51,40 @@ export interface Span {
   readonly priority: number;
 }
 
+/**
+ * How far from a value a label may sit and still license it, in characters.
+ *
+ * Wide enough for `Steuer-ID:` at the head of a short table row and for a
+ * label on the line above, narrow enough that the label of one field cannot
+ * license the number of the field after next.
+ */
+export const DEFAULT_LABEL_WINDOW = 64;
+
+/**
+ * A detector's declaration that its format is too weak to report unaccompanied.
+ *
+ * Eleven digits are a Steuer-ID, an order number or nothing at all; what
+ * decides is the word in front of them. A detector that says so here keeps its
+ * `find` free of the question — `detect()` applies this to every span the
+ * detector returns, in whichever scan copy the span was found in, so the label
+ * is looked for in the same folded spelling the value was found in.
+ */
+export interface LabelProximity {
+  /**
+   * The labels, written the ordinary way. The comparison ignores case,
+   * separators and diacritics, so `Steuer-ID` also matches `steuer id`,
+   * `STEUERID` and `Steuer_ID`.
+   */
+  readonly labels: readonly string[];
+  /**
+   * How many characters on each side of the span are searched. Defaults to
+   * {@link DEFAULT_LABEL_WINDOW}.
+   */
+  readonly window?: number;
+  /** Which side of the span to search. Defaults to `either`. */
+  readonly where?: 'before' | 'after' | 'either';
+}
+
 /** A detector turns text into candidate spans. Detectors never mutate input. */
 export interface Detector {
   /** Stable identifier, unique within a detector set. */
@@ -59,6 +93,12 @@ export interface Detector {
   readonly priority: number;
   /** Find every candidate span. May return overlapping spans; resolution is central. */
   find(text: string): Span[];
+  /**
+   * Optional. When present, `detect()` drops every span this detector returns
+   * that has no declared label within reach. Detectors that omit it are
+   * unaffected — nothing is filtered and nothing is searched for.
+   */
+  readonly requiresLabel?: LabelProximity;
 }
 
 /**

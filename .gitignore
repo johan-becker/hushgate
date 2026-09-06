@@ -37,3 +37,6 @@ pnpm-debug.log*
 
 # Artefacts of running the README walkthrough in examples/
 examples/upstream-received.log
+
+# Workflow-Fortschrittsmarker (ueberleben Limit-Resets, gehoeren nicht ins Repo)
+.build-progress/
