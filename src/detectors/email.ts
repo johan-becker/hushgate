@@ -24,7 +24,30 @@ const LABEL_MAX = 63;
  * run fails the whole match instead of truncating), and refusing `.рф` while
  * accepting `владимир@` would be incoherent.
  */
-const ATOM = "[\\p{L}\\p{N}!#$%&'*+/=?^_`{|}~-]+";
+/**
+ * The unquoted local part, bounded by {@link LOCAL_MAX}.
+ *
+ * THE BOUND IS NOT COSMETIC, AND IT COSTS NOTHING. Unbounded, this class is a
+ * greedy run followed by a required `@`, which is the classic quadratic
+ * backtracking shape — and `=` and `/` are both members, so 200 KB of `=` is
+ * ONE run. The engine matches all of it, finds no `@`, gives back one character
+ * at a time to the start of the string, then advances one position and does the
+ * whole thing again. Measured on this pattern: 12 500 characters cost 297 ms,
+ * 25 000 cost 1178, 50 000 cost 4705 — four times the work for twice the input,
+ * three doublings running. Extrapolated to `limits.maxBodyBytes`, a 4 MiB body
+ * the proxy accepts today came to about nine hours of synchronous work, with
+ * every other tenant queued behind it on the shared event loop. Bounded, those
+ * 50 000 characters cost 11 ms.
+ *
+ * Nothing is given up, and that is measured rather than hoped for:
+ * {@link isValidEmail} has always rejected `local.length > LOCAL_MAX`, so every
+ * candidate this bound refuses was already being discarded one step later. The
+ * pattern was doing quadratic work to produce matches the validator was
+ * guaranteed to throw away. The quoted arm below was already bounded at the
+ * same length; this only brings the two arms into line.
+ */
+const ATOM_CHARS = "[\\p{L}\\p{N}!#$%&'*+/=?^_`{|}~-]";
+const ATOM = `${ATOM_CHARS}{1,${LOCAL_MAX}}`;
 const DOT_ATOM = `${ATOM}(?:\\.${ATOM})*`;
 
 /**
@@ -51,8 +74,26 @@ const QUOTED = String.raw`"(?:[^"\\\p{Cc}]|\\[^\p{Cc}]){1,64}"`;
  * is only one way to split a given label across the quantifiers, so a long
  * hostile run of letters with no dot after it fails in one pass instead of
  * being re-split every way the engine can think of.
+ *
+ * That reasoning is right about a single label and only half right about the
+ * chain. `(?:LABEL\.)+` before a required top-level domain does backtrack
+ * across the labels where no single label does — measured on the sub-pattern in
+ * isolation at the same fourfold-per-doubling as the unbounded local part was.
+ *
+ * BUT IT IS NOT REACHABLE THAT WAY through the whole pattern, and saying so is
+ * the point of this paragraph: the chain is only ever entered after a local
+ * part and an `@`, and the local part is bounded, so each starting position
+ * does work proportional to one label rather than to the body. Six shapes built
+ * to provoke it — `x@a-a-a-…`, `a@` repeated, a dotted chain with no top-level
+ * domain — all measured linear.
+ *
+ * The bound stays anyway, and not as superstition: {@link isValidEmail} already
+ * rejects a label over {@link LABEL_MAX}, so it refuses nothing that was being
+ * kept, and it removes a quadratic shape that a later change to the local part
+ * could expose. There is deliberately no test for it, because a test that
+ * cannot fail would claim a guarantee this does not have.
  */
-const LABEL = String.raw`[\p{L}\p{N}](?:-*[\p{L}\p{N}])*`;
+const LABEL = String.raw`[\p{L}\p{N}](?:-*[\p{L}\p{N}]){0,${LABEL_MAX - 1}}`;
 
 /** Keeps `ünal@example.de` from being reported as the truncated `nal@example.de`. */
 const LEAD = String.raw`(?<![\p{L}\p{N}._%+-])`;
