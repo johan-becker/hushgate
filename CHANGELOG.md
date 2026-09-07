@@ -64,6 +64,47 @@ and the re-hydration mappings that already exist.
 
 ### Fixed
 
+- A slowloris connection is now reaped. Node's own `requestTimeout` and
+  `headersTimeout` do not close a socket that drips a header byte every few
+  seconds or one that simply goes idle after connecting — verified against a
+  bare-Node control — so a handful of such connections could hold the proxy's
+  sockets open indefinitely (**H1**, denial of service). A phase-tracking
+  sweeper, one unref'd interval for the whole server that is never restamped
+  by incoming bytes, now bounds how long a connection may stay idle or in its
+  receiving phase. The serving phase stays unbounded, because cutting off a
+  request while its model thinks is worse than waiting for it. New
+  `limits.idleTimeoutMs` (default 60 s) and `HUSHGATE_IDLE_TIMEOUT_MS` set the
+  bound.
+- A malformed JSON body no longer leaks into logs. `JSON.parse` error messages
+  quote the offending input verbatim, so a 400 response — and stderr via the
+  error handler — echoed whatever bytes the caller had sent, personal data
+  included (**M2**, log leakage). The 400 body and the log line now carry only
+  the parse position.
+- A typo'd residency rule can no longer be silently unenforced. Keys in
+  `residency.routes` and `residency.categories` are validated at config load
+  against the routes hushgate serves and the finding kinds it detects; an
+  unknown key is a startup error with the nearest known key suggested rather
+  than a rule that matches nothing and protects nothing (**M3**, silent no-op).
+- Detection runs over a normalised copy of the text as well as the original.
+  A zero-width space inside an e-mail address, a full-width letter, a
+  decomposed umlaut: each previously matched no detector, left the machine
+  verbatim, and produced an audit record saying nothing was found (**M1**,
+  complete detector bypass by invisible or decomposed Unicode). Every detector
+  now takes a second pass over a copy with invisible characters dropped and
+  NFKC applied per combining cluster, with findings mapped back onto exact
+  original offsets so rehydration hands back the bytes the caller wrote.
+  Pure-ASCII input skips the second pass behind a one-scan guard, leaving the
+  hot path at its old cost.
+- Custom detector patterns are analysed for catastrophic backtracking before
+  they are accepted. A custom regex runs synchronously on the event loop every
+  request shares, so `(a+)+$` against 28 bytes froze the whole proxy — every
+  tenant with it — for 37 seconds in the audit's proof of concept (**H2**,
+  ReDoS). Config load now rejects quantifiers over ambiguous subpatterns,
+  overlapping alternations under quantifiers, backreferences, and constructs
+  the analysis does not model, naming the offending group. The analysis
+  deliberately over-refuses: a refused pattern gets an error at startup, an
+  accepted one would get an outage with no name at all.
+
 - Anthropic **custom content documents** were never redacted. A
   `{"type":"document","source":{"type":"content","content":[…]}}` block — the
   shape the Messages API documents for citations — carries its text at

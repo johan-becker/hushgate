@@ -169,6 +169,29 @@ spec:
           envFrom:
             - secretRef:
                 name: hushgate-secrets
+          # Everything under `limits` in the ConfigMap is policy and belongs
+          # there, where it can be reviewed next to the quotas it bounds. This
+          # one variable is the exception: HUSHGATE_IDLE_TIMEOUT_MS overrides
+          # limits.idleTimeoutMs from the ConfigMap, and exists so an operator
+          # can stretch how long a connection may sit silent between bytes
+          # without touching the reviewed policy file. Uncomment for clients
+          # that hold requests open a long while before streaming (ten minutes
+          # here):
+          #
+          # env:
+          #   # Ten minutes of allowed silence between bytes.
+          #   HUSHGATE_IDLE_TIMEOUT_MS: '600000'
+          #
+          # Before you do, know what you are trading: an idle connection costs
+          # almost nothing in memory or CPU — the resource limits above do not
+          # need raising for it — but it holds a file descriptor for as long
+          # as it stays open, and that is exactly the shape of a slowloris. The
+          # reaper closes stalled connections on its own schedule rather than
+          # yours, so a burst of held connections can exhaust the process's
+          # nofile limit long before either resource limit moves. Kubernetes
+          # has no per-container ulimit knob; raise it where the container
+          # runtime lets you (LimitNOFILE on the kubelet for containerd/CRI-O),
+          # or accept the default and keep the idle timeout tight.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

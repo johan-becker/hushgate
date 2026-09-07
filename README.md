@@ -810,6 +810,37 @@ deterministic: the longest span wins, ties broken by detector priority
 (`SECRET` 100 > `URL_CREDENTIALS` 95 > `IBAN` 90 > `CREDIT_CARD` 85 >
 `GERMAN_TAX_ID` 80 > `EMAIL` 75 > … > dictionary 40).
 
+### What the detectors are shown
+
+Detectors do not run on the text the caller wrote; they run on a private scan
+copy of it, and any span they find is mapped back to the exact original
+characters before the value is replaced — hushgate forwards what the caller
+wrote, so the copy exists only to be scanned. Two transformations build it:
+
+- **Invisible characters are dropped** before matching: the whole `Cf` class
+  (zero-width space, joiners, word joiner, byte-order mark, soft hyphen, bidi
+  controls) plus every `Default_Ignorable_Code_Point` (variation selectors,
+  Hangul fillers). A zero-width space inside an e-mail address renders as
+  nothing, reads as an address to a human, and would otherwise match no pattern
+  at all.
+- **NFKC is applied per combining cluster** — a base character plus the
+  combining marks that follow it — not over the whole string. That composes a
+  decomposed umlaut and folds full-width letters into ASCII ones while keeping
+  the offset map exact. The deliberate cost: sequences that compose only across
+  a cluster boundary (Hangul jamo, a halfwidth voiced mark after a kana) are
+  left alone.
+
+Pure ASCII takes a fast path: every invisible above is non-ASCII and NFKC is
+the identity on ASCII, so ASCII prose skips the whole mechanism at one linear
+test.
+
+Two residual limits follow from what this does *not* cover. A detector still
+has to recognise the shape afterwards: `DATE_OF_BIRTH` matches `14.03.1987`
+and ISO forms, not "fourteenth of March" written out. And the folds are
+canonical, not cultural — `PHONE` matches E.164, `00` international and German
+national spellings; a number written the way another culture groups it, or in
+letters (`null fünf …`), is prose as far as every detector is concerned.
+
 ### Placeholders, and the injection case
 
 Within one session the same value of the same kind always maps to the same
@@ -984,6 +1015,7 @@ wins. The file is JSONC: `//` and `/* */` comments are stripped on load.
 | `limits.maxResponseBytes` | 16 MiB | Larger upstream responses are refused with 502. |
 | `limits.upstreamTimeoutMs` | 120000 | Upstream request timeout. |
 | `limits.requestTimeoutMs` | 60000 | How long a client may take to deliver its request. |
+| `limits.idleTimeoutMs` | 60000 | How long a connection may sit silent when it is *nobody's* turn to talk — between requests, or mid-stream waiting for input. While hushgate is serving, this limit does not apply: a model can think in silence for minutes, and that is what `limits.upstreamTimeoutMs` bounds. |
 | `limits.upstreamRetries` | 2 | Retries for an upstream that never answered. A response is never retried. |
 | `limits.retryBackoffMs` | 250 | Base delay for the full-jitter backoff, doubled each attempt. |
 | `attachments.enabled` | `true` | Turn documents into text before redacting. Off means they are forwarded unread. |
@@ -1006,7 +1038,7 @@ Environment overrides: `HUSHGATE_HOST`, `HUSHGATE_PORT`,
 `HUSHGATE_UPSTREAM_OPENAI`, `HUSHGATE_UPSTREAM_ANTHROPIC`,
 `HUSHGATE_DEFAULT_POLICY`, `HUSHGATE_HMAC_KEY`, `HUSHGATE_MAX_BODY_BYTES`,
 `HUSHGATE_MAX_RESPONSE_BYTES`, `HUSHGATE_UPSTREAM_TIMEOUT_MS`,
-`HUSHGATE_AUDIT_PATH`, `HUSHGATE_AUDIT`, `HUSHGATE_RESIDENCY_MODE`,
+`HUSHGATE_IDLE_TIMEOUT_MS`, `HUSHGATE_AUDIT_PATH`, `HUSHGATE_AUDIT`, `HUSHGATE_RESIDENCY_MODE`,
 `HUSHGATE_ATTACHMENTS`, `HUSHGATE_ATTACHMENTS_ON_UNREADABLE`,
 `HUSHGATE_ATTACHMENT_MAX_BYTES`. A full annotated file is in
 [`hushgate.config.example.json`](hushgate.config.example.json).
@@ -1221,17 +1253,21 @@ inputs to that review rather than as its conclusion.
 
 ## 12. Deployment
 
+**Read this before the first `docker compose up`:** hushgate refuses to bind a
+non-loopback address while no tenant exists — by design, so it cannot become an
+open relay on the network. The Docker image binds `0.0.0.0` so the port can be
+published, and a freshly `init`-ed config has its `tenants` key commented out.
+The container therefore exits at startup, and `restart: unless-stopped` turns
+that into a crash loop until you have run `hushgate keys new` and pasted the
+tenant block into the config.
+
 ```sh
 hushgate init                 # the compose file mounts ./hushgate.config.json read-only
 hushgate keys new default     # paste the printed "tenants" block into that file
 docker compose up --build
 ```
 
-The middle step is not optional. The image binds `0.0.0.0` so the port can be
-published, and hushgate refuses to bind a non-loopback address with no tenants
-rather than become an open relay on the network — so a freshly `init`-ed config,
-whose `tenants` key is commented out, makes the container exit at startup and
-`restart: unless-stopped` turn that into a crash loop.
+The middle step is not optional — see the warning above.
 
 The image is multi-stage and runs as a non-root user, with a `HEALTHCHECK` on
 `/healthz` that uses `fetch` rather than adding curl to the image. Because

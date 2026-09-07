@@ -20,6 +20,16 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       HUSHGATE_HMAC_KEY: ${HUSHGATE_HMAC_KEY:-}
+      # Overrides limits.idleTimeoutMs in the config file: how long a
+      # connection may sit silent between bytes before it is closed. Left
+      # commented because the config file should stay the single reviewed
+      # source for limits — uncomment only to stretch it for clients that
+      # hold requests open a long while before streaming. An idle connection
+      # costs nearly nothing in memory, but it does hold a file descriptor,
+      # and the reaper closes stalled connections on its own schedule; check
+      # the container's nofile limit before pushing this far past its
+      # default of sixty seconds.
+      # HUSHGATE_IDLE_TIMEOUT_MS: '600000'
 
     volumes:
       # Your policy, read-only: the container has no business rewriting it.
