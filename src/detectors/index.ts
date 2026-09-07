@@ -400,7 +400,20 @@ export function detect(text: string, detectors: readonly Detector[]): Span[] {
     }
   }
 
-  return resolveSpans(candidates);
+  // A span that reaches here has passed its gate — `labelSatisfied` is the only
+  // way into `candidates`. Carrying the gate out of the front door would tell a
+  // caller that a question is still open when it has been answered, which is
+  // the same kind of misleading record as an audit line that under-reports.
+  // Rebuilt only for the spans that actually carry one, so the common body pays
+  // a property read per finding and nothing else.
+  const resolved = resolveSpans(candidates);
+  for (let i = 0; i < resolved.length; i++) {
+    const span = resolved[i]!;
+    if (span.requiresLabel === undefined) continue;
+    const { requiresLabel: _satisfied, ...rest } = span;
+    resolved[i] = rest;
+  }
+  return resolved;
 }
 
 /**
