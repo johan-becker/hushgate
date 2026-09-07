@@ -463,11 +463,10 @@ const method53: Method = ({ digits: d, blz, length }) => {
   return eserValid(old, 5, account[2]!);
 };
 
-/** Verfahren 51 — vier Methoden nacheinander, plus eine Ausnahme für Sachkonten. */
-const m51A = rule({ from: 3, to: 8, check: 9, weights: W_2_TO_7, finish: mod11Lenient });
-const m51B = m33;
-const m51C = rule({ from: 3, to: 8, check: 9, weights: W_2_1, fold: true, finish: mod10 });
-const m51D = rule({ from: 4, to: 8, check: 9, weights: [2, 3, 4, 5, 6], finish: mod7 });
+/**
+ * Verfahren 51's Sachkonto exception, which is all that survives of 51 here:
+ * no live bank code names 51 itself, but A8 dispatches into this branch.
+ */
 const m51Exception1 = rule({
   from: 2,
   to: 8,
@@ -477,13 +476,6 @@ const m51Exception1 = rule({
 });
 const m51Exception2 = rule({ from: 0, to: 8, check: 9, weights: W_2_TO_10, finish: mod11Lenient });
 const m51Sachkonto = (d: Digits): boolean => m51Exception1(d) || m51Exception2(d);
-const method51 = digitsOnly((d) => {
-  if (m51A(d) || m51B(d) || m51C(d)) return true;
-  // Nummern, die bis zur Methode D durchlaufen, dürfen dort keine 7, 8 oder 9
-  // als Prüfziffer tragen.
-  if (d[9]! >= 7) return false;
-  return d[2] === 9 ? m51Sachkonto(d) : m51D(d);
-});
 
 /** Verfahren 13 — Grundnummer in Stelle 2 bis 7; die Unterkontonummer darf fehlen. */
 const m13 = rule({ from: 1, to: 6, check: 7, weights: W_2_1, fold: true, finish: mod10 });
@@ -622,14 +614,6 @@ const m44 = rule({ from: 4, to: 8, check: 9, weights: [2, 4, 8, 5, 10], finish: 
 const m41Short = rule({ from: 3, to: 8, check: 9, weights: W_2_1, fold: true, finish: mod10 });
 const method41 = digitsOnly((d) => (d[3] === 9 ? m41Short(d) : m00(d)));
 
-/** Verfahren 45 — drei Nummernkreise tragen überhaupt keine Prüfziffer. */
-const method45 = digitsOnly((d) => {
-  if (d[0] === 0) return true;
-  if (d[4] === 1) return true;
-  if (d[0] === 4 && d[1] === 8) return true;
-  return m00(d);
-});
-
 /** Verfahren 46 bis 48 — wie 06 über verschobene Bereiche. */
 const m46 = rule({ from: 2, to: 6, check: 7, weights: [2, 3, 4, 5, 6], finish: mod11Lenient });
 const m47 = rule({ from: 3, to: 7, check: 8, weights: [2, 3, 4, 5, 6], finish: mod11Lenient });
@@ -714,14 +698,6 @@ const m64 = rule({
 
 /** Verfahren 67 — Stammnummer in Stelle 1 bis 7. */
 const m67 = rule({ from: 0, to: 6, check: 7, weights: W_2_1, fold: true, finish: mod10 });
-
-/** Verfahren 69 — zwei Varianten und zwei Nummernkreise. */
-const method69: Method = ({ digits: d, value }) => {
-  if (value >= 9_300_000_000 && value <= 9_399_999_999) return true;
-  const variant2 = mod10(transformed(d, 0, 8)) === d[9];
-  if (value >= 9_700_000_000 && value <= 9_799_999_999) return variant2;
-  return m28(d) || variant2;
-};
 
 /** Verfahren 70 — eine 5 oder eine 69 in Stelle 4 kürzt den Bereich. */
 /** Verfahren 71 — Rest 1 lässt die Zehnerstelle als Prüfziffer stehen. */
@@ -1023,13 +999,11 @@ const METHODS: Readonly<Record<string, Method>> = {
   '42': digitsOnly(m42),
   '43': digitsOnly(m43),
   '44': digitsOnly(m44),
-  '45': method45,
   '46': digitsOnly(m46),
   '47': digitsOnly(m47),
   '48': digitsOnly(m48),
   '49': digitsOnly((d) => m00(d) || m01(d)),
   '50': method50,
-  '51': method51,
   '52': method52,
   '53': method53,
   '56': method56,
@@ -1043,7 +1017,6 @@ const METHODS: Readonly<Record<string, Method>> = {
   '65': method65,
   '67': digitsOnly(m67),
   '68': method68,
-  '69': method69,
   '71': digitsOnly(m71),
   '74': method74,
   '75': method75,
