@@ -10,9 +10,11 @@ import {
   loadConfig,
   normaliseUrl,
   parseConfig,
+  redactionOptions,
   stripJsonComments,
 } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
+import { Session } from '../src/redact/index.js';
 
 const dirs: string[] = [];
 
@@ -416,5 +418,226 @@ describe('limits.idleTimeoutMs', () => {
     expect(() => applyEnv(defaultConfig(), { HUSHGATE_IDLE_TIMEOUT_MS: 'soon' })).toThrow(
       /HUSHGATE_IDLE_TIMEOUT_MS/u,
     );
+  });
+});
+
+/** One tenant's detector block folded over the organisation's, as loaded. */
+function mergedDetectors(
+  organisation: Record<string, unknown>,
+  tenant: Record<string, unknown>,
+): Record<string, Record<string, unknown>> {
+  const config = parseConfig({
+    redaction: { detectors: organisation },
+    tenants: [{ id: 'nord', keyHash: 'a'.repeat(64), redaction: { detectors: tenant } }],
+  });
+  return config.tenants[0]!.redaction.detectors as unknown as Record<
+    string,
+    Record<string, unknown>
+  >;
+}
+
+/**
+ * `redaction.detectors`.
+ *
+ * The block is worth this much test because of what its failure mode looks
+ * like: a detector that is quietly not narrowed reports nothing unusual, so an
+ * operator who mistyped a key finds out from a leak rather than from a load
+ * error. Every case below is therefore either "the value arrived where the
+ * detector reads it" or "the file was refused, loudly, with the path in the
+ * message".
+ */
+describe('redaction.detectors', () => {
+  /** All nine groups, every reachable key, deliberately non-default values. */
+  const FULL_BLOCK = {
+    dictionary: { fuzzy: true, maxEditDistance: 1 },
+    vatId: { requireGermanCheckDigit: false },
+    bic: { homeCountries: ['DE', 'AT'] },
+    postcode: { countryPrefixes: ['D'], places: ['Kempten'] },
+    vehiclePlate: { districts: ['GAP'] },
+    sessionToken: { names: ['sid'], prefixes: ['hg_'] },
+    postalAddress: {
+      streetSuffixes: ['pfad'],
+      weakStreetSuffixes: ['ring'],
+      nonAddressWords: ['Rechnung'],
+      labels: ['Lieferadresse'],
+    },
+    icd10: { codes: ['F32.1'], labels: ['Diagnose'], blockedPrefixWords: ['Raum'] },
+    medication: { names: ['Ibuprofen'], requireDosage: false, dosageWindow: 40 },
+  };
+
+  /** The nine group names as `redactionOptions` spells them downstream. */
+  const OPTION_KEYS = [
+    'dictionaryMatching',
+    'vatId',
+    'bic',
+    'postcode',
+    'vehiclePlate',
+    'sessionToken',
+    'postalAddress',
+    'icd10',
+    'medication',
+  ] as const;
+
+  it('carries every group from a file on disk into the session options', () => {
+    // Through loadConfig rather than parseConfig: the block has to survive the
+    // path an operator actually uses, not just a literal handed to the parser.
+    const dir = workspace({
+      [CONFIG_FILENAME]: JSON.stringify({ redaction: { detectors: FULL_BLOCK } }),
+    });
+    const options = redactionOptions(loadConfig({ cwd: dir, env: {} }).config);
+
+    // `redaction.detectors.dictionary` narrows how the dictionary matches and
+    // is renamed on the way through; the other eight keep their names.
+    expect(options.dictionaryMatching).toEqual(FULL_BLOCK.dictionary);
+    expect(options.vatId).toEqual(FULL_BLOCK.vatId);
+    expect(options.bic).toEqual(FULL_BLOCK.bic);
+    expect(options.postcode).toEqual(FULL_BLOCK.postcode);
+    expect(options.vehiclePlate).toEqual(FULL_BLOCK.vehiclePlate);
+    expect(options.sessionToken).toEqual(FULL_BLOCK.sessionToken);
+    expect(options.postalAddress).toEqual(FULL_BLOCK.postalAddress);
+    expect(options.icd10).toEqual(FULL_BLOCK.icd10);
+    expect(options.medication).toEqual(FULL_BLOCK.medication);
+
+    // And nothing was renamed into the slot that holds what the dictionary
+    // matches *against*, which is a different thing with the same word on it.
+    expect(options.dictionary).toEqual({ names: [], terms: [], entries: [] });
+  });
+
+  it('leaves every group empty when nobody wrote one, with no key merely undefined', () => {
+    const options = redactionOptions(parseConfig({}));
+    for (const key of OPTION_KEYS) {
+      const group = options[key];
+      expect(group, key).toBeDefined();
+      // `toEqual({})` would pass for `{ fuzzy: undefined }` too, and that shape
+      // is the bug: the detector factories read a present key as a decision, so
+      // an undefined list means "match nothing" where absent means "use the
+      // seeds". Count the keys, don't compare the object.
+      expect(Object.keys(group as object), key).toHaveLength(0);
+    }
+  });
+
+  describe('a tenant may only widen what is detected', () => {
+    it('unions a list rather than replacing it', () => {
+      // The organisation listed AT; a tenant that only cares about DE must not
+      // be able to stop AT BICs being found.
+      const merged = mergedDetectors(
+        { bic: { homeCountries: ['AT'] } },
+        { bic: { homeCountries: ['DE'] } },
+      );
+      expect(merged['bic']!['homeCountries']).toEqual(['AT', 'DE']);
+    });
+
+    it('will not let a tenant turn fuzzy matching back off', () => {
+      const merged = mergedDetectors(
+        { dictionary: { fuzzy: true, maxEditDistance: 1 } },
+        { dictionary: { fuzzy: false, maxEditDistance: 0 } },
+      );
+      expect(merged['dictionary']!['fuzzy']).toBe(true);
+      // Same rule one field along: the more generous distance survives.
+      expect(merged['dictionary']!['maxEditDistance']).toBe(1);
+    });
+
+    it('will not let a tenant raise requireDosage once the organisation lowered it', () => {
+      // requireDosage is a demand on a candidate, so it narrows as it rises:
+      // false anywhere wins, whichever side said it.
+      const lowered = mergedDetectors(
+        { medication: { requireDosage: false } },
+        { medication: { requireDosage: true } },
+      );
+      expect(lowered['medication']!['requireDosage']).toBe(false);
+      // And the same the other way round: it is the false that survives, not
+      // the side that wrote it.
+      const raised = mergedDetectors(
+        { medication: { requireDosage: true } },
+        { medication: { requireDosage: false } },
+      );
+      expect(raised['medication']!['requireDosage']).toBe(false);
+    });
+
+    it('takes the wider dosage window, from whichever side wrote it', () => {
+      const widened = mergedDetectors(
+        { medication: { dosageWindow: 20 } },
+        { medication: { dosageWindow: 60 } },
+      );
+      expect(widened['medication']!['dosageWindow']).toBe(60);
+      const narrowed = mergedDetectors(
+        { medication: { dosageWindow: 60 } },
+        { medication: { dosageWindow: 20 } },
+      );
+      expect(narrowed['medication']!['dosageWindow']).toBe(60);
+    });
+
+    it('keeps the organisation block for a tenant that never mentioned detectors', () => {
+      const config = parseConfig({
+        redaction: { detectors: { bic: { homeCountries: ['AT'] } } },
+        tenants: [{ id: 'nord', keyHash: 'a'.repeat(64) }],
+      });
+      expect(config.tenants[0]!.redaction.detectors.bic.homeCountries).toEqual(['AT']);
+    });
+  });
+
+  it('rejects a group nobody has heard of, naming the path', () => {
+    expect(() => parseConfig({ redaction: { detectors: { phone: {} } } }, 'my.json')).toThrow(
+      /my\.json: "redaction"\.detectors: unknown key "phone"/u,
+    );
+    expect(() => parseConfig({ redaction: { detectors: { phone: {} } } })).toThrow(ConfigError);
+  });
+
+  it('rejects a typo INSIDE a group, which would otherwise load silently', () => {
+    // The whole reason the inner key set is closed. `homeCountrys` would parse,
+    // narrow nothing, and leave the operator believing the BIC detector was
+    // restricted to the countries they listed.
+    const typo = { redaction: { detectors: { bic: { homeCountrys: ['DE'] } } } };
+    expect(() => parseConfig(typo, 'my.json')).toThrow(
+      /my\.json: "redaction"\.detectors\.bic: unknown key "homeCountrys"/u,
+    );
+    // And the message has to carry the spelling that would have worked.
+    expect(() => parseConfig(typo)).toThrow(/"homeCountries"/u);
+  });
+
+  it('names the exact index of a non-string element in a list', () => {
+    // A list is long and hand-written; "must be a non-empty string" without the
+    // index sends the operator hunting through forty postcodes.
+    expect(() =>
+      parseConfig(
+        { redaction: { detectors: { bic: { homeCountries: ['DE', 7, 'AT'] } } } },
+        'my.json',
+      ),
+    ).toThrow(
+      /my\.json: "redaction"\.detectors\.bic\.homeCountries\[1\] must be a non-empty string/u,
+    );
+  });
+
+  it('rejects a maxEditDistance of 2', () => {
+    // Two edits from a short German surname is another surname, so the option
+    // is a closed pair rather than a number.
+    expect(() =>
+      parseConfig({ redaction: { detectors: { dictionary: { maxEditDistance: 2 } } } }),
+    ).toThrow(/maxEditDistance must be 0 or 1/u);
+    expect(
+      parseConfig({ redaction: { detectors: { dictionary: { maxEditDistance: 0 } } } }).redaction
+        .detectors.dictionary.maxEditDistance,
+    ).toBe(0);
+  });
+
+  it('reaches the detector: fuzzy from the file finds a one-typo name', () => {
+    // The end-to-end claim the parse tests cannot make. Everything above proves
+    // the value arrived in SessionOptions; this proves SessionOptions is wired
+    // to the detector that reads it.
+    const dictionary = { names: ['Max Mustermann'] };
+    const text = 'Ticket von Max Musterman';
+
+    const strict = new Session(redactionOptions(parseConfig({ redaction: { dictionary } })));
+    expect(strict.redact(text).findings).toEqual([]);
+
+    const fuzzy = new Session(
+      redactionOptions(
+        parseConfig({ redaction: { dictionary, detectors: { dictionary: { fuzzy: true } } } }),
+      ),
+    );
+    const { findings } = fuzzy.redact(text);
+    expect(findings.map(({ kind, value }) => ({ kind, value }))).toEqual([
+      { kind: 'NAME', value: 'Max Musterman' },
+    ]);
   });
 });
