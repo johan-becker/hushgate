@@ -95,12 +95,46 @@ const decodeWith = (label: string, bytes: Uint8Array, fatal: boolean): string | 
   }
 };
 
-/** Last resort when this Node lacks the windows-1252 table: the latin-1 subset of it. */
-const decodeLatin1 = (bytes: Uint8Array): string => {
+/**
+ * windows-1252, bytes 0x80 to 0x9F, as data rather than as a question for ICU.
+ *
+ * This used to be `new TextDecoder('windows-1252')`, which is right until it is
+ * not there. A Node built with small-icu or `--without-intl` throws for that
+ * label, and what happened then was not a clean failure: the decoder fell back
+ * to latin-1, where 0x92 is the C1 control U+0092 rather than a right single
+ * quote, and the control was stripped a few lines later. `Kün’s` arrived as
+ * `Küns` — an apostrophe deleted from somebody's name, on one class of machine
+ * and not another, with nothing in the log to say so.
+ *
+ * Thirty-two characters are not worth an environment dependency. The five bytes
+ * windows-1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) keep their C1
+ * code points, which is what the WHATWG Encoding Standard specifies and what
+ * `TextDecoder` does; a test compares all 256 bytes against the platform
+ * decoder wherever there is one, so this literal cannot drift from it.
+ */
+export const WINDOWS_1252_C1 =
+  '\u20AC\u0081\u201A\u0192\u201E\u2026\u2020\u2021' +
+  '\u02C6\u2030\u0160\u2039\u0152\u008D\u017D\u008F' +
+  '\u0090\u2018\u2019\u201C\u201D\u2022\u2013\u2014' +
+  '\u02DC\u2122\u0161\u203A\u0153\u009D\u017E\u0178';
+
+/**
+ * Decode windows-1252 without the platform's help.
+ *
+ * Every byte maps to exactly one character, so this cannot fail and is the last
+ * candidate in {@link decodeText} for that reason. Outside the C1 range
+ * windows-1252 is latin-1, which is the identity on code points.
+ */
+export function decodeWindows1252(bytes: Uint8Array): string {
   const chars: string[] = Array.from({ length: bytes.length });
-  for (const [index, byte] of bytes.entries()) chars[index] = String.fromCodePoint(byte);
+  for (const [index, byte] of bytes.entries()) {
+    chars[index] =
+      byte >= 0x80 && byte <= 0x9f
+        ? WINDOWS_1252_C1[byte - 0x80]!
+        : String.fromCodePoint(byte);
+  }
   return chars.join('');
-};
+}
 
 const stripTrailingNuls = (text: string): string => {
   let end = text.length;
@@ -158,10 +192,9 @@ export function decodeText(bytes: Uint8Array): DecodedText {
   const utf8 = decodeWith('utf-8', bytes, true);
   if (utf8 !== null) return finish(utf8, 'utf-8');
 
-  const windows1252 = decodeWith('windows-1252', bytes, false);
-  if (windows1252 !== null) return finish(windows1252, 'windows-1252');
-
-  return finish(decodeLatin1(bytes), 'iso-8859-1');
+  // Last, and always: windows-1252 accepts every byte, so there is nothing left
+  // to fall back to and no build of Node that can decline it.
+  return finish(decodeWindows1252(bytes), 'windows-1252');
 }
 
 /** Formats whose bytes are already the text, once the encoding is settled. */

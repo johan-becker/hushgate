@@ -16,7 +16,7 @@
  * one of them: quadratic time on an input an attacker chooses. A machine that
  * advances at least one character per step cannot be made to do that.
  */
-import { clampChars, decodeText } from './plaintext.js';
+import { clampChars, decodeText, WINDOWS_1252_C1 } from './plaintext.js';
 import type { Extractor } from './types.js';
 
 /** Elements whose content is instructions for the machine, never text for a reader. */
@@ -97,19 +97,12 @@ const NAMED_ENTITIES = buildNamedEntities();
  * `&#146;` is not U+0092. Authors write windows-1252 byte values into numeric
  * references, and the HTML standard legalised it by mapping 0x80–0x9F through
  * that table rather than treating them as the C1 controls they nominally are.
+ *
+ * The table used to be built here by asking `TextDecoder` for it, which meant a
+ * Node without the windows-1252 data produced an empty table and this function
+ * quietly dropped the reference — `Anna&#146;s` extracted as `Annas`. It is a
+ * shipped constant now; see {@link WINDOWS_1252_C1}.
  */
-const buildC1Table = (): string => {
-  const bytes = new Uint8Array(32);
-  for (let index = 0; index < 32; index += 1) bytes[index] = 0x80 + index;
-  try {
-    return new TextDecoder('windows-1252').decode(bytes);
-  } catch {
-    return '';
-  }
-};
-
-const C1_TABLE = buildC1Table();
-
 const isHtmlSpace = (code: number): boolean =>
   code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
 
@@ -141,7 +134,7 @@ const codePointToString = (code: number): string | null => {
   if (code <= 0 || code > 0x10ffff) return null;
   // A lone surrogate is not a character and would not survive serialisation.
   if (code >= 0xd800 && code <= 0xdfff) return null;
-  if (code >= 0x80 && code <= 0x9f && C1_TABLE.length === 32) return C1_TABLE[code - 0x80] ?? null;
+  if (code >= 0x80 && code <= 0x9f) return WINDOWS_1252_C1[code - 0x80] ?? null;
   return String.fromCodePoint(code);
 };
 

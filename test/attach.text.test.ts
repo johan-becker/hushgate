@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { clampChars, decodeText, plaintextExtractor } from '../src/attach/plaintext.js';
+import {
+  clampChars,
+  decodeText,
+  decodeWindows1252,
+  WINDOWS_1252_C1,
+  plaintextExtractor,
+} from '../src/attach/plaintext.js';
 import { htmlExtractor, htmlToText } from '../src/attach/html.js';
 import { rtfExtractor, rtfToText } from '../src/attach/rtf.js';
 import type { ExtractionContext, ExtractionResult } from '../src/attach/types.js';
@@ -85,6 +91,54 @@ describe('encoding sniffing without a mark', () => {
 
   it('decodes the windows-1252 C1 range rather than treating it as latin-1', () => {
     expect(decodeText(raw(0x4b, 0xfc, 0x6e, 0x92, 0x73)).text).toBe('Kün’s');
+  });
+});
+
+/**
+ * windows-1252 without asking the platform for it.
+ *
+ * Both the plain-text decoder and the HTML entity reader used to get this
+ * mapping from `new TextDecoder('windows-1252')`, which is correct — on a Node
+ * that has the table. A build without full ICU throws for that label, and the
+ * fallbacks were worse than they looked: the decoder dropped to latin-1, where
+ * 0x92 is the C1 control U+0092 rather than a right single quote and is then
+ * stripped as a control character, and the entity reader gave up and dropped
+ * the reference. `Kün’s` came out `Küns` and `Anna’s` came out `Annas` — the
+ * apostrophe silently deleted from somebody's name, on one class of machine and
+ * not another.
+ *
+ * So the thirty-two characters are data now, and these tests are what keeps
+ * them honest.
+ */
+describe('the windows-1252 C1 table', () => {
+  it('is thirty-two characters, one per byte from 0x80 to 0x9F', () => {
+    expect([...WINDOWS_1252_C1]).toHaveLength(32);
+  });
+
+  it('maps 0x92 to the right single quotation mark', () => {
+    // The byte behind every mangled apostrophe in every CSV export ever made.
+    expect(WINDOWS_1252_C1[0x92 - 0x80]).toBe('\u2019');
+  });
+
+  it('agrees with the platform decoder on all 256 bytes, where the platform has one', () => {
+    // The cross-check that makes the shipped table trustworthy: on a full-ICU
+    // Node the two must be identical, so a typo in the literal cannot survive
+    // CI. On a build without the table there is nothing to compare against and
+    // the assertion is skipped rather than faked.
+    const all = Uint8Array.from({ length: 256 }, (_, byte) => byte);
+    let reference: string;
+    try {
+      reference = new TextDecoder('windows-1252').decode(all);
+    } catch {
+      return;
+    }
+    expect(decodeWindows1252(all)).toBe(reference);
+  });
+
+  it('decodes the C1 range with no help from the platform at all', () => {
+    // The regression proper. This calls the table directly, so it holds on a
+    // Node that has never heard of windows-1252.
+    expect(decodeWindows1252(raw(0x4b, 0xfc, 0x6e, 0x92, 0x73))).toBe('Kün\u2019s');
   });
 });
 
