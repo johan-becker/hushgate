@@ -85,7 +85,7 @@ export const ibanDetector: Detector = {
       const run = collectRun(text, start, isUpperAlnum, isSeparator, expected);
       if (run.chars.length !== expected) continue;
 
-      const end = (run.offsets.at(-1) ?? start) + 1;
+      const end = run.end;
       // Reject when the run continues: `DE89…013000X` is not an IBAN.
       if (memberAt(text, end, isUpperAlnum) || memberAt(text, end, isDigit)) continue;
       if (!isValidIban(run.chars)) continue;

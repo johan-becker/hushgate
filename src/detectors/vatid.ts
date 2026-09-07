@@ -1,4 +1,4 @@
-import type { Detector, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type Span } from '../types.js';
 import { isScanSeparator } from './normalise.js';
 import { mod1110CheckDigit } from './taxid.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
@@ -6,14 +6,13 @@ import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 /**
  * Kind and priority for the Umsatzsteuer-Identifikationsnummer.
  *
- * `DEFAULT_PRIORITIES` has no entry for this kind, so the weight lives here and
- * is exported for whoever registers the detector. It sits just under the IBAN:
- * both are country-prefixed identifiers that can start on the same two letters,
- * and when two equally long spans disagree the IBAN's mod-97 is the stronger
- * evidence of the two.
+ * The rank lives in `DEFAULT_PRIORITIES` and is re-exported here for readers of
+ * this file. It sits just under the IBAN: both are country-prefixed identifiers
+ * that can start on the same two letters, and when two equally long spans
+ * disagree the IBAN's mod-97 is the stronger evidence of the two.
  */
 export const EU_VAT_ID_KIND = 'EU_VAT_ID';
-export const EU_VAT_ID_PRIORITY = 88;
+export const EU_VAT_ID_PRIORITY = DEFAULT_PRIORITIES.EU_VAT_ID;
 
 /** The body of a VAT number for one member state: its lengths and its shape. */
 export interface VatIdRule {
@@ -164,11 +163,15 @@ export function createVatIdDetector(options: VatIdOptions = {}): Detector {
 
         const longest = rule.lengths[0]!;
         const run = collectRun(text, start, isAsciiAlnum, isScanSeparator, 2 + longest);
-        const first = run.offsets[0];
-        const last = run.offsets.at(-1);
-        if (first === undefined || last === undefined) continue;
+        if (run.chars.length === 0) continue;
 
-        const grouped = last - first + 1 !== run.chars.length;
+        const last = run.end - 1;
+        // Whether a separator was skipped inside the run, which is the same
+        // question as the span covering more characters than it collected.
+        // Asked of the two numbers the walk already produced rather than of the
+        // offsets array, so that the array is never built for a run about to be
+        // rejected on its length.
+        const grouped = run.end - start !== run.chars.length;
 
         for (const length of rule.lengths) {
           // Exact equality, not "at least": a run that carries more than the

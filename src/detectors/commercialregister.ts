@@ -13,19 +13,18 @@
  * variant and a room number, and a detector that reports those is one the
  * customer switches off, taking the Handelsregister with it.
  */
-import type { Detector, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type Span } from '../types.js';
 import { isScanSeparator } from './normalise.js';
 import { isDigit, isWordChar, memberAt } from './util.js';
 
 /**
- * Priority for `COMMERCIAL_REGISTER_ID`, pending an entry in
- * `DEFAULT_PRIORITIES`.
+ * Priority for `COMMERCIAL_REGISTER_ID`, from `DEFAULT_PRIORITIES`.
  *
  * Nothing else claims a run that opens with `HRA`/`HRB`, so this rank only ever
  * settles a tie that does not arise in practice; it sits below the identifiers
  * that verify a check digit for the same reason they outrank each other.
  */
-export const COMMERCIAL_REGISTER_PRIORITY = 76;
+export const COMMERCIAL_REGISTER_PRIORITY = DEFAULT_PRIORITIES.COMMERCIAL_REGISTER_ID;
 
 /**
  * The longest register number an Amtsgericht issues.

@@ -15,12 +15,12 @@
  * candidate generator: `requiresLabel` is all-or-nothing per detector, and the
  * two are disjoint by construction so nothing is reported twice.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { isScanSeparator } from './normalise.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 
 /**
- * Priority for `GERMAN_TAX_NUMBER`, pending an entry in `DEFAULT_PRIORITIES`.
+ * Priority for `GERMAN_TAX_NUMBER`, from `DEFAULT_PRIORITIES`.
  *
  * Below `GERMAN_TAX_ID` (80) on purpose. Eleven digits behind the word
  * `Steuernummer` can be either number, and the Steuer-ID is the only one of the
@@ -28,7 +28,7 @@ import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
  * have to come out. When both claim the same characters, the one that verified
  * them should win, and rank is what settles a tie of equal length.
  */
-export const GERMAN_TAX_NUMBER_PRIORITY = 77;
+export const GERMAN_TAX_NUMBER_PRIORITY = DEFAULT_PRIORITIES.GERMAN_TAX_NUMBER;
 
 /** Shortest and longest a Steuernummer gets, separators removed. */
 const MIN_DIGITS = 10;
@@ -145,15 +145,25 @@ function* candidates(text: string): Generator<Candidate> {
     // One digit past the maximum, so a longer number is recognised as longer
     // rather than truncated into a plausible-looking candidate.
     const run = collectRun(text, i, isDigit, isScanSeparator, MAX_DIGITS + 1);
-    const { groups, separators } = groupsOf(text, run.offsets);
-    const end = run.offsets[run.offsets.length - 1]! + 1;
+    const end = run.end;
 
-    if (
-      run.chars.length >= MIN_DIGITS &&
-      run.chars.length <= MAX_DIGITS &&
-      !isWordChar(text, end) &&
-      groups.every((size) => size >= MIN_GROUP)
-    ) {
+    // The length gate first, and only then the grouping. Reading the grouping
+    // means materialising the run's offsets, and on a body of dense digits
+    // almost every candidate is about to fail on its length — this ordering is
+    // what keeps that array from being built four hundred thousand times for
+    // nothing. Measured on the `dense` fixture in test/ops.test.ts, this
+    // detector was the single most expensive one in the set.
+    if (run.chars.length < MIN_DIGITS || run.chars.length > MAX_DIGITS) {
+      // Skip the first group only, not the whole rejected run: `Az. 5/2019,
+      // 27/123/45678` collects as one over-long run, and jumping past all of it
+      // would take the real Steuernummer with it.
+      i = Math.max(i + 1, firstGroupEnd(text, i));
+      continue;
+    }
+
+    const { groups, separators } = groupsOf(text, run.offsets);
+
+    if (!isWordChar(text, end) && groups.every((size) => size >= MIN_GROUP)) {
       yield {
         start: i,
         end,
@@ -172,11 +182,20 @@ function* candidates(text: string): Generator<Candidate> {
       continue;
     }
 
-    // Skip the first group only, not the whole rejected run: `Az. 5/2019,
-    // 27/123/45678` collects as one over-long run, and jumping past all of it
-    // would take the real Steuernummer with it.
     i = Math.max(i + 1, i + groups[0]!);
   }
+}
+
+/**
+ * End of the contiguous digit group starting at `from`.
+ *
+ * The same number `groups[0]` carries, read off the text instead, for the
+ * rejection path that never builds the groups.
+ */
+function firstGroupEnd(text: string, from: number): number {
+  let i = from;
+  while (i < text.length && memberAt(text, i, isDigit)) i += 1;
+  return i;
 }
 
 const spanAt = (text: string, candidate: Candidate, detector: string): Span => ({
@@ -189,13 +208,25 @@ const spanAt = (text: string, candidate: Candidate, detector: string): Span => (
 });
 
 /**
- * The slash-grouped Steuernummer, reported unaccompanied.
+ * The Steuernummer, in both of the readings it has.
  *
- * Two or three groups of the right sizes joined by slashes is a shape almost
- * nothing else in a German document has: a date has four digits in the last
- * group and eight in total, an Aktenzeichen has two groups and far fewer
- * digits. That is the whole argument for firing without a label, and it is why
- * the layout set above is closed rather than a range.
+ * SLASH-GROUPED, reported unaccompanied: two or three groups of the right
+ * sizes joined by slashes is a shape almost nothing else in a German document
+ * has — a date has four digits in the last group and eight in total, an
+ * Aktenzeichen has two groups and far fewer digits. That is the whole argument
+ * for firing without a label, and it is why the layout set above is closed
+ * rather than a range.
+ *
+ * EVERY OTHER SPELLING — bare, spaced, hyphenated, thirteen digits — gated on
+ * a label, because `2712345678` is a Steuernummer, a customer number or a
+ * phone number and only the word next to it decides.
+ *
+ * One detector rather than the two this used to be. The two existed because
+ * `Detector.requiresLabel` applies to everything a detector returns and cannot
+ * say "unless it is slash-grouped"; {@link Span.requiresLabel} can, and says it
+ * on the span. What the split cost was a second walk of the entire body to
+ * produce the candidates the first walk had already produced and thrown away —
+ * measured at 224 ms per 512 KiB of dense digits, for nothing.
  */
 export const steuernummerDetector: Detector = {
   name: 'steuernummer',
@@ -204,32 +235,8 @@ export const steuernummerDetector: Detector = {
   find(text: string): Span[] {
     const out: Span[] = [];
     for (const candidate of candidates(text)) {
-      if (!candidate.slashGrouped) continue;
-      out.push(spanAt(text, candidate, 'steuernummer'));
-    }
-    return out;
-  },
-};
-
-/**
- * Every other spelling — bare, spaced, hyphenated, thirteen digits — gated on
- * a label.
- *
- * `2712345678` is a Steuernummer, a customer number or a phone number, and
- * only the word next to it decides. Enforcement is `detect()`'s, which is the
- * reason for the split: `requiresLabel` cannot say "unless it is slash-grouped",
- * so the condition lives in the two disjoint detectors instead.
- */
-export const labelledSteuernummerDetector: Detector = {
-  name: 'steuernummer-labelled',
-  priority: GERMAN_TAX_NUMBER_PRIORITY,
-  requiresLabel: LABEL_PROXIMITY,
-
-  find(text: string): Span[] {
-    const out: Span[] = [];
-    for (const candidate of candidates(text)) {
-      if (candidate.slashGrouped) continue;
-      out.push(spanAt(text, candidate, 'steuernummer-labelled'));
+      const span = spanAt(text, candidate, 'steuernummer');
+      out.push(candidate.slashGrouped ? span : { ...span, requiresLabel: LABEL_PROXIMITY });
     }
     return out;
   },

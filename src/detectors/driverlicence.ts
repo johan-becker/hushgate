@@ -23,17 +23,19 @@
  * — which is not lost, because the wordShape scan copy collapses runs of four
  * or more single characters before this detector ever sees them.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { isScanSeparator } from './normalise.js';
 import { collectRun, isDigit, isWordChar, memberAt, type RunScan } from './util.js';
 
 /**
- * Priority for `DRIVER_LICENCE_ID`, pending an entry in `DEFAULT_PRIORITIES`.
+ * Priority for `DRIVER_LICENCE_ID`, from `DEFAULT_PRIORITIES`.
  *
- * Below both tax numbers: an all-digit run of eleven is a Steuer-ID far more
- * often than a licence, and the Steuer-ID can prove it with a check digit.
+ * Below both tax numbers (80 and 76): an all-digit run of eleven is a Steuer-ID
+ * far more often than a licence, and the Steuer-ID can prove it with a check
+ * digit. Lowest of the German administrative identifiers, because a licence
+ * number is the only one of them that verifies nothing about itself.
  */
-export const DRIVER_LICENCE_PRIORITY = 76;
+export const DRIVER_LICENCE_PRIORITY = DEFAULT_PRIORITIES.DRIVER_LICENCE_ID;
 
 /** Behördenschlüssel, laufende Nummer, Prüfziffer and Ausfertigung. */
 const LICENCE_LENGTH = 11;
@@ -159,7 +161,7 @@ export const driverLicenceDetector: Detector = {
         continue;
       }
 
-      const end = run.offsets[LICENCE_LENGTH - 1]! + 1;
+      const end = run.end;
       if (isWordChar(text, end)) {
         i += 1;
         continue;

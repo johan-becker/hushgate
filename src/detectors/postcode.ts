@@ -7,7 +7,7 @@
  * here fires on shape: a PLZ is reported only when something *else* in the text
  * says it is one — a label, a country prefix, or a place name behind it.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { foldForCompare, labelNear } from './normalise.js';
 import { isDigit, isWordChar, memberAt } from './util.js';
 
@@ -16,12 +16,11 @@ export const POSTCODE_KIND = 'POSTCODE';
 /**
  * Priority for a postcode.
  *
- * `DEFAULT_PRIORITIES` has no entry for it and this module does not own
- * `types.ts`. 48 keeps it under every detector that can prove its claim
- * arithmetically and above a dictionary hit, which is the right order for a
- * value whose whole case rests on the words around it.
+ * 48 in `DEFAULT_PRIORITIES` keeps it under every detector that can prove its
+ * claim arithmetically and above a dictionary hit, which is the right order for
+ * a value whose whole case rests on the words around it.
  */
-export const POSTCODE_PRIORITY = 48;
+export const POSTCODE_PRIORITY = DEFAULT_PRIORITIES.POSTCODE;
 
 const POSTCODE_LENGTH = 5;
 

@@ -26,22 +26,22 @@
  * `requiresLabel`, because `requiresLabel` is all-or-nothing per detector and
  * the strong suffixes must keep firing unaccompanied.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { foldForCompare, labelNear } from './normalise.js';
 import { isDigit } from './util.js';
 
 /**
  * Priority for `POSTAL_ADDRESS`.
  *
- * `DEFAULT_PRIORITIES` has no entry for it and this module does not own
- * `types.ts`. The rank only ever settles a tie between two overlapping spans of
- * *identical* length, which an address — several words long, and the longest
- * claimant on any text it covers — essentially never enters. 60 places it above
- * the phone number (55) and the date of birth (58), whose digit runs are the
- * only plausible neighbours, and below the MAC address (62), whose format is
- * the stronger claim wherever the two could somehow collide.
+ * The rank lives in `DEFAULT_PRIORITIES` and only ever settles a tie between two
+ * overlapping spans of *identical* length, which an address — several words
+ * long, and the longest claimant on any text it covers — essentially never
+ * enters. 59 places it above the date of birth (58) and the phone number (55),
+ * whose digit runs are the only plausible neighbours, and below the BIC (60)
+ * and the MAC address (62), whose formats are the stronger claim wherever any
+ * of them could somehow collide.
  */
-export const POSTAL_ADDRESS_PRIORITY = 60;
+export const POSTAL_ADDRESS_PRIORITY = DEFAULT_PRIORITIES.POSTAL_ADDRESS;
 
 /**
  * Street types that no ordinary German noun ends in.

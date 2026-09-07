@@ -477,7 +477,15 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   // before the first SSE token arrives, and an upstream request that is
   // retrying is silent for longer still; reaping on quiet alone would kill
   // streaming, which is why a plain `socket.setTimeout` is not enough on its
-  // own. What bounds that phase is `upstreamTimeoutMs`, one layer down.
+  // own. What bounds that phase is `upstreamTimeoutMs`, one layer down — but
+  // note what that knob actually bounds: it is an *inactivity* timer on the
+  // upstream socket (`outbound.setTimeout` in upstream.ts), reset by every
+  // arriving byte, and `withRetry` multiplies the wall clock by the retry
+  // count plus backoff. So `serving` is bounded per silence, never in total:
+  // an upstream that drips tokens forever holds the connection forever, and
+  // `retries × timeoutMs + backoff` is the honest worst case for a dead one.
+  // That is a deliberate trade — a total cap would have to kill legitimate
+  // long streams — documented here because the name promises more than it does.
   type Phase = 'idle' | 'receiving' | 'serving';
   const connections = new Map<Socket, { phase: Phase; since: number }>();
 
@@ -502,7 +510,13 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     state.phase = 'receiving';
     state.since = Date.now();
 
+    // The body is done: it is hushgate's turn. The writableEnded guard is not
+    // paranoia — for a request whose body nobody reads (GET /healthz, a 404, a
+    // rejected method) the IncomingMessage stays paused until after the
+    // response has finished, and its `end` then arrives late and would flip the
+    // phase back to `serving` forever, exempting the socket from every budget.
     request.once('end', () => {
+      if (response.writableEnded || response.destroyed) return;
       state.phase = 'serving';
       state.since = Date.now();
     });
@@ -525,12 +539,17 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   );
   const sweeper = setInterval(() => {
     const now = Date.now();
+    // Collect first, destroy second: `socket.destroy()` fires 'close' and the
+    // listener above deletes from this very map — never mutate what is being
+    // iterated, whatever order a given runtime emits those events in.
+    const expired: Socket[] = [];
     for (const [socket, state] of connections) {
       if (state.phase === 'serving') continue;
       const budget =
         state.phase === 'receiving' ? config.limits.requestTimeoutMs : config.limits.idleTimeoutMs;
-      if (now - state.since >= budget) socket.destroy();
+      if (now - state.since >= budget) expired.push(socket);
     }
+    for (const socket of expired) socket.destroy();
   }, sweepMs);
   // This timer exists to end connections, never to wait for them: unref'd, it
   // cannot be the reason a CLI run refuses to exit.

@@ -7,7 +7,7 @@
  * codes in {@link GERMAN_PLATE_DISTRICTS}, and everything here is built to lean
  * on that list rather than on the pattern around it.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { isDigit, isWordChar, memberAt } from './util.js';
 
 export const VEHICLE_PLATE_KIND = 'VEHICLE_PLATE';
@@ -15,12 +15,12 @@ export const VEHICLE_PLATE_KIND = 'VEHICLE_PLATE';
 /**
  * Priority for a plate.
  *
- * `DEFAULT_PRIORITIES` has no entry for it and this module does not own
- * `types.ts`. 52 puts a plate under the phone number, whose leading `+49` is a
- * harder claim on the same digits, and over a custom rule, which by definition
- * knows less about German vehicle registration than this file does.
+ * 52 in `DEFAULT_PRIORITIES` puts a plate under the phone number (55), whose
+ * leading `+49` is a harder claim on the same digits, and over a custom rule,
+ * which by definition knows less about German vehicle registration than this
+ * file does.
  */
-export const VEHICLE_PLATE_PRIORITY = 52;
+export const VEHICLE_PLATE_PRIORITY = DEFAULT_PRIORITIES.VEHICLE_PLATE;
 
 /**
  * The Unterscheidungszeichen seed.

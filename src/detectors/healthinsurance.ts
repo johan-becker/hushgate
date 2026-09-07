@@ -1,14 +1,15 @@
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 import { isScanSeparator } from './normalise.js';
 
 /**
- * Priority for `HEALTH_INSURANCE_ID`, pending an entry in `DEFAULT_PRIORITIES`.
+ * Priority for `HEALTH_INSURANCE_ID`, from `DEFAULT_PRIORITIES`.
  *
- * One below `SOCIAL_SECURITY_ID` and above `EMAIL` (75), for the same reason:
- * same family, and the rank only settles ties between spans of equal length.
+ * Below `SOCIAL_SECURITY_ID` (79) and the document serials (78), above `EMAIL`
+ * (75): same family of checksum-backed German identifiers, and the rank only
+ * settles ties between spans of equal length.
  */
-export const HEALTH_INSURANCE_PRIORITY = 78;
+export const HEALTH_INSURANCE_PRIORITY = DEFAULT_PRIORITIES.HEALTH_INSURANCE_ID;
 
 /** Digits after the leading letter: eight of payload plus the check digit. */
 const KVNR_DIGITS = 9;
@@ -97,7 +98,7 @@ function* candidates(text: string): Generator<{ start: number; end: number; char
     const run = collectRun(text, from, isDigit, isScanSeparator, KVNR_DIGITS);
     if (run.chars.length !== KVNR_DIGITS) continue;
 
-    const end = run.offsets[run.offsets.length - 1]! + 1;
+    const end = run.end;
     // A tenth digit, or a letter glued to the end, means this was something
     // longer that merely opens with the right shape.
     if (isWordChar(text, end)) continue;

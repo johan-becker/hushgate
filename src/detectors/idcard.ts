@@ -8,7 +8,7 @@
  * so the split lives at the end, in {@link germanDocumentKind}, rather than in
  * two detectors that would each re-implement the whole scan.
  */
-import type { Detector, Kind, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type Kind, type LabelProximity, type Span } from '../types.js';
 import { isScanSeparator, labelNear } from './normalise.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 
@@ -130,18 +130,31 @@ export const GERMAN_ID_DOCUMENT_LABELS: readonly string[] = [
   'Ausweis-Nr',
 ];
 
+/**
+ * The gate a serial without a check digit is reported through.
+ *
+ * Built once from {@link GERMAN_ID_DOCUMENT_LABELS} rather than inside `find`,
+ * for the reason stated there: the fold that turns labels into comparison keys
+ * is cached against the array's identity, and a fresh object per span would
+ * miss the cache on every one of them.
+ */
+const LABEL_PROXIMITY: LabelProximity = { labels: GERMAN_ID_DOCUMENT_LABELS };
+
 const PASSPORT_LABELS: LabelProximity = { labels: ['Passnr', 'Pass-Nr', 'Reisepass'] };
 const ID_CARD_LABELS: LabelProximity = { labels: ['Ausweis', 'Ausweisnr', 'Ausweis-Nr', 'Personalausweis'] };
 
 /**
  * Priority for both kinds.
  *
- * `DEFAULT_PRIORITIES` has no entry for them yet, and this module does not own
- * `types.ts`. 78 places a document serial below the Steuer-ID, whose two
- * independent checks make it the safer read when both claim the same
- * characters, and above an email, which never will.
+ * `DEFAULT_PRIORITIES` gives `ID_CARD_NUMBER` and `PASSPORT_NUMBER` the same 78
+ * deliberately: one detector decides which of the two a serial is, so two spans
+ * of those kinds can never overlap and there is no tie between them to break.
+ * 78 places a document serial below the Steuer-ID (80) and the
+ * Sozialversicherungsnummer (79), whose independent checks make them the safer
+ * read when two of them claim the same characters, and above an email, which
+ * never will.
  */
-export const ID_DOCUMENT_PRIORITY = 78;
+export const ID_DOCUMENT_PRIORITY = DEFAULT_PRIORITIES.ID_CARD_NUMBER;
 
 const isAlnum = (ch: string): boolean =>
   isDigit(ch) || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
@@ -171,9 +184,8 @@ function classify(text: string, start: number, end: number, serial: string): Kin
  * wait for the identifier scan copy, which only folds runs that are mostly
  * digits and would drop the grouped spellings a card actually prints.
  */
-function findSerials(text: string, withCheckDigit: boolean, name: string): Span[] {
+function findSerials(text: string, name: string): Span[] {
   const out: Span[] = [];
-  const want = withCheckDigit ? SERIAL_LENGTH + 1 : SERIAL_LENGTH;
   let i = 0;
 
   while (i < text.length) {
@@ -182,79 +194,100 @@ function findSerials(text: string, withCheckDigit: boolean, name: string): Span[
       continue;
     }
 
-    const run = collectRun(text, i, isAlnum, isScanSeparator, want);
-    if (run.chars.length !== want) {
+    const run = collectRun(text, i, isAlnum, isScanSeparator, SERIAL_LENGTH);
+    if (run.chars.length !== SERIAL_LENGTH) {
       i += 1;
       continue;
     }
 
-    const end = run.offsets.at(-1)! + 1;
-    if (memberAt(text, end, isAlnum)) {
-      i += 1;
-      continue;
-    }
-
-    const serial = readGermanDocumentSerial(run.chars.slice(0, SERIAL_LENGTH));
+    const serial = readGermanDocumentSerial(run.chars);
     if (serial === null) {
       i += 1;
       continue;
     }
 
-    if (withCheckDigit) {
-      const given = run.chars[SERIAL_LENGTH]!;
+    let furthest = -1;
+
+    // The serial on its own. Nine characters prove nothing — no checksum, and
+    // the shape is one an internal part number can have — so the label carries
+    // it, declared on the span and enforced by `detect()`.
+    if (!memberAt(text, run.end, isAlnum)) {
+      out.push({
+        ...spanAt(text, i, run.end, serial, name),
+        requiresLabel: LABEL_PROXIMITY,
+      });
+      furthest = run.end;
+    }
+
+    // The same serial followed by its ICAO check digit, which is licence enough
+    // to report unaccompanied: the digit costs a wrong candidate nine times out
+    // of ten, and the alphabet costs it again for every letter it holds.
+    //
+    // Read forward from the nine rather than collected as ten in a second walk.
+    // Ten was what the separate detector this replaces asked for, and asking
+    // for it here would break the nine-character reading: `Ausweis-Nr.
+    // L01X00T47 folgt` collects a tenth character from the word behind the
+    // space, because a separator is part of a run — the serial would then fail
+    // on its check digit and the label would have licensed nothing.
+    const gap = run.end;
+    const at = memberAt(text, gap, isAlnum)
+      ? gap
+      : isScanSeparator(text[gap] ?? '') && memberAt(text, gap + 1, isAlnum)
+        ? gap + 1
+        : -1;
+
+    if (at >= 0 && !memberAt(text, at + 1, isAlnum)) {
+      const given = text[at]!;
       // The check digit is a digit even where the serial tolerates a confusable
       // letter: nothing is printed after it, so there is no reading to recover.
-      if (!isDigit(given) || icaoCheckDigit(serial) !== given.codePointAt(0)! - 48) {
-        i += 1;
-        continue;
+      if (isDigit(given) && icaoCheckDigit(serial) === given.codePointAt(0)! - 48) {
+        out.push(spanAt(text, i, at + 1, serial, name));
+        furthest = at + 1;
       }
     }
 
-    out.push({
-      start: i,
-      end,
-      kind: classify(text, i, end, serial),
-      value: text.slice(i, end),
-      detector: name,
-      priority: ID_DOCUMENT_PRIORITY,
-    });
-    i = end;
+    i = furthest > i ? furthest : i + 1;
   }
 
   return out;
 }
 
+const spanAt = (
+  text: string,
+  start: number,
+  end: number,
+  serial: string,
+  detector: string,
+): Span => ({
+  start,
+  end,
+  kind: classify(text, start, end, serial),
+  value: text.slice(start, end),
+  detector,
+  priority: ID_DOCUMENT_PRIORITY,
+});
+
 /**
- * Personalausweis and Reisepass numbers carrying their ICAO check digit.
+ * Personalausweis and Reisepass numbers, with or without their check digit.
  *
  * Ten characters that agree with their own check digit are a strong enough
  * claim to report unaccompanied: the digit costs a wrong candidate nine times
- * out of ten, and the alphabet costs it again for every letter it holds.
+ * out of ten, and the alphabet costs it again for every letter it holds. The
+ * same serial printed without the digit is licensed by the word next to it
+ * instead, which the span says for itself through {@link Span.requiresLabel}.
+ *
+ * One detector rather than the two this used to be. The two existed because
+ * `Detector.requiresLabel` applies to everything a detector returns and the
+ * check-digit form must not be gated by it. What the split cost was a second
+ * walk of the whole body over the same runs with the same predicates, to
+ * collect ten characters where the first walk had collected eleven — measured
+ * at 229 ms per 512 KiB of dense alphanumerics.
  */
 export const germanIdDocumentDetector: Detector = {
   name: 'german-id-document',
   priority: ID_DOCUMENT_PRIORITY,
 
   find(text: string): Span[] {
-    return findSerials(text, true, 'german-id-document');
-  },
-};
-
-/**
- * The same serials written without their check digit.
- *
- * Nine characters prove nothing on their own — no checksum, and the shape is
- * one an internal part number can have — so this form is licensed by the word
- * next to it and nothing else. Enforcement is `detect()`'s, which is why the
- * two forms are two detectors: `requiresLabel` applies to everything a
- * detector returns, and the check-digit form must not be gated by it.
- */
-export const labelledGermanIdDocumentDetector: Detector = {
-  name: 'german-id-document-labelled',
-  priority: ID_DOCUMENT_PRIORITY,
-  requiresLabel: { labels: GERMAN_ID_DOCUMENT_LABELS },
-
-  find(text: string): Span[] {
-    return findSerials(text, false, 'german-id-document-labelled');
+    return findSerials(text, 'german-id-document');
   },
 };

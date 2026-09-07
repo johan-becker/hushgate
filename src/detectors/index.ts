@@ -1,16 +1,30 @@
 import type { Detector, Span } from '../types.js';
+import { createPostalAddressDetector, type PostalAddressOptions } from './address.js';
+import { createBicDetector, type BicOptions } from './bic.js';
+import { commercialRegisterDetector } from './commercialregister.js';
 import { creditCardDetector } from './creditcard.js';
 import { createCustomDetectors, type CustomRule } from './custom.js';
+import { imeiDetector, labelledUuidDetector, uuidDetector } from './deviceid.js';
 import {
   createDictionaryDetector,
   toDictionaryEntries,
   type DictionaryEntry,
   type DictionaryInput,
+  type DictionaryOptions,
 } from './dictionary.js';
 import { decodeCopies } from './decode.js';
 import { createDobDetector, defaultDobYearRange, type DobYearRange } from './dob.js';
+import { driverLicenceDetector } from './driverlicence.js';
 import { emailDetector } from './email.js';
+import {
+  createIcd10Detectors,
+  createMedicationDetector,
+  type Icd10Options,
+  type MedicationOptions,
+} from './health.js';
+import { healthInsuranceDetector, healthInsuranceLabelDetector } from './healthinsurance.js';
 import { ibanDetector } from './iban.js';
+import { germanIdDocumentDetector } from './idcard.js';
 import { ipv4Detector, ipv6Detector, macDetector } from './network.js';
 import {
   labelNear,
@@ -19,19 +33,93 @@ import {
   type NormalisedText,
 } from './normalise.js';
 import { phoneDetector } from './phone.js';
+import { createPostcodeDetector, type PostcodeOptions } from './postcode.js';
 import { resolveSpans } from './resolve.js';
 import { secretDetector } from './secret.js';
+import { createSessionTokenDetector, type SessionTokenOptions } from './sessiontoken.js';
+import { socialSecurityDetector } from './socialsecurity.js';
+import { steuernummerDetector } from './steuernummer.js';
 import { germanTaxIdDetector } from './taxid.js';
 import { urlCredentialsDetector } from './urlcredentials.js';
+import { createVatIdDetector, type VatIdOptions } from './vatid.js';
+import { createVehiclePlateDetectors, type VehiclePlateOptions } from './vehicleplate.js';
 
 export { resolveSpans, overlaps } from './resolve.js';
+export {
+  createPostalAddressDetector,
+  postalAddressDetector,
+  NON_ADDRESS_WORDS,
+  POSTAL_ADDRESS_LABELS,
+  POSTAL_ADDRESS_PRIORITY,
+  STRONG_STREET_SUFFIXES,
+  WEAK_STREET_SUFFIXES,
+} from './address.js';
+export {
+  bicDetector,
+  createBicDetector,
+  isBicShaped,
+  BIC_KIND,
+  BIC_PRIORITY,
+  DEFAULT_BIC_HOME_COUNTRIES,
+  ISO_3166_ALPHA2,
+} from './bic.js';
+export { commercialRegisterDetector, COMMERCIAL_REGISTER_PRIORITY } from './commercialregister.js';
 export { creditCardDetector, hasIssuerPrefix, isValidCardNumber, luhnValid } from './creditcard.js';
 export { createCustomDetector, createCustomDetectors, normaliseKindName } from './custom.js';
-export { createDictionaryDetector, toDictionaryEntries } from './dictionary.js';
+export {
+  imeiDetector,
+  isRfcUuid,
+  isValidImei,
+  labelledUuidDetector,
+  uuidDetector,
+  DEVICE_ID_LABELS,
+  DEVICE_ID_PRIORITY,
+} from './deviceid.js';
+export { createDictionaryDetector, toDictionaryEntries, withinEditDistanceOne, FUZZY_MIN_LENGTH } from './dictionary.js';
 export { createDobDetector, defaultDobYearRange, isLeapYear, isRealDate } from './dob.js';
+export {
+  driverLicenceDetector,
+  isDriverLicenceShape,
+  DRIVER_LICENCE_LABELS,
+  DRIVER_LICENCE_PRIORITY,
+} from './driverlicence.js';
 export { emailDetector, isValidEmail } from './email.js';
+export {
+  createIcd10Detectors,
+  createMedicationDetector,
+  canonicalIcd10,
+  icd10Detector,
+  isIcd10Shaped,
+  labelledIcd10Detector,
+  medicationDetector,
+  ICD10_BLOCKED_PREFIX_WORDS,
+  ICD10_LABELS,
+  ICD_CODE_KIND,
+  ICD_CODE_PRIORITY,
+  MEDICATION_KIND,
+  MEDICATION_PRIORITY,
+  SEED_ICD10_CODES,
+  SEED_MEDICATION_NAMES,
+} from './health.js';
+export {
+  healthInsuranceCheckDigit,
+  healthInsuranceDetector,
+  healthInsuranceLabelDetector,
+  isValidHealthInsuranceNumber,
+  HEALTH_INSURANCE_LABELS,
+  HEALTH_INSURANCE_PRIORITY,
+} from './healthinsurance.js';
 export { ibanChecksum, ibanDetector, IBAN_LENGTHS, isValidIban } from './iban.js';
-export { ipv4Detector, ipv6Detector, isValidIpv4, isValidIpv6, macDetector } from './network.js';
+export {
+  germanDocumentKind,
+  germanIdDocumentDetector,
+  icaoCheckDigit,
+  readGermanDocumentSerial,
+  GERMAN_DOCUMENT_LETTERS,
+  GERMAN_ID_DOCUMENT_LABELS,
+  ID_DOCUMENT_PRIORITY,
+} from './idcard.js';
+export { ipv4Detector, ipv6Detector, isValidIpv4, isValidIpv6, macDetector, MAC_LABELS } from './network.js';
 export {
   foldForCompare,
   isScanSeparator,
@@ -48,7 +136,37 @@ export {
   isBase64Shaped,
 } from './decode.js';
 export { classifyPhone, phoneDetector } from './phone.js';
+export {
+  createPostcodeDetector,
+  isPostcodeShaped,
+  postcodeDetector,
+  DEFAULT_POSTCODE_PREFIXES,
+  POSTCODE_KIND,
+  POSTCODE_LABELS,
+  POSTCODE_PRIORITY,
+  SEED_PLACE_NAMES,
+} from './postcode.js';
 export { isJwtHeaderSegment, secretDetector } from './secret.js';
+export {
+  createSessionTokenDetector,
+  sessionTokenDetector,
+  SESSION_COOKIE_NAMES,
+  SESSION_COOKIE_PREFIXES,
+  SESSION_TOKEN_PRIORITY,
+} from './sessiontoken.js';
+export {
+  isValidSocialSecurityNumber,
+  socialSecurityCheckDigit,
+  socialSecurityDetector,
+  SOCIAL_SECURITY_PRIORITY,
+} from './socialsecurity.js';
+export {
+  isSteuernummerLayout,
+  steuernummerDetector,
+  GERMAN_TAX_NUMBER_PRIORITY,
+  STEUERNUMMER_LABELS,
+  STEUERNUMMER_LAYOUTS,
+} from './steuernummer.js';
 export {
   germanTaxIdDetector,
   hasValidDigitFrequency,
@@ -56,29 +174,109 @@ export {
   mod1110CheckDigit,
 } from './taxid.js';
 export { urlCredentialsDetector } from './urlcredentials.js';
+export {
+  createVatIdDetector,
+  isValidGermanVatId,
+  vatIdDetector,
+  EU_VAT_ID_KIND,
+  EU_VAT_ID_PRIORITY,
+  VAT_ID_RULES,
+} from './vatid.js';
+export {
+  createVehiclePlateDetectors,
+  labelledVehiclePlateDetector,
+  vehiclePlateDetector,
+  GERMAN_PLATE_DISTRICTS,
+  VEHICLE_PLATE_KIND,
+  VEHICLE_PLATE_LABELS,
+  VEHICLE_PLATE_PRIORITY,
+} from './vehicleplate.js';
 export type { CustomRule } from './custom.js';
 export type { NormalisedText, NormaliseOptions } from './normalise.js';
-export type { DictionaryEntry, DictionaryInput } from './dictionary.js';
+export type { DictionaryEntry, DictionaryInput, DictionaryOptions } from './dictionary.js';
 export type { DobYearRange } from './dob.js';
+export type { PostalAddressOptions } from './address.js';
+export type { BicOptions } from './bic.js';
+export type { Icd10Options, MedicationOptions } from './health.js';
+export type { PostcodeOptions } from './postcode.js';
+export type { SessionTokenOptions } from './sessiontoken.js';
+export type { VatIdOptions } from './vatid.js';
+export type { VehiclePlateDetectors, VehiclePlateOptions } from './vehicleplate.js';
 
-/** How to assemble a detector set. */
+/**
+ * How to assemble a detector set.
+ *
+ * Every field is a *narrowing* of something hushgate already knows: the seed
+ * lists in the detector files are what a German company sees without being
+ * asked, and an option here is how an operator says what their own company
+ * sees. None of them has to be set for the detector to run — an unset group
+ * means the seeded behaviour, not a disabled detector — because a customer who
+ * never opens the config file must still be protected.
+ */
 export interface DetectorSetOptions {
   /** Names, customer names and project codenames to treat as personal data. */
   readonly dictionary?: DictionaryInput | readonly DictionaryEntry[];
+  /**
+   * How the dictionary matches. `fuzzy` is off by default and deliberately so:
+   * it walks the entry list per candidate token, which is affordable for one
+   * tenant's address book and not for every request on a shared event loop.
+   */
+  readonly dictionaryMatching?: DictionaryOptions;
   /** Named regexes from the config file. */
   readonly custom?: readonly CustomRule[];
   /** Birth-year window for the date-of-birth detector. */
   readonly dobYearRange?: DobYearRange;
+  /** Which countries' VAT identifiers to read, and whether to demand DE's check digit. */
+  readonly vatId?: VatIdOptions;
+  /** Which countries a bare BIC may name. */
+  readonly bic?: BicOptions;
+  /** Country prefixes and place names that license a postcode. */
+  readonly postcode?: PostcodeOptions;
+  /** District codes a plate may open with. */
+  readonly vehiclePlate?: VehiclePlateOptions;
+  /** Cookie and header names whose value is a session token. */
+  readonly sessionToken?: SessionTokenOptions;
+  /** Street suffixes, labels and the postcode oracle a street line is read against. */
+  readonly postalAddress?: PostalAddressOptions;
+  /** The ICD-10 catalogue to accept, and the words that block a code. */
+  readonly icd10?: Icd10Options;
+  /** Medication names, and whether a dosage has to stand next to them. */
+  readonly medication?: MedicationOptions;
 }
 
-/** The detectors that need no configuration. */
+/**
+ * The detectors that need no configuration, in descending priority.
+ *
+ * "Needs no configuration" is the only criterion for being in this list — not
+ * "is safe", not "is cheap". Everything hushgate can find, it finds by default:
+ * a customer who installs the proxy and sends a request has already told us
+ * everything we need to know about their intent, and a detector that is off
+ * until someone edits a YAML file is a detector that is off on the day it
+ * mattered. The configurable ones in {@link createDetectors} run by default
+ * too, on their seed lists; their options narrow them, never enable them.
+ *
+ * The paired entries — a strict detector and a `requiresLabel` one over the
+ * same format — are two detectors rather than one because `requiresLabel` is
+ * all-or-nothing per detector: the strong spelling is reported unaccompanied,
+ * the weak spelling only next to its label.
+ */
 export const BUILTIN_DETECTORS: readonly Detector[] = [
   secretDetector,
   urlCredentialsDetector,
   ibanDetector,
   creditCardDetector,
+  imeiDetector,
+  uuidDetector,
+  labelledUuidDetector,
   germanTaxIdDetector,
+  socialSecurityDetector,
+  germanIdDocumentDetector,
+  healthInsuranceDetector,
+  healthInsuranceLabelDetector,
+  steuernummerDetector,
   emailDetector,
+  commercialRegisterDetector,
+  driverLicenceDetector,
   ipv6Detector,
   ipv4Detector,
   macDetector,
@@ -86,19 +284,37 @@ export const BUILTIN_DETECTORS: readonly Detector[] = [
 ];
 
 /**
- * Build the full detector list: the built-ins, a date-of-birth detector bound
- * to the configured year window, the dictionary and any custom rules.
+ * Build the full detector list: the built-ins, the configurable detectors bound
+ * to whatever the operator narrowed them to, the dictionary and any custom
+ * rules.
+ *
+ * Detector order does not decide anything — `resolveSpans` is total and
+ * order-independent by construction — so the list is written in descending
+ * priority purely so that a reader can check it against `DEFAULT_PRIORITIES`.
  */
 export function createDetectors(options: DetectorSetOptions = {}): Detector[] {
   const entries = Array.isArray(options.dictionary)
     ? (options.dictionary as DictionaryEntry[])
     : toDictionaryEntries(options.dictionary as DictionaryInput | undefined);
 
+  const [icd10Detector, labelledIcd10Detector] = createIcd10Detectors(options.icd10);
+  const plates = createVehiclePlateDetectors(options.vehiclePlate);
+
   return [
     ...BUILTIN_DETECTORS,
+    createSessionTokenDetector(options.sessionToken),
+    createVatIdDetector(options.vatId),
+    icd10Detector,
+    labelledIcd10Detector,
+    createMedicationDetector(options.medication),
+    createBicDetector(options.bic),
+    createPostalAddressDetector(options.postalAddress),
     createDobDetector(options.dobYearRange ?? defaultDobYearRange()),
-    createDictionaryDetector(entries),
+    plates.plate,
+    plates.labelled,
+    createPostcodeDetector(options.postcode),
     ...createCustomDetectors(options.custom),
+    createDictionaryDetector(entries, options.dictionaryMatching),
   ];
 }
 
@@ -204,16 +420,21 @@ function* scanCopies(text: string): Generator<NormalisedText> {
 }
 
 /**
- * Central enforcement of {@link Detector.requiresLabel}.
+ * Central enforcement of {@link Detector.requiresLabel} and
+ * {@link Span.requiresLabel}.
  *
  * Weak numeric formats — the eleven digits of a Steuer-ID, the ten of a KVNR,
  * the fifteen of an IMEI — are only safe to report when their label is next to
  * them, and a detector that has to remember to check that itself is a detector
  * that will one day forget. Detectors that declare nothing are not touched, and
  * pay one property read.
+ *
+ * The span's own declaration wins, which is what lets one detector emit a
+ * strong spelling and a weak one from a single pass over the text rather than
+ * one pass each.
  */
 function labelSatisfied(detector: Detector, text: string, span: Span): boolean {
-  const proximity = detector.requiresLabel;
+  const proximity = span.requiresLabel ?? detector.requiresLabel;
   if (proximity === undefined) return true;
   return labelNear(text, span.start, span.end, proximity);
 }

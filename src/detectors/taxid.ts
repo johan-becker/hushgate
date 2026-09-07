@@ -87,7 +87,7 @@ export const germanTaxIdDetector: Detector = {
       }
 
       const run = collectRun(text, i, isDigit, isSeparator, TAX_ID_LENGTH);
-      const end = (run.offsets.at(-1) ?? i) + 1;
+      const end = run.end;
 
       if (
         run.chars.length === TAX_ID_LENGTH &&
@@ -107,19 +107,24 @@ export const germanTaxIdDetector: Detector = {
       }
 
       // Move past the whole digit group; a tax ID never starts mid-group.
-      i = run.offsets.length > 0 ? Math.max(i + 1, groupEnd(run)) : i + 1;
+      i = Math.max(i + 1, firstGroupEnd(text, i));
     }
 
     return out;
   },
 };
 
-/** End of the first contiguous digit group in the scanned run. */
-function groupEnd(run: { offsets: readonly number[] }): number {
-  let previous = run.offsets[0]!;
-  for (const offset of run.offsets.slice(1)) {
-    if (offset !== previous + 1) return previous + 1;
-    previous = offset;
-  }
-  return previous + 1;
+/**
+ * End of the contiguous digit group starting at `from`.
+ *
+ * Read off the text rather than off the scanned run's offsets, which is both
+ * cheaper and slightly stronger: the run stops at eleven digits, so a longer
+ * group used to be skipped only as far as the eleventh. The positions that
+ * difference covers all sit inside a digit group, where the loop's own
+ * `isWordChar(text, i - 1)` guard would have skipped them anyway.
+ */
+function firstGroupEnd(text: string, from: number): number {
+  let i = from;
+  while (i < text.length && memberAt(text, i, isDigit)) i += 1;
+  return i;
 }

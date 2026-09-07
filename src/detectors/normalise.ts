@@ -650,6 +650,31 @@ const MIN_RUN_ALNUM = 9;
 const MIN_RUN_DIGITS = 6;
 
 /**
+ * The shortest *average* group a grouping can have.
+ *
+ * Nobody groups an identifier one character at a time. `1.1.1.1 1.1.1.1` is
+ * four addresses, not a grouped number, and without this rule it is one chain
+ * of single-character groups joined by separators the fold rewrites — which is
+ * to say a 4 MiB body of it produced a 4 MiB scan copy and a second run of
+ * every detector over it, for nothing. Measured on the `dense` fixture in
+ * `test/ops.test.ts`: that one copy was a third of the whole redaction.
+ *
+ * Two, rather than the {@link READABLE_GROUP} four, because a shredded run
+ * legitimately ends on a single leftover character — `DE8 937 040 044 053 201
+ * 300 0` averages 2.75 and must keep its final `0`.
+ */
+const MIN_MEAN_GROUP = 2;
+
+/**
+ * The fewest groups a run must have before it can be read as shredded.
+ *
+ * Shredding cuts a whole line, so it produces many pieces. Three is what an
+ * ordinary phone number has — `+49 721 1234567` — and reading that as damage
+ * would put every German business letter on a second pass.
+ */
+const MIN_SHRED_GROUPS = 4;
+
+/**
  * The shortest group the detectors read on their own.
  *
  * Measured, not assumed: the IBAN detector recognises
@@ -708,20 +733,35 @@ function identifierChains(text: string): Array<readonly [number, number, boolean
   let lower = false;
   let groups = 0;
   let shortGroups = 0;
+  let gapsAllSpaces = true;
 
   const flush = (): void => {
-    // A chain of mostly-short groups is the shredded shape, and worth a copy
-    // even when every gap is a plain space that the fold would otherwise treat
-    // as already readable. MOST groups, not any group: a conventionally
-    // grouped IBAN ends in a two-character remainder — `DE89 3704 0044 0532
-    // 0130 00` — and one trailing short group must not drag the commonest
-    // shape of all onto a second pass.
-    const shredded = shortGroups * 2 > groups;
+    // What separates a run an extractor damaged from a run a person typed.
+    //
+    // EVERY group short, not most of them: `+49 721 1234567` is two short
+    // groups of three and would pass a majority rule, and a phone number is in
+    // a large share of the mail this proxy sits in front of. A conventionally
+    // grouped IBAN — `DE89 3704 0044 0532 0130 00` — is refused by the same
+    // clause, on its five groups of four rather than on its short remainder.
+    //
+    // EVERY gap a plain space, because that is the damage kerning shredding
+    // actually does: an extractor reading glyph spacing as word spacing emits
+    // U+0020. It does not turn a character into a dot, a colon or an
+    // underscore. A run grouped with punctuation was grouped on purpose, and
+    // the separator fold already covers it.
+    //
+    // FOUR groups at least, because shredding cuts a whole line rather than
+    // one field, so it never produces just two or three pieces.
+    const shredded =
+      groups >= MIN_SHRED_GROUPS && shortGroups === groups && gapsAllSpaces;
 
     if (
       start >= 0 &&
       alnum >= MIN_RUN_ALNUM &&
       digits >= MIN_RUN_DIGITS &&
+      // The average group carries at least two characters: single characters
+      // strung together with separators are not a grouping of anything.
+      alnum >= groups * MIN_MEAN_GROUP &&
       (foldable || lower || shredded) &&
       !GROUPED_NUMBER.test(text.slice(start, end))
     ) {
@@ -735,6 +775,7 @@ function identifierChains(text: string): Array<readonly [number, number, boolean
     lower = false;
     groups = 0;
     shortGroups = 0;
+    gapsAllSpaces = true;
   };
 
   let i = 0;
@@ -781,7 +822,10 @@ function identifierChains(text: string): Array<readonly [number, number, boolean
       after !== undefined &&
       isAsciiAlnum(after)
     ) {
-      if (gap !== ' ') foldable = true;
+      if (gap !== ' ') {
+        foldable = true;
+        gapsAllSpaces = false;
+      }
       i += 1;
       continue;
     }

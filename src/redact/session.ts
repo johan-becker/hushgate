@@ -143,7 +143,22 @@ export class Session {
       pieces.push(text.slice(cursor, span.start), replacement ?? span.value);
       cursor = span.end;
 
-      findings.push({ ...span, policy, placeholder: replacement });
+      // Built field by field rather than spread from the span, so that
+      // `requiresLabel` cannot ride along. It is a question `detect()` has
+      // already answered by the time a finding exists, and a record that
+      // carries a satisfied gate invites a reader to think it still means
+      // something. The explicit shape is also monomorphic, which the hot path
+      // on a body carrying half a million findings notices.
+      findings.push({
+        start: span.start,
+        end: span.end,
+        kind: span.kind,
+        value: span.value,
+        detector: span.detector,
+        priority: span.priority,
+        policy,
+        placeholder: replacement,
+      });
     }
 
     pieces.push(text.slice(cursor));

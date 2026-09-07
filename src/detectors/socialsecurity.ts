@@ -1,16 +1,16 @@
-import type { Detector, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type Span } from '../types.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 import { isScanSeparator } from './normalise.js';
 
 /**
- * Priority for `SOCIAL_SECURITY_ID`, pending an entry in `DEFAULT_PRIORITIES`.
+ * Priority for `SOCIAL_SECURITY_ID`, from `DEFAULT_PRIORITIES`.
  *
  * Placed just under `GERMAN_TAX_ID` (80) and above `EMAIL` (75): it is the same
  * family — a checksum-backed German government identifier — and the exact rank
  * within that family only ever decides a tie between two spans of identical
  * length, which the twelve-character shape makes close to impossible.
  */
-export const SOCIAL_SECURITY_PRIORITY = 79;
+export const SOCIAL_SECURITY_PRIORITY = DEFAULT_PRIORITIES.SOCIAL_SECURITY_ID;
 
 /** `SVNR` length once separators are removed: 2 + 6 + 1 + 2 + 1. */
 const SVNR_LENGTH = 12;
@@ -158,7 +158,7 @@ export const socialSecurityDetector: Detector = {
       const run = collectRun(text, i, isSvnrChar, isScanSeparator, SVNR_LENGTH);
       if (run.chars.length !== SVNR_LENGTH) continue;
 
-      const end = run.offsets[run.offsets.length - 1]! + 1;
+      const end = run.end;
       // A thirteenth character means this was never a Versicherungsnummer, only
       // the first twelve characters of something longer.
       if (memberAt(text, end, isSvnrChar)) continue;

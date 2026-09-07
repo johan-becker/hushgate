@@ -5,11 +5,13 @@ import {
   germanDocumentKind,
   germanIdDocumentDetector,
   icaoCheckDigit,
-  labelledGermanIdDocumentDetector,
   readGermanDocumentSerial,
 } from '../src/detectors/idcard.js';
 
-const both: Detector[] = [germanIdDocumentDetector, labelledGermanIdDocumentDetector];
+// One detector now reports both readings — the serial with its check digit
+// unaccompanied, the serial without it gated on a label it carries itself. The
+// name is kept so that every assertion below still reads against the same set.
+const both: Detector[] = [germanIdDocumentDetector];
 
 const values = (spans: readonly Span[]): string[] => spans.map((s) => s.value);
 const kinds = (spans: readonly Span[]): string[] => spans.map((s) => s.kind);

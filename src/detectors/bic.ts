@@ -1,18 +1,18 @@
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { isScanSeparator, labelNear } from './normalise.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 
 /**
  * Kind and priority for the BIC.
  *
- * `DEFAULT_PRIORITIES` has no entry for this kind, so the weight lives here and
- * is exported for whoever registers the detector. It sits above the free-text
- * detectors — a dictionary term or a custom rule are the only things that can
- * plausibly claim the same eight letters — and below every format that carries
- * a checksum, because a BIC has none to offer against them.
+ * The rank lives in `DEFAULT_PRIORITIES` and is re-exported here for readers of
+ * this file. It sits above the free-text detectors — a dictionary term or a
+ * custom rule are the only things that can plausibly claim the same eight
+ * letters — and below every format that carries a checksum, because a BIC has
+ * none to offer against them.
  */
 export const BIC_KIND = 'BIC';
-export const BIC_PRIORITY = 60;
+export const BIC_PRIORITY = DEFAULT_PRIORITIES.BIC;
 
 /**
  * ISO 3166-1 alpha-2, complete: all 249 assigned codes, plus `XK`.

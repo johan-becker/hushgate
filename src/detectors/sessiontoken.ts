@@ -19,12 +19,11 @@
  * the recipient of the redacted text still understand what was in the header,
  * and it costs nothing: the name is the same for every user of the framework.
  */
-import type { Detector, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type Span } from '../types.js';
 import { escapeRegExp } from './util.js';
 
 /**
- * Priority for `SESSION_TOKEN`, pending an entry in `DEFAULT_PRIORITIES` —
- * this module does not own `types.ts`.
+ * Priority for `SESSION_TOKEN`, from `DEFAULT_PRIORITIES`.
  *
  * Below `SECRET` (100) and above everything else. Below the secret detector
  * because a cookie value that is *also* a recognised API key or a JWT is
@@ -34,7 +33,7 @@ import { escapeRegExp } from './util.js';
  * ranked lower — an IBAN, a card, a phone number — describes a person, while
  * this one *is* the person as far as the far end is concerned.
  */
-export const SESSION_TOKEN_PRIORITY = 98;
+export const SESSION_TOKEN_PRIORITY = DEFAULT_PRIORITIES.SESSION_TOKEN;
 
 /**
  * A short value is a flag, not a token: `session=1`, `csrftoken=on`. Six

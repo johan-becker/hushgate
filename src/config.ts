@@ -14,9 +14,16 @@ import {
   type ExternalExtractorSpec,
   type UnreadableAction,
 } from './attach/types.js';
+import type { PostalAddressOptions } from './detectors/address.js';
+import type { BicOptions } from './detectors/bic.js';
 import { normaliseKindName, type CustomRule } from './detectors/custom.js';
-import type { DictionaryInput } from './detectors/dictionary.js';
+import type { DictionaryInput, DictionaryOptions } from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
+import type { Icd10Options, MedicationOptions } from './detectors/health.js';
+import type { PostcodeOptions } from './detectors/postcode.js';
+import type { SessionTokenOptions } from './detectors/sessiontoken.js';
+import type { VatIdOptions } from './detectors/vatid.js';
+import type { VehiclePlateOptions } from './detectors/vehicleplate.js';
 import { ConfigError } from './errors.js';
 // Importing from proxy/ is safe in this direction: routes.ts reaches only the
 // shape tables, none of which import this file, so nothing here closes a cycle.
@@ -154,11 +161,50 @@ export interface LimitsConfig {
   readonly retryBackoffMs: number;
 }
 
+/**
+ * What the operator narrowed each configurable detector to, under
+ * `redaction.detectors`.
+ *
+ * These are the detectors' own option types rather than a parallel set of
+ * config-only shapes. A second copy would be one more place for the file format
+ * and the detector to disagree about what a field means, and that disagreement
+ * shows up as a detector quietly not firing rather than as a load error.
+ *
+ * Two kinds of option are deliberately unreachable from the file, and this is
+ * where a reader will look for them:
+ *
+ *  - the ones that stand for a whole register — `postcode.placeMatches`,
+ *    `icd10.catalogue`, `postalAddress.postcodes` and the per-country
+ *    `vatId.rules` table. They are the extension points for the official
+ *    tables (the PLZ-Verzeichnis, ICD-10-GM, the FZV): a deployment that
+ *    licenses one loads it and hands it to `new Session(...)`. Inlining 8200
+ *    postcodes in a config file is not a format, it is a paste. The types still
+ *    carry those fields, so a library caller keeps the escape hatch; the parser
+ *    never produces one.
+ *  - `dictionary.priority`. Reordering the priority ladder from a config file
+ *    would let an operator silently invert which detector wins a tie, and that
+ *    ladder is argued entry by entry in DEFAULT_PRIORITIES.
+ */
+export interface DetectorsConfig {
+  /** Near-miss matching for the dictionary; `dictionaryMatching` downstream. */
+  readonly dictionary: DictionaryOptions;
+  readonly vatId: VatIdOptions;
+  readonly bic: BicOptions;
+  readonly postcode: PostcodeOptions;
+  readonly vehiclePlate: VehiclePlateOptions;
+  readonly sessionToken: SessionTokenOptions;
+  readonly postalAddress: PostalAddressOptions;
+  readonly icd10: Icd10Options;
+  readonly medication: MedicationOptions;
+}
+
 export interface RedactionConfig {
   readonly defaultPolicy: Policy;
   readonly policies: Readonly<Record<string, Policy>>;
   readonly dictionary: DictionaryInput;
   readonly custom: readonly CustomRule[];
+  /** Per-detector narrowing. Every group is `{}` until someone writes one. */
+  readonly detectors: DetectorsConfig;
   readonly dobYearRange: DobYearRange | null;
   /** Key for the `hash` policy. Prefer the environment over the file. */
   readonly hmacKey: string | null;
@@ -280,6 +326,7 @@ export function defaultConfig(): HushgateConfig {
       policies: {},
       dictionary: {},
       custom: [],
+      detectors: emptyDetectors(),
       dobYearRange: null,
       hmacKey: null,
     },
@@ -756,7 +803,15 @@ function parseRedaction(raw: unknown, where: string, base: RedactionConfig): Red
   const node = asObject(raw ?? {}, scope);
   rejectUnknownKeys(
     node,
-    new Set(['defaultPolicy', 'policies', 'dictionary', 'custom', 'dobYearRange', 'hmacKey']),
+    new Set([
+      'defaultPolicy',
+      'policies',
+      'dictionary',
+      'custom',
+      'detectors',
+      'dobYearRange',
+      'hmacKey',
+    ]),
     scope,
   );
 
@@ -774,10 +829,270 @@ function parseRedaction(raw: unknown, where: string, base: RedactionConfig): Red
       parseDictionary(node['dictionary'], `${scope}.dictionary`),
     ),
     custom: mergeCustomRules(base.custom, parseCustomRules(node['custom'], `${scope}.custom`)),
+    detectors: mergeDetectors(
+      base.detectors,
+      parseDetectors(node['detectors'], `${scope}.detectors`),
+    ),
     dobYearRange:
       parseDobYearRange(node['dobYearRange'], `${scope}.dobYearRange`) ?? base.dobYearRange,
     hmacKey: optionalString(node['hmacKey'], `${scope}.hmacKey`) ?? base.hmacKey,
   };
+}
+
+/** Every detector group at its seeded default: narrowed by nobody. */
+function emptyDetectors(): DetectorsConfig {
+  return {
+    dictionary: {},
+    vatId: {},
+    bic: {},
+    postcode: {},
+    vehiclePlate: {},
+    sessionToken: {},
+    postalAddress: {},
+    icd10: {},
+    medication: {},
+  };
+}
+
+/** The groups `redaction.detectors` accepts, and the keys inside each. */
+const DETECTOR_GROUP_KEYS: Readonly<Record<string, readonly string[]>> = {
+  dictionary: ['fuzzy', 'maxEditDistance'],
+  vatId: ['requireGermanCheckDigit'],
+  bic: ['homeCountries'],
+  postcode: ['countryPrefixes', 'places'],
+  vehiclePlate: ['districts'],
+  sessionToken: ['names', 'prefixes'],
+  postalAddress: ['streetSuffixes', 'weakStreetSuffixes', 'nonAddressWords', 'labels'],
+  icd10: ['codes', 'labels', 'blockedPrefixWords'],
+  medication: ['names', 'requireDosage', 'dosageWindow'],
+};
+
+/**
+ * Validate the `redaction.detectors` block.
+ *
+ * Unknown keys are refused at both levels — a group nobody has heard of, and a
+ * key inside a group — because the failure a typo would otherwise cause is the
+ * worst kind this product has: `homeCountrys` would load without complaint and
+ * the detector would go on using its seed list, so the operator would believe
+ * they had narrowed something they had not.
+ */
+function parseDetectors(raw: unknown, where: string): DetectorsConfig {
+  if (raw === undefined || raw === null) return emptyDetectors();
+  const node = asObject(raw, where);
+  rejectUnknownKeys(node, new Set(Object.keys(DETECTOR_GROUP_KEYS)), where);
+
+  const group = (name: keyof typeof DETECTOR_GROUP_KEYS): Record<string, unknown> => {
+    const value = node[name];
+    if (value === undefined || value === null) return {};
+    const inner = asObject(value, `${where}.${name}`);
+    rejectUnknownKeys(inner, new Set(DETECTOR_GROUP_KEYS[name]), `${where}.${name}`);
+    return inner;
+  };
+
+  const dictionary = group('dictionary');
+  const vatId = group('vatId');
+  const bic = group('bic');
+  const postcode = group('postcode');
+  const vehiclePlate = group('vehiclePlate');
+  const sessionToken = group('sessionToken');
+  const postalAddress = group('postalAddress');
+  const icd10 = group('icd10');
+  const medication = group('medication');
+
+  return {
+    dictionary: strip({
+      fuzzy: optionalBoolean(dictionary['fuzzy'], `${where}.dictionary.fuzzy`),
+      maxEditDistance: optionalEditDistance(
+        dictionary['maxEditDistance'],
+        `${where}.dictionary.maxEditDistance`,
+      ),
+    }),
+    vatId: strip({
+      requireGermanCheckDigit: optionalBoolean(
+        vatId['requireGermanCheckDigit'],
+        `${where}.vatId.requireGermanCheckDigit`,
+      ),
+    }),
+    bic: strip({
+      homeCountries: optionalStringArray(bic['homeCountries'], `${where}.bic.homeCountries`),
+    }),
+    postcode: strip({
+      countryPrefixes: optionalStringArray(
+        postcode['countryPrefixes'],
+        `${where}.postcode.countryPrefixes`,
+      ),
+      places: optionalStringArray(postcode['places'], `${where}.postcode.places`),
+    }),
+    vehiclePlate: strip({
+      districts: optionalStringArray(
+        vehiclePlate['districts'],
+        `${where}.vehiclePlate.districts`,
+      ),
+    }),
+    sessionToken: strip({
+      names: optionalStringArray(sessionToken['names'], `${where}.sessionToken.names`),
+      prefixes: optionalStringArray(sessionToken['prefixes'], `${where}.sessionToken.prefixes`),
+    }),
+    postalAddress: strip({
+      streetSuffixes: optionalStringArray(
+        postalAddress['streetSuffixes'],
+        `${where}.postalAddress.streetSuffixes`,
+      ),
+      weakStreetSuffixes: optionalStringArray(
+        postalAddress['weakStreetSuffixes'],
+        `${where}.postalAddress.weakStreetSuffixes`,
+      ),
+      nonAddressWords: optionalStringArray(
+        postalAddress['nonAddressWords'],
+        `${where}.postalAddress.nonAddressWords`,
+      ),
+      labels: optionalStringArray(postalAddress['labels'], `${where}.postalAddress.labels`),
+    }),
+    icd10: strip({
+      codes: optionalStringArray(icd10['codes'], `${where}.icd10.codes`),
+      labels: optionalStringArray(icd10['labels'], `${where}.icd10.labels`),
+      blockedPrefixWords: optionalStringArray(
+        icd10['blockedPrefixWords'],
+        `${where}.icd10.blockedPrefixWords`,
+      ),
+    }),
+    medication: strip({
+      names: optionalStringArray(medication['names'], `${where}.medication.names`),
+      requireDosage: optionalBoolean(
+        medication['requireDosage'],
+        `${where}.medication.requireDosage`,
+      ),
+      dosageWindow: optionalPositiveInt(
+        medication['dosageWindow'],
+        `${where}.medication.dosageWindow`,
+      ),
+    }),
+  };
+}
+
+/**
+ * Drop the keys nobody set.
+ *
+ * The detector factories distinguish an absent option from a present one — an
+ * absent list means "use the seeds", an empty list means "use nothing" — so a
+ * key carrying `undefined` would read as the second and silently disable a
+ * detector that the operator never mentioned.
+ */
+function strip<T extends object>(value: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== undefined) out[key] = item;
+  }
+  return out as T;
+}
+
+function optionalEditDistance(value: unknown, where: string): 0 | 1 | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value !== 0 && value !== 1) {
+    throw new ConfigError(`${where} must be 0 or 1, got ${describe(value)}`);
+  }
+  return value;
+}
+
+/**
+ * Fold a tenant's detector block over the organisation's.
+ *
+ * ONE RULE, and it is the same one `mergeDictionaries` follows: a tenant may
+ * only ever widen what is detected, never narrow it. An organisation that
+ * listed a street suffix must keep it however the tenant is configured, so
+ * lists union rather than replace. The flags follow the same rule rather than
+ * the more obvious "last writer wins", which is why they are not all `??`:
+ *
+ *  - `fuzzy` and `maxEditDistance` widen as they rise, so they take the more
+ *    generous of the two.
+ *  - `requireGermanCheckDigit` and `requireDosage` narrow as they rise — they
+ *    are demands a candidate has to meet — so a `false` anywhere wins.
+ *  - `dosageWindow` is how far a dosage may sit from the name, so wider wins.
+ *
+ * The consequence is deliberate and worth stating: a tenant cannot switch a
+ * detector off. Turning something off is the organisation's decision, made in
+ * the `policies` table where it is visible in the Article 30 report.
+ */
+function mergeDetectors(base: DetectorsConfig, override: DetectorsConfig): DetectorsConfig {
+  return {
+    dictionary: strip({
+      fuzzy: eitherTrue(base.dictionary.fuzzy, override.dictionary.fuzzy),
+      maxEditDistance: larger(base.dictionary.maxEditDistance, override.dictionary.maxEditDistance),
+    }),
+    vatId: strip({
+      requireGermanCheckDigit: eitherFalse(
+        base.vatId.requireGermanCheckDigit,
+        override.vatId.requireGermanCheckDigit,
+      ),
+    }),
+    bic: strip({ homeCountries: unionLists(base.bic.homeCountries, override.bic.homeCountries) }),
+    postcode: strip({
+      countryPrefixes: unionLists(base.postcode.countryPrefixes, override.postcode.countryPrefixes),
+      places: unionLists(base.postcode.places, override.postcode.places),
+    }),
+    vehiclePlate: strip({
+      districts: unionLists(base.vehiclePlate.districts, override.vehiclePlate.districts),
+    }),
+    sessionToken: strip({
+      names: unionLists(base.sessionToken.names, override.sessionToken.names),
+      prefixes: unionLists(base.sessionToken.prefixes, override.sessionToken.prefixes),
+    }),
+    postalAddress: strip({
+      streetSuffixes: unionLists(
+        base.postalAddress.streetSuffixes,
+        override.postalAddress.streetSuffixes,
+      ),
+      weakStreetSuffixes: unionLists(
+        base.postalAddress.weakStreetSuffixes,
+        override.postalAddress.weakStreetSuffixes,
+      ),
+      nonAddressWords: unionLists(
+        base.postalAddress.nonAddressWords,
+        override.postalAddress.nonAddressWords,
+      ),
+      labels: unionLists(base.postalAddress.labels, override.postalAddress.labels),
+    }),
+    icd10: strip({
+      codes: unionLists(base.icd10.codes, override.icd10.codes),
+      labels: unionLists(base.icd10.labels, override.icd10.labels),
+      blockedPrefixWords: unionLists(
+        base.icd10.blockedPrefixWords,
+        override.icd10.blockedPrefixWords,
+      ),
+    }),
+    medication: strip({
+      names: unionLists(base.medication.names, override.medication.names),
+      requireDosage: eitherFalse(base.medication.requireDosage, override.medication.requireDosage),
+      dosageWindow: larger(base.medication.dosageWindow, override.medication.dosageWindow),
+    }),
+  };
+}
+
+/** Both lists, deduped, or `undefined` when neither side set one. */
+function unionLists(
+  base: Iterable<string> | undefined,
+  override: Iterable<string> | undefined,
+): string[] | undefined {
+  if (base === undefined && override === undefined) return undefined;
+  return dedupeStrings([...(base ?? []), ...(override ?? [])]);
+}
+
+/** True when either side asked for it; `undefined` when neither mentioned it. */
+function eitherTrue(base: boolean | undefined, override: boolean | undefined): boolean | undefined {
+  if (base === undefined && override === undefined) return undefined;
+  return (base ?? false) || (override ?? false);
+}
+
+/** False when either side said so — a demand only one party can lift. */
+function eitherFalse(base: boolean | undefined, override: boolean | undefined): boolean | undefined {
+  if (base === undefined && override === undefined) return undefined;
+  return (base ?? true) && (override ?? true);
+}
+
+function larger<T extends number>(base: T | undefined, override: T | undefined): T | undefined {
+  if (base === undefined) return override;
+  if (override === undefined) return base;
+  return base >= override ? base : override;
 }
 
 /**
@@ -1273,12 +1588,27 @@ function describe(value: unknown): string {
  * tests cannot drift apart on what a config file means.
  */
 export function redactionOptions(config: HushgateConfig): SessionOptions {
-  const { defaultPolicy, policies, dictionary, custom, dobYearRange, hmacKey } = config.redaction;
+  const { defaultPolicy, policies, dictionary, custom, detectors, dobYearRange, hmacKey } =
+    config.redaction;
   return {
     defaultPolicy,
     policies,
     dictionary,
     custom,
+    // Spread group by group rather than handed over as one object: the names
+    // differ on purpose. `redaction.detectors.dictionary` narrows how the
+    // dictionary MATCHES, while `redaction.dictionary` is what it matches
+    // against, and calling both of them `dictionary` downstream would be a
+    // silent collision.
+    dictionaryMatching: detectors.dictionary,
+    vatId: detectors.vatId,
+    bic: detectors.bic,
+    postcode: detectors.postcode,
+    vehiclePlate: detectors.vehiclePlate,
+    sessionToken: detectors.sessionToken,
+    postalAddress: detectors.postalAddress,
+    icd10: detectors.icd10,
+    medication: detectors.medication,
     dobYearRange: dobYearRange ?? undefined,
     hmacKey: hmacKey ?? undefined,
   };

@@ -36,7 +36,7 @@
  * covers the *coded* and the *named*, and the operator has to know that the
  * narrative part of a doctor's letter is not covered by it.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { foldForCompare } from './normalise.js';
 import { isDigit, isWordChar } from './util.js';
 
@@ -55,8 +55,8 @@ export const MEDICATION_KIND = 'MEDICATION';
  * The rank only ever settles a tie between two overlapping spans of identical
  * length, which is rare for either of these.
  */
-export const ICD_CODE_PRIORITY = 83;
-export const MEDICATION_PRIORITY = 82;
+export const ICD_CODE_PRIORITY = DEFAULT_PRIORITIES.ICD_CODE;
+export const MEDICATION_PRIORITY = DEFAULT_PRIORITIES.MEDICATION;
 
 /* --------------------------------------------------------------- ICD-10-GM */
 

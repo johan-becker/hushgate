@@ -9,14 +9,13 @@
  * GDPR that is enough (Erwägungsgrund 30 says so about online identifiers in
  * as many words), which is why they are redacted rather than merely logged.
  */
-import type { Detector, LabelProximity, Span } from '../types.js';
+import { DEFAULT_PRIORITIES, type Detector, type LabelProximity, type Span } from '../types.js';
 import { isValidCardNumber, luhnValid } from './creditcard.js';
 import { isScanSeparator } from './normalise.js';
 import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
 
 /**
- * Priority for `DEVICE_ID`, pending an entry in `DEFAULT_PRIORITIES` — this
- * module does not own `types.ts`.
+ * Priority for `DEVICE_ID`, from `DEFAULT_PRIORITIES`.
  *
  * One below `CREDIT_CARD` (85), and the rank is the *second* line of defence,
  * not the first: {@link imeiDetector} refuses every run the card detector
@@ -25,7 +24,7 @@ import { collectRun, isDigit, isWordChar, memberAt } from './util.js';
  * did let them overlap, the reading that must win is the card — a PAN leaving
  * the building is a reportable incident, a mislabelled placeholder is not.
  */
-export const DEVICE_ID_PRIORITY = 84;
+export const DEVICE_ID_PRIORITY = DEFAULT_PRIORITIES.DEVICE_ID;
 
 /** Fourteen digits of TAC and serial, plus a Luhn check digit. */
 const IMEI_LENGTH = 15;
@@ -75,7 +74,7 @@ export const imeiDetector: Detector = {
         continue;
       }
 
-      const end = run.offsets.at(-1)! + 1;
+      const end = run.end;
       if (isWordChar(text, end) || !isValidImei(run.chars) || isValidCardNumber(run.chars)) {
         i += 1;
         continue;

@@ -468,7 +468,7 @@ function findVanitySpans(text: string, taken: readonly Span[], out: Span[]): voi
     const letters = [...run.chars].filter((ch) => !isDigit(ch)).length;
     if (letters < MIN_VANITY_LETTERS) continue;
 
-    const end = (run.offsets.at(-1) ?? from) + 1;
+    const end = run.end;
     if (isWordChar(text, end)) continue;
     if (overlapsAny(taken, start, end) || overlapsAny(out, start, end)) continue;
 

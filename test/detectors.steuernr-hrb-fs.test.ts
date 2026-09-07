@@ -3,15 +3,14 @@ import { detect } from '../src/detectors/index.js';
 import { resolveSpans } from '../src/detectors/resolve.js';
 import { germanTaxIdDetector } from '../src/detectors/taxid.js';
 import type { Detector, Span } from '../src/types.js';
-import {
-  isSteuernummerLayout,
-  labelledSteuernummerDetector,
-  steuernummerDetector,
-} from '../src/detectors/steuernummer.js';
+import { isSteuernummerLayout, steuernummerDetector } from '../src/detectors/steuernummer.js';
 import { commercialRegisterDetector } from '../src/detectors/commercialregister.js';
 import { driverLicenceDetector } from '../src/detectors/driverlicence.js';
 
-const steuernummer: Detector[] = [steuernummerDetector, labelledSteuernummerDetector];
+// One detector now reports both readings — slash-grouped unaccompanied, every
+// other spelling gated on a label the span carries itself. The name is kept so
+// that every assertion below still reads against the same set.
+const steuernummer: Detector[] = [steuernummerDetector];
 const register: Detector[] = [commercialRegisterDetector];
 const licence: Detector[] = [driverLicenceDetector];
 
