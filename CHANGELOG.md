@@ -94,6 +94,28 @@ and the re-hydration mappings that already exist.
 
 ### Fixed
 
+- Attachment decoding no longer depends on the platform carrying the legacy
+  encoding tables. Three places asked `new TextDecoder('windows-1252')` for the
+  mapping, and none of them failed loudly when a build of Node refuses that
+  label: the plain-text decoder dropped to latin-1, where `0x92` is the C1
+  control `U+0092` rather than a right single quote and was then stripped as a
+  control character; the HTML reader built its C1 table by decoding, got an
+  empty string and dropped the numeric reference; and the RTF reader fell
+  through to a latin-1 code page for every document, including the ones
+  declaring windows-1252. On such a build `Kün’s` extracted as `Küns`,
+  `Anna&#146;s` as `Annas`, and a Word-exported RTF lost every apostrophe and
+  every German quotation mark — while the document still counted as read, the
+  quality checks still passed, and the audit record still said so. The thirty-
+  two characters of the C1 range are shipped data now (`WINDOWS_1252_C1`), so
+  no build of Node can produce that outcome, and
+  `test/attach.smallicu.test.ts` runs the whole pipeline with the platform's
+  table removed. A second test compares the shipped table against
+  `TextDecoder` over all 256 bytes wherever there is one, so the literal cannot
+  drift where CI can check it while still working where CI cannot reach.
+
+  This was defence in depth, not a live defect: the images hushgate ships on
+  (`node:22-alpine`) carry full ICU, as the official Node images have since
+  v13, so the fallbacks were never reached in a released container.
 - A slowloris connection is now reaped. Node's own `requestTimeout` and
   `headersTimeout` do not close a socket that drips a header byte every few
   seconds or one that simply goes idle after connecting — verified against a

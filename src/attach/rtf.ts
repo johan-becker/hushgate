@@ -17,7 +17,7 @@
  * reads them loses track of every group after it), and no count taken from the
  * input is used to allocate anything.
  */
-import { clampChars } from './plaintext.js';
+import { clampChars, decodeWindows1252 } from './plaintext.js';
 import type { Extractor } from './types.js';
 
 /**
@@ -57,21 +57,29 @@ const MAX_UNICODE_SKIP = 16;
 /** At most one blank line survives a run of paragraph breaks. */
 const MAX_CONSECUTIVE_NEWLINES = 2;
 
+const ALL_BYTES = Uint8Array.from({ length: 256 }, (_, byte) => byte);
+
+/**
+ * windows-1252, the default code page and by far the commonest, built from the
+ * table hushgate ships rather than from whatever ICU this build has.
+ *
+ * The chain below used to end in a latin-1 table, and on a Node without the
+ * legacy encodings that is where every document landed, including the ones
+ * that declared windows-1252. Latin-1 puts
+ * the C1 controls where the punctuation should be, so `\'92` came out U+0092
+ * and was stripped: every apostrophe and every German quotation mark deleted
+ * from every Word-exported RTF, with nothing to show it had happened.
+ */
+const WINDOWS_1252_TABLE: readonly string[] = [...decodeWindows1252(ALL_BYTES)];
+
 const buildTable = (label: string): readonly string[] | null => {
-  const bytes = new Uint8Array(256);
-  for (let index = 0; index < 256; index += 1) bytes[index] = index;
+  if (label === DEFAULT_CODE_PAGE) return WINDOWS_1252_TABLE;
   try {
-    const chars = [...new TextDecoder(label).decode(bytes)];
+    const chars = [...new TextDecoder(label).decode(ALL_BYTES)];
     return chars.length === 256 ? chars : null;
   } catch {
     return null;
   }
-};
-
-const buildLatin1Table = (): readonly string[] => {
-  const chars: string[] = Array.from({ length: 256 });
-  for (let index = 0; index < 256; index += 1) chars[index] = String.fromCodePoint(index);
-  return chars;
 };
 
 const tableCache = new Map<string, readonly string[]>();
@@ -87,7 +95,8 @@ const codePageTable = (label: string): readonly string[] => {
   const cached = tableCache.get(label);
   if (cached !== undefined) return cached;
 
-  const table = buildTable(label) ?? buildTable(DEFAULT_CODE_PAGE) ?? buildLatin1Table();
+  // The fallback cannot fail: windows-1252 is a shipped table, not a request.
+  const table = buildTable(label) ?? WINDOWS_1252_TABLE;
   tableCache.set(label, table);
   return table;
 };
