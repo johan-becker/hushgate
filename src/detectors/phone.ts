@@ -73,18 +73,25 @@ export function classifyPhone(raw: string): PhoneClassification | null {
  * that carries its own evidence — a `+`, a `00`, parentheses, an internal
  * separator — still fires unaccompanied.
  *
- * Only labels that are not substrings of one another are listed: the comparison
- * folds punctuation away and asks for containment, so `Tel` already covers
- * `Tel.`, `Telefon`, `Telefonnummer` and `telephone`. The cost of a
- * three-letter label is that `Tel` also matches inside `Hotel` and `Stelle`;
- * that is bounded, because the most a false label can do is admit a run that
- * already had to be six to thirteen digits at a token boundary.
+ * `labelNear` folds punctuation away and asks for the label to touch a word
+ * edge, so `Tel` covers `Tel.`, `Telefon`, `Telefonnummer` and `telephone` from
+ * the front — but NOT the middle of `Bestellnummer`, `Bestellung`, `bestellt`,
+ * `Stelle` or `Kostenstelle`, all of which used to license any ten-digit number
+ * standing next to them and all of which are ordinary words in the mail this
+ * proxy reads. `Telefon` is listed separately for the other half of German
+ * compounding: `Diensttelefon` and `Mobiltelefon` carry it at the END, where
+ * three letters of `Tel` no longer reach.
+ *
+ * What the edge rule still admits is a word that ends in a label — `Hotel` for
+ * `Tel`. That is bounded, because the most a false label can do is admit a run
+ * that already had to be six to thirteen digits at a token boundary.
  *
  * Declared once at module level, never inside `find`: `labelNear` caches the
  * folded forms against this array's identity.
  */
 export const PHONE_LABELS: readonly string[] = [
   'Tel',
+  'Telefon',
   'Mobil',
   'Handy',
   'Fax',
@@ -255,6 +262,46 @@ function collectPhoneRun(text: string, start: number, openParenBefore: boolean):
 }
 
 /**
+ * True when the digit sequence carries on past `end` after a single separator.
+ *
+ * The forward mirror of {@link startsMidRun}, and it exists for the same
+ * reason: a number reported out of the middle of a longer sequence is worse
+ * than no number at all, because the audit record then says something was
+ * handled. `collectPhoneRun` stops at {@link MAX_DIGITS}, and the guard that
+ * followed it only looked at the character directly after the run — so a
+ * nineteen-digit consignment number written `00 340 434 000 123 456 78` was cut
+ * to exactly seventeen digits, landed on a space rather than a digit, and was
+ * reported as an international phone number.
+ *
+ * The separator test is {@link isSeparatorRun}, the same one the forward and
+ * backward scans use, so a gap that ends a number here ends it everywhere:
+ * `0721 1234567  0721 7654321` stays two numbers.
+ */
+function runContinues(text: string, end: number): boolean {
+  let run = '';
+  let j = end;
+  while (j < text.length && run.length < MAX_SEPARATOR_RUN && isSeparator(text[j] as string)) {
+    run += text[j] as string;
+    j += 1;
+  }
+  if (!memberAt(text, j, isDigit)) return false;
+  return run.length === 0 || isSeparatorRun(run);
+}
+
+/**
+ * The shortest first group a German national number can be written in.
+ *
+ * A Vorwahl is the trunk `0` plus at least two digits — `030`, `089`, `0721`,
+ * `0151` — so a first group of one or two digits is not a dialling code, and a
+ * run that opens with one is something else entirely. `03/2026` is a booking
+ * period, `12-28` is a card expiry, and both used to be reported as phone
+ * numbers because six digits behind a separator is otherwise exactly the
+ * national shape. The rule only applies where there IS a separator: an
+ * undecorated `07211234567` has one group and nothing to judge.
+ */
+const MIN_FIRST_GROUP = 3;
+
+/**
  * `03/05/1990` and `05-03-90`: a written date, not a dialling plan.
  *
  * The German `01.02.1990` form is kept out by leaving `.` off the separator
@@ -266,6 +313,20 @@ function collectPhoneRun(text: string, start: number, openParenBefore: boolean):
  * audit record then names the wrong category for a subject-access request.
  */
 const DATE_SHAPED = /^\d{1,2}([/-])\d{1,2}\1\d{2}(?:\d{2})?$/u;
+
+/**
+ * A grouped run whose first group is too short to be a Vorwahl.
+ *
+ * See {@link MIN_FIRST_GROUP}. Written against the raw run rather than the
+ * digits, because the question is how the writer grouped it — `0721/1234567`
+ * and `03/2026` carry the same digits-to-separator ratio and differ only here.
+ */
+function opensWithShortGroup(raw: string): boolean {
+  const trimmed = raw.replace(/^[(+\s]+/u, '');
+  let digits = 0;
+  while (digits < trimmed.length && isDigit(trimmed[digits] as string)) digits += 1;
+  return digits > 0 && digits < MIN_FIRST_GROUP && digits < trimmed.length;
+}
 
 /**
  * German and international notation: E.164 (`+49…`), the `0049…` prefix and
@@ -294,7 +355,13 @@ function findGermanSpans(text: string, out: Span[]): void {
     if (openParenBefore && !run.consumedOpenParen) run = collectPhoneRun(text, i, false);
 
     // The run was truncated at MAX_DIGITS and more digits follow: not a number.
-    if (run.digitCount === 0 || memberAt(text, run.end, isDigit)) {
+    // Asked of the separator too, not only of the next character — that is what
+    // the consignment number in `runContinues` slipped through.
+    if (
+      run.digitCount === 0 ||
+      memberAt(text, run.end, isDigit) ||
+      (run.digitCount === MAX_DIGITS && runContinues(text, run.end))
+    ) {
       i += 1;
       continue;
     }
@@ -305,6 +372,13 @@ function findGermanSpans(text: string, out: Span[]): void {
 
     const classification = classifyPhone(run.raw);
     if (classification === null) {
+      i += 1;
+      continue;
+    }
+    // Only the national form is judged on its first group. A country code is
+    // two digits by design, so `+49 721 …` and `0049 721 …` have nothing to
+    // answer for here.
+    if (classification.form === 'german-national' && opensWithShortGroup(run.raw)) {
       i += 1;
       continue;
     }

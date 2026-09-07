@@ -939,6 +939,76 @@ function labelsOf(proximity: LabelProximity): readonly string[] {
   return folded;
 }
 
+/** A folded window, with the word edges of the original still marked. */
+interface FoldedWindow {
+  readonly folded: string;
+  /** Folded offsets at which a word of the original began. */
+  readonly wordStarts: ReadonlySet<number>;
+  /** Folded offsets at which a word of the original ended. */
+  readonly wordEnds: ReadonlySet<number>;
+}
+
+/**
+ * Fold a window and remember where its words began and ended.
+ *
+ * Folding drops the separators, which is the whole point — `St.-Nr.`, `St Nr`
+ * and `StNr` have to become one string — but it also drops the only evidence of
+ * where one word stopped and the next started. That evidence is what
+ * {@link labelNear} needs, so it is kept alongside rather than reconstructed.
+ *
+ * Folding word by word and concatenating gives exactly the string folding the
+ * whole window gives, because the characters between the words are the ones the
+ * fold removes. So this costs one extra split and buys the edges for nothing.
+ */
+function foldWindow(value: string): FoldedWindow {
+  const wordStarts = new Set<number>();
+  const wordEnds = new Set<number>();
+  let folded = '';
+
+  for (const word of value.split(/[^\p{L}\p{N}]+/u)) {
+    if (word.length === 0) continue;
+    const part = foldForCompare(word);
+    if (part.length === 0) continue;
+    wordStarts.add(folded.length);
+    wordEnds.add(folded.length + part.length - 1);
+    folded += part;
+  }
+
+  return { folded, wordStarts, wordEnds };
+}
+
+/**
+ * True when `label` occurs in the window touching at least one word edge.
+ *
+ * WHY AN EDGE AND NOT ANYWHERE. Plain containment was the rule until it was
+ * measured against German business prose, where it licensed a bare ten-digit
+ * number in every one of `Bestellnummer`, `Bestellung`, `bestellt`, `Stelle`
+ * and `Kostenstelle` — all of which carry `tel` in the middle, and all of which
+ * are ordinary words in exactly the mail this proxy sits in front of. A label
+ * matching inside an unrelated word is not a label; it is a coincidence.
+ *
+ * WHY AN EDGE AND NOT A WHOLE WORD. German builds compounds by joining, and the
+ * part that carries the meaning goes at the end: `Führerscheinnummer` is a
+ * Führerschein, `Personalausweis` is an Ausweis, `Diensttelefon` is a Telefon.
+ * Demanding a whole word would refuse every one of those, and demanding a word
+ * *start* would refuse the second and third. Touching either edge accepts the
+ * compounds a German writer actually forms and refuses the accidents.
+ *
+ * WHAT IT STILL LETS THROUGH, stated rather than hoped away: a word that ENDS
+ * in a label, such as `Hotel` for `Tel`. That is the residue of a three-letter
+ * label and it is bounded — the most it can do is admit a run that already had
+ * to clear every structural test the detector applies.
+ */
+function labelAtWordEdge(window: FoldedWindow, label: string): boolean {
+  const { folded, wordStarts, wordEnds } = window;
+  let at = folded.indexOf(label);
+  while (at >= 0) {
+    if (wordStarts.has(at) || wordEnds.has(at + label.length - 1)) return true;
+    at = folded.indexOf(label, at + 1);
+  }
+  return false;
+}
+
 /**
  * True when one of `proximity.labels` sits within the window around
  * `[start, end)` of `text`.
@@ -960,13 +1030,13 @@ export function labelNear(
   const where = proximity.where ?? 'either';
 
   if (where !== 'after') {
-    const before = foldForCompare(text.slice(Math.max(0, start - window), start));
-    if (labels.some((label) => before.includes(label))) return true;
+    const before = foldWindow(text.slice(Math.max(0, start - window), start));
+    if (labels.some((label) => labelAtWordEdge(before, label))) return true;
   }
 
   if (where !== 'before') {
-    const after = foldForCompare(text.slice(end, Math.min(text.length, end + window)));
-    if (labels.some((label) => after.includes(label))) return true;
+    const after = foldWindow(text.slice(end, Math.min(text.length, end + window)));
+    if (labels.some((label) => labelAtWordEdge(after, label))) return true;
   }
 
   return false;
