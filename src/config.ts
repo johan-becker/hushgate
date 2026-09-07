@@ -20,6 +20,7 @@ import { normaliseKindName, type CustomRule } from './detectors/custom.js';
 import type { DictionaryInput, DictionaryOptions } from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
 import type { Icd10Options, MedicationOptions } from './detectors/health.js';
+import type { BankAccountOptions } from './detectors/bankaccount.js';
 import type { PostcodeOptions } from './detectors/postcode.js';
 import type { SessionTokenOptions } from './detectors/sessiontoken.js';
 import type { VatIdOptions } from './detectors/vatid.js';
@@ -180,7 +181,8 @@ export interface LimitsConfig {
  *    licenses one loads it and hands it to `new Session(...)`. Inlining 8200
  *    postcodes in a config file is not a format, it is a paste. The types still
  *    carry those fields, so a library caller keeps the escape hatch; the parser
- *    never produces one.
+ *    never produces one. `bankAccount.bankCodes` belongs here too: it is a
+ *    function, and the register behind it is the Bundesbank's quarterly file.
  *  - `dictionary.priority`. Reordering the priority ladder from a config file
  *    would let an operator silently invert which detector wins a tie, and that
  *    ladder is argued entry by entry in DEFAULT_PRIORITIES.
@@ -191,6 +193,7 @@ export interface DetectorsConfig {
   readonly vatId: VatIdOptions;
   readonly bic: BicOptions;
   readonly postcode: PostcodeOptions;
+  readonly bankAccount: BankAccountOptions;
   readonly vehiclePlate: VehiclePlateOptions;
   readonly sessionToken: SessionTokenOptions;
   readonly postalAddress: PostalAddressOptions;
@@ -846,6 +849,7 @@ function emptyDetectors(): DetectorsConfig {
     vatId: {},
     bic: {},
     postcode: {},
+    bankAccount: {},
     vehiclePlate: {},
     sessionToken: {},
     postalAddress: {},
@@ -860,6 +864,7 @@ const DETECTOR_GROUP_KEYS: Readonly<Record<string, readonly string[]>> = {
   vatId: ['requireGermanCheckDigit'],
   bic: ['homeCountries'],
   postcode: ['countryPrefixes', 'places'],
+  bankAccount: ['accountLabels', 'bankCodeLabels', 'sortCodeLabels', 'routingLabels'],
   vehiclePlate: ['districts'],
   sessionToken: ['names', 'prefixes'],
   postalAddress: ['streetSuffixes', 'weakStreetSuffixes', 'nonAddressWords', 'labels'],
@@ -893,6 +898,7 @@ function parseDetectors(raw: unknown, where: string): DetectorsConfig {
   const vatId = group('vatId');
   const bic = group('bic');
   const postcode = group('postcode');
+  const bankAccount = group('bankAccount');
   const vehiclePlate = group('vehiclePlate');
   const sessionToken = group('sessionToken');
   const postalAddress = group('postalAddress');
@@ -922,6 +928,24 @@ function parseDetectors(raw: unknown, where: string): DetectorsConfig {
         `${where}.postcode.countryPrefixes`,
       ),
       places: optionalStringArray(postcode['places'], `${where}.postcode.places`),
+    }),
+    bankAccount: strip({
+      accountLabels: optionalStringArray(
+        bankAccount['accountLabels'],
+        `${where}.bankAccount.accountLabels`,
+      ),
+      bankCodeLabels: optionalStringArray(
+        bankAccount['bankCodeLabels'],
+        `${where}.bankAccount.bankCodeLabels`,
+      ),
+      sortCodeLabels: optionalStringArray(
+        bankAccount['sortCodeLabels'],
+        `${where}.bankAccount.sortCodeLabels`,
+      ),
+      routingLabels: optionalStringArray(
+        bankAccount['routingLabels'],
+        `${where}.bankAccount.routingLabels`,
+      ),
     }),
     vehiclePlate: strip({
       districts: optionalStringArray(
@@ -1029,6 +1053,18 @@ function mergeDetectors(base: DetectorsConfig, override: DetectorsConfig): Detec
     postcode: strip({
       countryPrefixes: unionLists(base.postcode.countryPrefixes, override.postcode.countryPrefixes),
       places: unionLists(base.postcode.places, override.postcode.places),
+    }),
+    bankAccount: strip({
+      accountLabels: unionLists(base.bankAccount.accountLabels, override.bankAccount.accountLabels),
+      bankCodeLabels: unionLists(
+        base.bankAccount.bankCodeLabels,
+        override.bankAccount.bankCodeLabels,
+      ),
+      sortCodeLabels: unionLists(
+        base.bankAccount.sortCodeLabels,
+        override.bankAccount.sortCodeLabels,
+      ),
+      routingLabels: unionLists(base.bankAccount.routingLabels, override.bankAccount.routingLabels),
     }),
     vehiclePlate: strip({
       districts: unionLists(base.vehiclePlate.districts, override.vehiclePlate.districts),
@@ -1604,6 +1640,7 @@ export function redactionOptions(config: HushgateConfig): SessionOptions {
     vatId: detectors.vatId,
     bic: detectors.bic,
     postcode: detectors.postcode,
+    bankAccount: detectors.bankAccount,
     vehiclePlate: detectors.vehiclePlate,
     sessionToken: detectors.sessionToken,
     postalAddress: detectors.postalAddress,

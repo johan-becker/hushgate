@@ -14,6 +14,36 @@ and the re-hydration mappings that already exist.
 
 ### Added
 
+- **Legacy bank details: Kontonummer and Bankleitzahl, sort code, routing
+  number.** The pair a customer writes when they are not writing an IBAN — on
+  an old invoice, in a spreadsheet column, in "bitte auf Kto. 532013000,
+  BLZ 37040044 überweisen" — was forwarded verbatim before, because none of the
+  three formats carries a checksum over the whole string the way an IBAN does.
+
+  The German half is now decided arithmetically rather than by shape. hushgate
+  ships the Bundesbank's bank code directory (3507 institutions) and all 91
+  Prüfzifferberechnungsmethoden those banks name, so `532013000 / 37040044` is
+  reported because 37040044 is a real bank code *and* 532013000 satisfies that
+  bank's own check-digit method. Two independent confirmations, which is what
+  makes an unlabelled pair safe to report; a pair with an invented bank code, or
+  one whose account number fails its bank's method, is not reported at all.
+
+  The methods are implemented from the Bundesbank specification and pinned by
+  its own 457 official test account numbers, then cross-checked against an
+  independent implementation over about a million account/bank-code pairs. The
+  nine methods where the two disagree are listed in `bankcheckdigit.ts` with the
+  spec sentence that decides each one.
+
+  A UK sort code is read next to its account number or its label; a US routing
+  number carries its own 3-7-1 checksum. A lone account number with neither a
+  bank code nor a label beside it is deliberately not reported — six to ten bare
+  digits is every order number in German business correspondence.
+
+  New kind `BANK_ACCOUNT` (priority 72), new config group
+  `redaction.detectors.bankAccount` for the label lists, and
+  `scripts/build-blz-methods.mjs` to refresh the directory when the Bundesbank
+  republishes it quarterly. The German evasion corpus goes from 196 to 200
+  of 299.
 - **Attachment pseudonymisation.** A PDF, Word file, spreadsheet, presentation,
   e-mail or HTML document in a request is turned into text, the text is
   pseudonymised by the existing detector pipeline, and the document itself

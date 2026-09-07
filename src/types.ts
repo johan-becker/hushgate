@@ -16,6 +16,7 @@ export const BUILTIN_KINDS = [
   'IBAN',
   'BIC',
   'CREDIT_CARD',
+  'BANK_ACCOUNT',
   // German administrative identifiers
   'GERMAN_TAX_ID',
   'GERMAN_TAX_NUMBER',
@@ -221,6 +222,7 @@ export const DEFAULT_PRIORITIES = {
   EMAIL: 75,
   COMMERCIAL_REGISTER_ID: 74,
   DRIVER_LICENCE_ID: 73,
+  BANK_ACCOUNT: 72,
   IPV6: 70,
   IPV4: 65,
   MAC: 62,

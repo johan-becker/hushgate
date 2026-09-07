@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createDetectors, detect, emailDetector, urlCredentialsDetector } from '../src/detectors/index.js';
+import {
+  bankAccountDetectors,
+  createDetectors,
+  detect,
+  emailDetector,
+  urlCredentialsDetector,
+} from '../src/detectors/index.js';
 import type { Detector } from '../src/types.js';
 
 /**
@@ -85,6 +91,20 @@ describe('no detector backtracks catastrophically', () => {
 
   it('url credentials: the same with dots rather than hyphens', () => {
     assertSubQuadratic(urlCredentialsDetector, (n) => 'a.b.'.repeat(n / 4));
+  });
+
+  it('bank account: a body of nothing but sort codes', () => {
+    // Not backtracking — a lookup. The sort-code pass asked "is there an
+    // account number just after this one?" by scanning the whole run list, so a
+    // body of sort codes was quadratic in the most ordinary way there is:
+    // 1 MB of `53-20-13 ` did not finish in two minutes. It is a map now.
+    const [bankAccount] = bankAccountDetectors;
+    assertSubQuadratic(bankAccount!, (n) => '53-20-13 '.repeat(n / 9));
+  });
+
+  it('bank account: a body of nothing but bank-code-shaped runs', () => {
+    const [bankAccount] = bankAccountDetectors;
+    assertSubQuadratic(bankAccount!, (n) => '37040044 '.repeat(n / 9));
   });
 
   it('the whole detector set survives a body of one hostile run', () => {

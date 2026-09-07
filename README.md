@@ -795,7 +795,21 @@ that flags `4111 1111 1111 1112` and one that does not.
 | --- | --- |
 | `IBAN` | ISO 13616 / ISO 7064 MOD 97-10, folded digit by digit because the number does not fit a JS `number`; length table for 76 countries. The remainder must be exactly 1. |
 | `CREDIT_CARD` | Luhn plus an issuer-prefix check. A 16-digit run that fails Luhn is not a card. |
+| `BANK_ACCOUNT` | The pre-IBAN pair. The Bankleitzahl is looked up in the Bundesbank directory shipped with hushgate, and the Kontonummer is then run through *that bank's* check-digit method — all 91 the directory names, implemented from the Bundesbank spec and pinned by its 457 official test account numbers. That is what makes an unlabelled `532013000 / 37040044` safe to report. UK sort codes and US routing numbers are covered too; the routing number carries its own 3-7-1 checksum. |
 | `GERMAN_TAX_ID` | ISO 7064 MOD 11,10 check digit **and** the digit-frequency rule: within the first ten digits exactly one digit repeats — twice, or three times — and no more. Both must hold. |
+| `SOCIAL_SECURITY_ID` | Versicherungsnummer: the birth date inside it must be a real date, the Bereichsnummer must be one the DRV allocated, and the weighted check digit must agree with the twelve digits the eleven characters expand to. All three. |
+| `HEALTH_INSURANCE_ID` | Krankenversichertennummer: the leading letter expands to two digits, and the check digit is computed over the result. |
+| `ID_CARD_NUMBER` / `PASSPORT_NUMBER` | ICAO 9303 check digit, weights 7-3-1 modulo 10. One detector for both: the serial does not say which document it came off, so the word next to it decides, and failing that the series letter. |
+| `EU_VAT_ID` | Per-country length and shape for every member state. Germany's ISO 7064 MOD 11,10 check digit is available but **off by default** — a wrong VAT number on an invoice is common, and refusing to redact it is the worse mistake. `redaction.detectors.vatId.requireGermanCheckDigit` turns it on. |
+| `GERMAN_TAX_NUMBER` | Steuernummer, which has no nationwide check digit. The slash-grouped form a Finanzamt prints — `27/123/45678` — is a shape almost nothing else has and stands alone; the same digits run together need a label. |
+| `COMMERCIAL_REGISTER_ID` | `HRA`/`HRB` carries its own label, and neither string precedes digits in ordinary German prose. The sibling registers `VR`, `GnR` and `PR` are deliberately not read: `VR 1234` is also a version. |
+| `DRIVER_LICENCE_ID` | No check digit exists outside the issuing authority, so a label is required — plus three structural rules, because `Verkehrsamt` is exactly as long as a licence number and sits next to the very words that would license one. |
+| `VEHICLE_PLATE` | The closed register of Unterscheidungszeichen. The shape alone is also an article number and a norm reference; the district code is what makes a plate a plate. |
+| `POSTAL_ADDRESS` / `POSTCODE` | A street-type suffix on a token plus a house number, graded: `-straße` fires alone, `-weg` needs a postcode or a label, because *Parkplatz* and *Radweg* are ordinary nouns. Five digits alone are never a postcode — a label, a country prefix or a place name licenses it. |
+| `ICD_CODE` / `MEDICATION` | Article 9 data, so the recall bar is higher and the false-positive risk worse: `E11.9` is a diabetes diagnosis, a software version and a spreadsheet cell. Codes are read against a catalogue and blocked by the words around them; a labelled code needs no catalogue. |
+| `BIC` | ISO 9362 shape, and the two country characters must be a real ISO 3166-1 alpha-2 code. |
+| `DEVICE_ID` | IMEI by its own Luhn digit; UUID by the version and variant nibbles RFC 9562 actually issues. |
+| `SESSION_TOKEN` | The cookie or header *name* plus an assignment — never the value's entropy. That was measured on this corpus and it does not separate the two populations. |
 | `EMAIL` | A practical RFC 5322 grammar, then the structural checks a regex cannot express: 64-byte local part, 254-byte total, 63-byte labels, no leading, trailing or doubled dot. |
 | `PHONE` | E.164, `00` international and German national forms, with subscriber-length bounds; `(0)` trunk notation tolerated. |
 | `IPV4` / `IPV6` / `MAC` | Octets bounded at 255; IPv6 `::` compression handled, embedded-IPv4 form included. |
@@ -808,7 +822,7 @@ that flags `4111 1111 1111 1112` and one that does not.
 Detectors return *candidates*, and candidates overlap. Resolution is central and
 deterministic: the longest span wins, ties broken by detector priority
 (`SECRET` 100 > `URL_CREDENTIALS` 95 > `IBAN` 90 > `CREDIT_CARD` 85 >
-`GERMAN_TAX_ID` 80 > `EMAIL` 75 > … > dictionary 40).
+`GERMAN_TAX_ID` 80 > `EMAIL` 75 > `BANK_ACCOUNT` 72 > … > dictionary 40).
 
 ### What the detectors are shown
 
@@ -1185,12 +1199,32 @@ What it does **not** do:
 
 - **Names in free text.** `NAME` comes from your dictionary. hushgate will not
   work out that "Frau Özdemir from purchasing" is a person. Add the names you
-  care about, or accept that free-text names go through.
-- **Addresses.** No street or postcode detector ships. Use `redaction.custom`
-  if your data has a regular shape.
-- **Health, religion, union membership and the other Article 9 special
-  categories.** They are prose. A dictionary or a custom rule can catch known
-  terms; nothing catches the general case.
+  care about, or accept that free-text names go through. What it *will* do,
+  once `redaction.detectors.dictionary.fuzzy` is on, is see through the spelling
+  of a name you did add: a dropped letter, a swapped pair, `Mueller` for
+  `Müller`, `Mustermann, Max` for `Max Mustermann`. It is off by default because
+  it walks the entry list per candidate token — affordable for one tenant's
+  address book, not for every request on a shared event loop.
+- **A street with nothing around it.** A street detector *does* ship, and it
+  reads `Kaiserstraße 12, 76133 Karlsruhe`. What it will not read is a bare
+  `Lindenweg 5` with no postcode and no label: `-weg`, `-platz` and `-gasse` are
+  the endings of *Radweg*, *Parkplatz* and *Sackgasse*, so the weak suffixes
+  need corroboration and the strong ones (`-straße`, `-allee`, `-chaussee`) do
+  not. The English word order — `12 Kaiserstraße` — needs a postcode behind it,
+  because bare it is indistinguishable from a numbered list.
+- **A lone account number.** `BANK_ACCOUNT` needs the bank code beside the
+  Kontonummer or a label in front of it. Six to ten bare digits is the shape of
+  every order number in German business correspondence, so an unaccompanied
+  `532013000` goes through. `redaction.detectors.bankAccount.accountLabels`
+  adds the word your own forms use.
+- **Article 9 data that has no format.** Two kinds of it now do have one and
+  are read: ICD-10 diagnosis codes and the names of prescribed drugs. The rest
+  is prose, and prose is where a deterministic detector ends. *Mitglied der SPD*
+  differs from *Mitglied der Feuerwehr* by no arithmetic — ethnic origin,
+  political opinion, religion, union membership, sexual orientation and the
+  biometric blob all need a curated term list and a false-positive budget, or a
+  semantic layer. A dictionary or a custom rule catches the terms you name;
+  nothing catches the general case.
 - **Anything inside images.** There is no OCR, so a photograph or a scanned
   page has no text hushgate can read. It is refused rather than forwarded —
   see §4 — but refusing it is all hushgate can do.

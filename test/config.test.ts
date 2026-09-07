@@ -447,12 +447,18 @@ function mergedDetectors(
  * message".
  */
 describe('redaction.detectors', () => {
-  /** All nine groups, every reachable key, deliberately non-default values. */
+  /** All ten groups, every reachable key, deliberately non-default values. */
   const FULL_BLOCK = {
     dictionary: { fuzzy: true, maxEditDistance: 1 },
     vatId: { requireGermanCheckDigit: false },
     bic: { homeCountries: ['DE', 'AT'] },
     postcode: { countryPrefixes: ['D'], places: ['Kempten'] },
+    bankAccount: {
+      accountLabels: ['Kontoverbindung Nr'],
+      bankCodeLabels: ['Bankleitzahl alt'],
+      sortCodeLabels: ['Bank sort'],
+      routingLabels: ['Fedwire'],
+    },
     vehiclePlate: { districts: ['GAP'] },
     sessionToken: { names: ['sid'], prefixes: ['hg_'] },
     postalAddress: {
@@ -465,12 +471,13 @@ describe('redaction.detectors', () => {
     medication: { names: ['Ibuprofen'], requireDosage: false, dosageWindow: 40 },
   };
 
-  /** The nine group names as `redactionOptions` spells them downstream. */
+  /** The ten group names as `redactionOptions` spells them downstream. */
   const OPTION_KEYS = [
     'dictionaryMatching',
     'vatId',
     'bic',
     'postcode',
+    'bankAccount',
     'vehiclePlate',
     'sessionToken',
     'postalAddress',
@@ -487,11 +494,12 @@ describe('redaction.detectors', () => {
     const options = redactionOptions(loadConfig({ cwd: dir, env: {} }).config);
 
     // `redaction.detectors.dictionary` narrows how the dictionary matches and
-    // is renamed on the way through; the other eight keep their names.
+    // is renamed on the way through; the other nine keep their names.
     expect(options.dictionaryMatching).toEqual(FULL_BLOCK.dictionary);
     expect(options.vatId).toEqual(FULL_BLOCK.vatId);
     expect(options.bic).toEqual(FULL_BLOCK.bic);
     expect(options.postcode).toEqual(FULL_BLOCK.postcode);
+    expect(options.bankAccount).toEqual(FULL_BLOCK.bankAccount);
     expect(options.vehiclePlate).toEqual(FULL_BLOCK.vehiclePlate);
     expect(options.sessionToken).toEqual(FULL_BLOCK.sessionToken);
     expect(options.postalAddress).toEqual(FULL_BLOCK.postalAddress);
@@ -639,5 +647,23 @@ describe('redaction.detectors', () => {
     expect(findings.map(({ kind, value }) => ({ kind, value }))).toEqual([
       { kind: 'NAME', value: 'Max Musterman' },
     ]);
+  });
+
+  it('reaches the detector: a bank label from the file finds an account number', () => {
+    // Same claim for the bank group: the built-in labels do not know the word
+    // an operator's own forms use, and the file is how they add it.
+    const text = 'Zahlstelle 532013000 im Anhang';
+
+    const stock = new Session(redactionOptions(parseConfig({})));
+    expect(stock.redact(text).findings).toEqual([]);
+
+    const configured = new Session(
+      redactionOptions(
+        parseConfig({ redaction: { detectors: { bankAccount: { accountLabels: ['Zahlstelle'] } } } }),
+      ),
+    );
+    expect(
+      configured.redact(text).findings.map(({ kind, value }) => ({ kind, value })),
+    ).toEqual([{ kind: 'BANK_ACCOUNT', value: '532013000' }]);
   });
 });

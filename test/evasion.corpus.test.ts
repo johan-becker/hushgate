@@ -507,6 +507,10 @@ const CAUGHT: ReadonlySet<string> = new Set([
   'PLZ | Laenderpraefix',
   'PLZ | ISO-Praefix',
   'PLZ | mit Label',
+  'Konto/BLZ | DE alt mit Labels',
+  'Konto/BLZ | Slash',
+  'Konto/BLZ | UK Sort Code',
+  'Konto/BLZ | US ABA',
   'IBAN | normal 4er-Gruppen',
   'IBAN | ohne Luecken',
   'IBAN | lowercase',
@@ -720,11 +724,6 @@ const KNOWN_GAPS: Readonly<Record<string, readonly string[]>> = {
   // Not a detector gap. The corpus text carries check digits 49 where this
   // account number requires 89, so folding the Cyrillic E yields an IBAN that
   // fails mod-97 and must not be reported. See the fixture-validity block.
-
-  // Legacy account/sort-code pairs — German Kto/BLZ, UK sort code, US ABA
-  // routing — have no checksum and no fixed length. Each needs its own
-  // label-gated detector, and the label list is the entire design problem.
-  'Konto/BLZ': ['DE alt mit Labels', 'Slash', 'UK Sort Code', 'US ABA'],
 
   // Dotted-quad is read; these are five other encodings of it. The defanged and
   // spelled forms fall to the de-obfuscation fold, spaced dots to separator

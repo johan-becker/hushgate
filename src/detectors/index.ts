@@ -1,5 +1,6 @@
 import type { Detector, Span } from '../types.js';
 import { createPostalAddressDetector, type PostalAddressOptions } from './address.js';
+import { createBankAccountDetectors, type BankAccountOptions } from './bankaccount.js';
 import { createBicDetector, type BicOptions } from './bic.js';
 import { commercialRegisterDetector } from './commercialregister.js';
 import { creditCardDetector } from './creditcard.js';
@@ -63,6 +64,26 @@ export {
   DEFAULT_BIC_HOME_COUNTRIES,
   ISO_3166_ALPHA2,
 } from './bic.js';
+export {
+  ACCOUNT_LABELS,
+  BANK_ACCOUNT_KIND,
+  BANK_ACCOUNT_PRIORITY,
+  BANK_CODE_LABELS,
+  bankAccountDetectors,
+  createBankAccountDetectors,
+  isValidAbaRouting,
+  ROUTING_LABELS,
+  SORT_CODE_LABELS,
+  type BankAccountOptions,
+} from './bankaccount.js';
+export {
+  bankCodeMethod,
+  checkDigitValid,
+  isKnownBankCode,
+  isValidGermanAccountNumber,
+  IMPLEMENTED_CHECK_DIGIT_METHODS,
+  LIVE_CHECK_DIGIT_METHODS,
+} from './bankcheckdigit.js';
 export { commercialRegisterDetector, COMMERCIAL_REGISTER_PRIORITY } from './commercialregister.js';
 export { creditCardDetector, hasIssuerPrefix, isValidCardNumber, luhnValid } from './creditcard.js';
 export { createCustomDetector, createCustomDetectors, normaliseKindName } from './custom.js';
@@ -232,6 +253,8 @@ export interface DetectorSetOptions {
   readonly bic?: BicOptions;
   /** Country prefixes and place names that license a postcode. */
   readonly postcode?: PostcodeOptions;
+  /** Labels, and a bank code table newer than the shipped Bundesbank snapshot. */
+  readonly bankAccount?: BankAccountOptions;
   /** District codes a plate may open with. */
   readonly vehiclePlate?: VehiclePlateOptions;
   /** Cookie and header names whose value is a session token. */
@@ -313,6 +336,7 @@ export function createDetectors(options: DetectorSetOptions = {}): Detector[] {
     plates.plate,
     plates.labelled,
     createPostcodeDetector(options.postcode),
+    ...createBankAccountDetectors(options.bankAccount),
     ...createCustomDetectors(options.custom),
     createDictionaryDetector(entries, options.dictionaryMatching),
   ];
