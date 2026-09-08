@@ -53,9 +53,9 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "devDependencies": {
-    "@types/node": "^22.19.0",
-    "oxlint": "^1.79.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "@types/node": "^26.4.1",
+    "oxlint": "^1.81.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   }
 }
