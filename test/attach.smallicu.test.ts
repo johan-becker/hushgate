@@ -83,11 +83,14 @@ const LATIN1_FOR_1252 = class extends TextDecoder {
     this.asLatin1 = legacy;
   }
 
-  override decode(
-    input?: NodeJS.ArrayBufferView | ArrayBuffer | null,
-    options?: { stream?: boolean },
-  ): string {
-    if (!this.asLatin1) return super.decode(input, options);
+  // Spelled through `Parameters<...>` rather than written out: the signature
+  // the platform declares for `decode` has changed between @types/node
+  // versions (a `SharedArrayBuffer` joined the input union), and a stub that
+  // only typechecks against one of them is a dependency bump away from being
+  // the thing that fails the build.
+  override decode(...args: Parameters<InstanceType<typeof TextDecoder>['decode']>): string {
+    if (!this.asLatin1) return super.decode(...args);
+    const [input] = args;
     if (input === null || input === undefined) return '';
     const view = ArrayBuffer.isView(input)
       ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
