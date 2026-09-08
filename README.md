@@ -800,6 +800,7 @@ that flags `4111 1111 1111 1112` and one that does not.
 | `SOCIAL_SECURITY_ID` | Versicherungsnummer: the birth date inside it must be a real date, the Bereichsnummer must be one the DRV allocated, and the weighted check digit must agree with the twelve digits the eleven characters expand to. All three. |
 | `HEALTH_INSURANCE_ID` | Krankenversichertennummer: the leading letter expands to two digits, and the check digit is computed over the result. |
 | `ID_CARD_NUMBER` / `PASSPORT_NUMBER` | ICAO 9303 check digit, weights 7-3-1 modulo 10. One detector for both: the serial does not say which document it came off, so the word next to it decides, and failing that the series letter. |
+| `TRAVEL_DOCUMENT_MRZ` | The machine-readable zone off a passport or identity card, TD1, TD2 and TD3. The densest personal data hushgate will ever see — name, date of birth, sex, nationality, expiry and document number in one block — and the most completely checksummed: four or five independent ICAO 7-3-1 digits, one of them a composite over the others. A 44-character uppercase blob shape-matches and is rejected; that is the point. Reported as one span covering the whole block, so nothing inside it can carve it up. |
 | `EU_VAT_ID` | Per-country length and shape for every member state. Germany's ISO 7064 MOD 11,10 check digit is available but **off by default** — a wrong VAT number on an invoice is common, and refusing to redact it is the worse mistake. `redaction.detectors.vatId.requireGermanCheckDigit` turns it on. |
 | `GERMAN_TAX_NUMBER` | Steuernummer, which has no nationwide check digit. The slash-grouped form a Finanzamt prints — `27/123/45678` — is a shape almost nothing else has and stands alone; the same digits run together need a label. |
 | `COMMERCIAL_REGISTER_ID` | `HRA`/`HRB` carries its own label, and neither string precedes digits in ordinary German prose. The sibling registers `VR`, `GnR` and `PR` are deliberately not read: `VR 1234` is also a version. |
@@ -821,8 +822,9 @@ that flags `4111 1111 1111 1112` and one that does not.
 
 Detectors return *candidates*, and candidates overlap. Resolution is central and
 deterministic: the longest span wins, ties broken by detector priority
-(`SECRET` 100 > `URL_CREDENTIALS` 95 > `IBAN` 90 > `CREDIT_CARD` 85 >
-`GERMAN_TAX_ID` 80 > `EMAIL` 75 > `BANK_ACCOUNT` 72 > … > dictionary 40).
+(`SECRET` 100 > `TRAVEL_DOCUMENT_MRZ` 99 > `URL_CREDENTIALS` 95 > `IBAN` 90 >
+`CREDIT_CARD` 85 > `GERMAN_TAX_ID` 80 > `EMAIL` 75 > `BANK_ACCOUNT` 72 > … >
+dictionary 40).
 
 ### What the detectors are shown
 

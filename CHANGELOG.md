@@ -14,6 +14,31 @@ and the re-hydration mappings that already exist.
 
 ### Added
 
+- **The machine-readable zone off a passport or identity card.** New kind
+  `TRAVEL_DOCUMENT_MRZ` (priority 99, directly below `SECRET`), reading ICAO
+  Doc 9303 TD1, TD2 and TD3.
+
+  A pasted passport scan is the densest personal data the proxy will ever see —
+  name, date of birth, sex, nationality, expiry and document number in one
+  block — and until now the only part of it hushgate recognised was whatever a
+  date or dictionary detector happened to pick out of the `<` fillers, which
+  meant the block was forwarded with holes punched in it rather than replaced.
+  It is now one span covering every line of the block, so nothing inside can
+  carve it up and re-hydration puts it back exactly as it was written.
+
+  It needs no label to be safe, which nothing else at this priority can claim:
+  an MRZ carries four or five independent ICAO 7-3-1 check digits, one of them
+  a composite over the others, and ordinary text does not pass all of them. A
+  44-character uppercase blob shape-matches and is rejected. That is what makes
+  a lone lower line — a copy-paste that clipped the first row — safe to report
+  on its own, while a lone TD1 line, whose composite spans two lines, never is.
+
+  Deliberately generic rather than German-only: a French or Turkish MRZ pasted
+  into a German prompt is exactly as much personal data and the algorithm is
+  identical. Up to one blank line may sit between rows, because a PDF text
+  extractor emits the block double-spaced as often as not, and refusing those
+  would fail on exactly the input this exists for.
+
 - **Legacy bank details: Kontonummer and Bankleitzahl, sort code, routing
   number.** The pair a customer writes when they are not writing an IBAN — on
   an old invoice, in a spreadsheet column, in "bitte auf Kto. 532013000,

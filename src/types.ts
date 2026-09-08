@@ -25,6 +25,7 @@ export const BUILTIN_KINDS = [
   'HEALTH_INSURANCE_ID',
   'ID_CARD_NUMBER',
   'PASSPORT_NUMBER',
+  'TRAVEL_DOCUMENT_MRZ',
   'DRIVER_LICENCE_ID',
   'COMMERCIAL_REGISTER_ID',
   'VEHICLE_PLATE',
@@ -205,6 +206,7 @@ export interface Finding extends Omit<Span, 'requiresLabel'> {
  */
 export const DEFAULT_PRIORITIES = {
   SECRET: 100,
+  TRAVEL_DOCUMENT_MRZ: 99,
   SESSION_TOKEN: 98,
   URL_CREDENTIALS: 95,
   IBAN: 90,

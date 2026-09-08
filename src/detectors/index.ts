@@ -26,6 +26,7 @@ import {
 import { healthInsuranceDetector, healthInsuranceLabelDetector } from './healthinsurance.js';
 import { ibanDetector } from './iban.js';
 import { germanIdDocumentDetector } from './idcard.js';
+import { mrzDetector } from './mrz.js';
 import { ipv4Detector, ipv6Detector, macDetector } from './network.js';
 import {
   labelNear,
@@ -140,6 +141,16 @@ export {
   GERMAN_ID_DOCUMENT_LABELS,
   ID_DOCUMENT_PRIORITY,
 } from './idcard.js';
+export {
+  findMrzBlocks,
+  isValidMrzBlock,
+  isValidTd1,
+  isValidTd2Lower,
+  isValidTd3Lower,
+  mrzDetector,
+  type MrzBlock,
+  type MrzFormat,
+} from './mrz.js';
 export { ipv4Detector, ipv6Detector, isValidIpv4, isValidIpv6, macDetector, MAC_LABELS } from './network.js';
 export {
   foldForCompare,
@@ -285,6 +296,7 @@ export interface DetectorSetOptions {
  */
 export const BUILTIN_DETECTORS: readonly Detector[] = [
   secretDetector,
+  mrzDetector,
   urlCredentialsDetector,
   ibanDetector,
   creditCardDetector,
