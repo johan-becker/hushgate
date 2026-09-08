@@ -15,7 +15,7 @@
  */
 import { formatBytes } from './decode.js';
 import { htmlToText } from './html.js';
-import { clampChars, decodeText } from './plaintext.js';
+import { clampChars, decodeText, decodeWindows1252 } from './plaintext.js';
 import type { ExtractionResult, Extractor } from './types.js';
 
 /**
@@ -50,6 +50,26 @@ const MAX_PARAMETERS = 16;
 
 /** Longest charset label handed to `TextDecoder`. */
 const MAX_CHARSET_CHARS = 64;
+
+/**
+ * The labels the Encoding Standard resolves to windows-1252.
+ *
+ * Handed to `TextDecoder` these are a coin flip. A Node with the legacy tables
+ * decodes windows-1252; a Node without them accepts the label anyway and
+ * decodes latin-1, where every byte of Windows punctuation becomes a C1 control
+ * and is stripped a few lines later. `Anna\u2019s` arrives as `Annas` — the
+ * apostrophe deleted from somebody's name, on one class of machine and not
+ * another, with nothing in the log to say so.
+ *
+ * A mail is where this bites hardest, because `charset=windows-1252` is what
+ * Outlook writes and `charset=iso-8859-1` is the same encoding under an older
+ * name. So these labels never reach the platform: hushgate ships the table.
+ */
+const WINDOWS_1252_LABELS: ReadonlySet<string> = new Set([
+  'ansi_x3.4-1968', 'ascii', 'cp1252', 'cp819', 'csisolatin1', 'ibm819',
+  'iso-8859-1', 'iso-ir-100', 'iso8859-1', 'iso88591', 'iso_8859-1',
+  'iso_8859-1:1987', 'l1', 'latin1', 'us-ascii', 'windows-1252', 'x-cp1252',
+]);
 
 /**
  * The five fields worth a line of their own.
@@ -197,6 +217,10 @@ const splitMessage = (raw: string): Part => {
 const decodeCharset = (bytes: Uint8Array, charset: string | null): string => {
   if (charset === null || charset === '' || charset.length > MAX_CHARSET_CHARS) {
     return decodeText(bytes).text;
+  }
+
+  if (WINDOWS_1252_LABELS.has(charset.trim().toLowerCase())) {
+    return decodeWindows1252(bytes);
   }
 
   try {

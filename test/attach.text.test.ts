@@ -123,16 +123,22 @@ describe('the windows-1252 C1 table', () => {
   it('agrees with the platform decoder on all 256 bytes, where the platform has one', () => {
     // The cross-check that makes the shipped table trustworthy: on a full-ICU
     // Node the two must be identical, so a typo in the literal cannot survive
-    // CI. On a build without the table there is nothing to compare against and
-    // the assertion is skipped rather than faked.
+    // CI. Where the platform has no table there is nothing to compare against
+    // and the assertion is skipped rather than faked.
+    //
+    // "No table" is not only the label throwing. Node 20 accepts
+    // `windows-1252` and hands back a latin-1 decoder — the same silent
+    // fallback this table exists to route around — so the probe asks for the
+    // one byte that tells the two apart instead of trusting the label.
     const all = Uint8Array.from({ length: 256 }, (_, byte) => byte);
-    let reference: string;
+    let platform: InstanceType<typeof TextDecoder>;
     try {
-      reference = new TextDecoder('windows-1252').decode(all);
+      platform = new TextDecoder('windows-1252');
     } catch {
       return;
     }
-    expect(decodeWindows1252(all)).toBe(reference);
+    if (platform.decode(raw(0x80)) !== '\u20AC') return;
+    expect(decodeWindows1252(all)).toBe(platform.decode(all));
   });
 
   it('decodes the C1 range with no help from the platform at all', () => {
