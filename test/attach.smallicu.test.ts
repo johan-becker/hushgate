@@ -10,10 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  *  - A build with `--without-intl`, or any runtime that trims ICU to save
  *    space, has a `TextDecoder` that exists but only for the UTF labels. Ask it
  *    for `windows-1252` and the constructor throws.
- *  - Node 20 does not throw. It accepts `windows-1252` — and every other label
- *    the Encoding Standard resolves to windows-1252 — and hands back a latin-1
- *    decoder. That is the worse of the two, because a refusal is something a
- *    fallback can see, and this one succeeds while being wrong.
+ *  - Node 20 does not throw. It accepts `windows-1252` and hands back a latin-1
+ *    decoder — measured in CI, where 22 and 24 were green and 20 was red on the
+ *    same commit. That is the worse of the two, because a refusal is something
+ *    a fallback can see, and this one succeeds while being wrong.
+ *
+ * The second stub below extends that model to every label the Encoding Standard
+ * resolves to windows-1252, and the guards in the source do the same. Only the
+ * `windows-1252` label itself was measured; the rest are the same encoding under
+ * older names, and which of the names a given platform gets right is not
+ * something an apostrophe in a customer's surname should depend on.
  *
  * `node:22-alpine`, the image hushgate ships on, carries full ICU, as the
  * official Node images have since v13, and that was checked in the container

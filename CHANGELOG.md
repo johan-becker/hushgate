@@ -95,27 +95,41 @@ and the re-hydration mappings that already exist.
 ### Fixed
 
 - Attachment decoding no longer depends on the platform carrying the legacy
-  encoding tables. Three places asked `new TextDecoder('windows-1252')` for the
-  mapping, and none of them failed loudly when a build of Node refuses that
-  label: the plain-text decoder dropped to latin-1, where `0x92` is the C1
-  control `U+0092` rather than a right single quote and was then stripped as a
-  control character; the HTML reader built its C1 table by decoding, got an
-  empty string and dropped the numeric reference; and the RTF reader fell
-  through to a latin-1 code page for every document, including the ones
-  declaring windows-1252. On such a build `Kün’s` extracted as `Küns`,
-  `Anna&#146;s` as `Annas`, and a Word-exported RTF lost every apostrophe and
-  every German quotation mark — while the document still counted as read, the
-  quality checks still passed, and the audit record still said so. The thirty-
-  two characters of the C1 range are shipped data now (`WINDOWS_1252_C1`), so
-  no build of Node can produce that outcome, and
-  `test/attach.smallicu.test.ts` runs the whole pipeline with the platform's
-  table removed. A second test compares the shipped table against
-  `TextDecoder` over all 256 bytes wherever there is one, so the literal cannot
-  drift where CI can check it while still working where CI cannot reach.
+  encoding tables. Four places asked `new TextDecoder('windows-1252')` for the
+  mapping, and none of them failed loudly when the platform could not supply
+  it: the plain-text decoder dropped to latin-1, where `0x92` is the C1 control
+  `U+0092` rather than a right single quote and was then stripped as a control
+  character; the HTML reader built its C1 table by decoding, got an empty string
+  and dropped the numeric reference; the RTF reader fell through to a latin-1
+  code page for every document, including the ones declaring windows-1252; and
+  the e-mail reader handed the charset a message declares straight to
+  `TextDecoder`, which is `charset=windows-1252` in everything Outlook writes
+  and `charset=iso-8859-1` — the same encoding under an older name — in most of
+  what German mailers write. `Kün’s` extracted as `Küns`, `Anna&#146;s` as
+  `Annas`, a Word-exported RTF lost every apostrophe and every German quotation
+  mark, and `Anna’s Angebot` arrived from a mail as `Annas Angebot` — while the
+  document still counted as read, the quality checks still passed, and the audit
+  record still said so.
 
-  This was defence in depth, not a live defect: the images hushgate ships on
-  (`node:22-alpine`) carry full ICU, as the official Node images have since
-  v13, so the fallbacks were never reached in a released container.
+  The thirty-two characters of the C1 range are shipped data now
+  (`WINDOWS_1252_C1`) and all four call sites read them, so no build of Node can
+  produce that outcome. `test/attach.smallicu.test.ts` runs the whole pipeline
+  under both ways a platform can fail here, and a second test compares the
+  shipped table against `TextDecoder` over all 256 bytes wherever the platform
+  genuinely has one, so the literal cannot drift where CI can check it while
+  still working where CI cannot reach.
+
+  Both ways, because there turned out to be two. A build with `--without-intl`
+  refuses the label, which is the failure this entry originally described and
+  the one a fallback can see. **Node 20 does not refuse it.** It accepts
+  `windows-1252` and answers with latin-1: the decode succeeds, every guard
+  downstream sees a decode that worked, and only the punctuation is wrong. That
+  was measured in CI, where 22 and 24 were green and 20 was red on the same
+  commit, and it makes the e-mail path a live defect rather than defence in
+  depth — Node 20 is the floor of `engines`, so `npm i -g hushgate` on a
+  supported runtime deleted apostrophes out of mail bodies. The published Docker
+  image was never affected: `node:22-alpine` carries full ICU, as the official
+  Node images have since v13.
 - A slowloris connection is now reaped. Node's own `requestTimeout` and
   `headersTimeout` do not close a socket that drips a header byte every few
   seconds or one that simply goes idle after connecting — verified against a
