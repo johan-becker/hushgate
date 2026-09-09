@@ -4,6 +4,7 @@ import {
   hostMatches,
   knownJurisdictions,
   lookupEndpoint,
+  proxyableEndpoints,
   type EndpointEntry,
 } from '../src/residency/registry.js';
 import { jurisdiction, leavesTheEea } from '../src/residency/jurisdictions.js';
@@ -190,5 +191,59 @@ describe('the jurisdiction table', () => {
   it('is case-insensitive, as ISO codes are written both ways', () => {
     expect(jurisdiction('at').code).toBe('AT');
     expect(leavesTheEea('at')).toBe(false);
+  });
+});
+
+describe('proxyableEndpoints', () => {
+  it('offers only endpoints hushgate can actually forward to', () => {
+    for (const entry of proxyableEndpoints()) {
+      expect(entry.baseUrl, entry.id).toBeDefined();
+      expect(['openai', 'anthropic'], entry.id).toContain(entry.api);
+      expect(entry.trialModel, entry.id).toBeDefined();
+      expect(entry.baseUrl, entry.id).toMatch(/^https:\/\//u);
+      expect(
+        entry.hosts.some((host) => host.includes('*')),
+        entry.id,
+      ).toBe(false);
+    }
+  });
+
+  it('is the three the wizard offers, inside the EEA first', () => {
+    expect(proxyableEndpoints().map((entry) => entry.id)).toEqual([
+      'mistral.api',
+      'openai.api',
+      'anthropic.api',
+    ]);
+  });
+
+  it('omits endpoints whose real path is not base + the route path', () => {
+    // Gemini's OpenAI-compatible surface lives at /v1beta/openai/chat/completions,
+    // and the proxy forwards to base + /v1/chat/completions. No base URL
+    // produces that, so offering it would write a config that 404s on the
+    // first request.
+    expect(proxyableEndpoints().map((entry) => entry.id)).not.toContain(
+      'google.generativelanguage',
+    );
+  });
+
+  it('leaves everything it cannot forward to in the registry for reporting', () => {
+    const all = BUILTIN_ENDPOINTS.map((entry) => entry.id);
+    expect(all).toContain('aws.bedrock.eu-central-1');
+    expect(proxyableEndpoints().map((entry) => entry.id)).not.toContain('aws.bedrock.eu-central-1');
+  });
+
+  it('never marks a wildcard host as proxyable', () => {
+    for (const entry of BUILTIN_ENDPOINTS) {
+      if (entry.hosts.some((host) => host.startsWith('*.'))) {
+        expect(entry.api, entry.id).toBeUndefined();
+      }
+    }
+  });
+
+  it('points every base URL at a host the entry itself claims', () => {
+    for (const entry of proxyableEndpoints()) {
+      const host = new URL(entry.baseUrl ?? '').hostname;
+      expect(entry.hosts, entry.id).toContain(host);
+    }
   });
 });

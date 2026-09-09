@@ -7,7 +7,7 @@
  * assessment, not the conclusion of one. Anything you rely on belongs in your
  * own `residency.allow` list, where you also record the legal basis.
  */
-import { jurisdiction, type Jurisdiction } from './jurisdictions.js';
+import { jurisdiction, leavesTheEea, type Jurisdiction } from './jurisdictions.js';
 
 /**
  * How a provider lets you switch off retention or training.
@@ -38,6 +38,24 @@ export interface EndpointEntry {
   readonly jurisdiction: string;
   readonly dataControls: readonly DataControl[];
   readonly note: string;
+  /**
+   * Base URL to forward to, for the endpoints hushgate can actually proxy.
+   *
+   * The registry stores host patterns because it answers "where does this
+   * request land". The wizard needs somewhere to send one, and the proxy
+   * builds that as `baseUrl + route.path` — so this is only set where that
+   * concatenation is the provider's real endpoint.
+   */
+  readonly baseUrl?: string;
+  /**
+   * Which of hushgate's two routes this endpoint speaks. Absent means the entry
+   * is known for residency purposes but cannot be an upstream: Bedrock is a
+   * real endpoint in a real jurisdiction and speaks neither protocol, and
+   * Gemini's compatible surface sits under a path the proxy cannot produce.
+   */
+  readonly api?: 'openai' | 'anthropic';
+  /** Model the trial page starts from. Editable there, because defaults age. */
+  readonly trialModel?: string;
 }
 
 const OPENAI_STORE_OFF: DataControl = {
@@ -93,6 +111,9 @@ export const BUILTIN_ENDPOINTS: readonly EndpointEntry[] = [
     operator: 'OpenAI, L.L.C.',
     hosts: ['api.openai.com'],
     jurisdiction: 'US',
+    baseUrl: 'https://api.openai.com',
+    api: 'openai',
+    trialModel: 'gpt-4o-mini',
     dataControls: [OPENAI_STORE_OFF, OPENAI_NO_TRAINING],
     note: 'Default OpenAI endpoint. US-operated; personal data sent here is a third-country transfer.',
   },
@@ -102,6 +123,9 @@ export const BUILTIN_ENDPOINTS: readonly EndpointEntry[] = [
     operator: 'Anthropic PBC',
     hosts: ['api.anthropic.com'],
     jurisdiction: 'US',
+    baseUrl: 'https://api.anthropic.com',
+    api: 'anthropic',
+    trialModel: 'claude-sonnet-5',
     dataControls: [
       {
         kind: 'no-training',
@@ -158,6 +182,9 @@ export const BUILTIN_ENDPOINTS: readonly EndpointEntry[] = [
     operator: 'Mistral AI SAS',
     hosts: ['api.mistral.ai'],
     jurisdiction: 'FR',
+    baseUrl: 'https://api.mistral.ai',
+    api: 'openai',
+    trialModel: 'mistral-small-latest',
     dataControls: [
       {
         kind: 'no-training',
@@ -283,6 +310,20 @@ function specificity(pattern: string): number {
 }
 
 /** Every jurisdiction the built-in registry knows about, for `residency --list`. */
+/**
+ * The endpoints the wizard may offer as an upstream: those carrying a URL, a
+ * protocol hushgate speaks, and a model to start from.
+ *
+ * Inside the EEA first, because that is the order in which an operator should
+ * be considering them — not because it is alphabetical.
+ */
+export function proxyableEndpoints(): readonly EndpointEntry[] {
+  return BUILTIN_ENDPOINTS.filter(
+    (entry) =>
+      entry.baseUrl !== undefined && entry.api !== undefined && entry.trialModel !== undefined,
+  ).toSorted((a, b) => Number(leavesTheEea(a.jurisdiction)) - Number(leavesTheEea(b.jurisdiction)));
+}
+
 export function knownJurisdictions(extra: readonly EndpointEntry[] = []): string[] {
   const codes = new Set([...extra, ...BUILTIN_ENDPOINTS].map((entry) => entry.jurisdiction));
   return [...codes].toSorted();
