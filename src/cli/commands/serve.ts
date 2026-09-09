@@ -7,6 +7,7 @@ import { VERSION } from '../../version.js';
 import { isAbsolute, resolve as joinPath } from 'node:path';
 import { boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
+import { untilStopped } from '../stop.js';
 
 /** One line about who may call this proxy. */
 function describeTenants(config: HushgateConfig): string {
@@ -138,25 +139,4 @@ function banner(config: HushgateConfig, origin: string, configPath: string | nul
   ];
 
   return `${lines.join('\n')}\n`;
-}
-
-/** Resolve on Ctrl-C, on SIGTERM, or when the caller's signal aborts. */
-function untilStopped(signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    const stop = (): void => {
-      process.removeListener('SIGINT', stop);
-      process.removeListener('SIGTERM', stop);
-      signal?.removeEventListener('abort', stop);
-      resolve();
-    };
-
-    if (signal?.aborted === true) {
-      resolve();
-      return;
-    }
-
-    process.once('SIGINT', stop);
-    process.once('SIGTERM', stop);
-    signal?.addEventListener('abort', stop, { once: true });
-  });
 }

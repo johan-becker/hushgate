@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { EXIT, type Cli } from '../src/cli/cli.js';
 import type { Choice, Prompter } from '../src/cli/prompt.js';
 import { run } from '../src/cli/run.js';
+import { waitFor } from './helpers/wait.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -208,5 +209,80 @@ describe('hushgate setup — the configuration branch', () => {
     expect(await run(c.cli)).toBe(EXIT.failure);
     expect(c.err()).toContain('hushgate init');
     expect(existsSync(join(dir, 'hushgate.config.json'))).toBe(false);
+  });
+});
+
+describe('hushgate setup — the trial branch', () => {
+  /** Run the trial until it has printed its banner, then stop it. */
+  async function runTrial(
+    dir: string,
+    argv: readonly string[],
+    answers: readonly string[],
+  ): Promise<Capture> {
+    const script = scripted(answers);
+    const c = capture([...argv], dir, script.prompt);
+    const controller = new AbortController();
+    const running = run({ ...c.cli, signal: controller.signal });
+
+    await waitFor(() => c.out().includes('__playground') || c.err() !== '');
+    controller.abort();
+    await running;
+    return c;
+  }
+
+  it('asks only for the provider and the key, then serves the page', async () => {
+    const dir = workspace();
+    const c = await runTrial(dir, ['setup'], ['1', '2', 'sk-test']);
+
+    expect(c.out()).toMatch(/http:\/\/127\.0\.0\.1:\d+\/__playground/u);
+    expect(existsSync(join(dir, 'hushgate.config.json'))).toBe(false);
+  });
+
+  it('asks three questions and no more', async () => {
+    const dir = workspace();
+    const script = scripted(['1', '2', 'sk-test']);
+    const c = capture(['setup'], dir, script.prompt);
+    const controller = new AbortController();
+    const running = run({ ...c.cli, signal: controller.signal });
+
+    await waitFor(() => c.out().includes('__playground'));
+    controller.abort();
+    await running;
+
+    expect(script.asked).toHaveLength(3);
+    expect(script.asked[2]).toMatch(/key/iu);
+  });
+
+  it('never prints the key it was given', async () => {
+    const dir = workspace();
+    const c = await runTrial(dir, ['setup'], ['1', '2', 'sk-very-secret']);
+    expect(c.out()).not.toContain('sk-very-secret');
+    expect(c.err()).not.toContain('sk-very-secret');
+  });
+
+  it('refuses a trial that would not be loopback', async () => {
+    const dir = workspace();
+    const script = scripted(['1', '2', 'sk-test']);
+    const c = capture(['setup', '--host', '0.0.0.0'], dir, script.prompt);
+
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.err()).toContain('loopback');
+  });
+
+  it('insists on a key rather than starting without one', async () => {
+    const dir = workspace();
+    const script = scripted(['1', '2', '']);
+    const c = capture(['setup'], dir, script.prompt);
+    const controller = new AbortController();
+
+    // An empty answer to a required question would loop forever against a real
+    // prompter; the scripted one returns it once, and setup must not proceed.
+    const running = run({ ...c.cli, signal: controller.signal });
+    await waitFor(() => c.err() !== '' || c.out().includes('__playground'));
+    controller.abort();
+    await running;
+
+    expect(c.err()).toContain('key');
+    expect(c.out()).not.toContain('__playground');
   });
 });

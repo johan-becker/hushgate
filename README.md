@@ -56,6 +56,27 @@ their counts but never the values.
 Node 20 or newer, and nothing else:
 
 ```sh
+npx hushgate setup
+```
+
+Two questions — which provider, and your API key — and it opens a page on
+`127.0.0.1` showing the whole round trip: what you wrote, what the provider
+would receive, the reply as it streams back with placeholders in it, and the
+same reply with your data put back. Nothing is written to disk, and the key
+stays inside that one process.
+
+The same command sets hushgate up for real. Only the provider has to be
+answered; the rest is optional and can be filled in later:
+
+```sh
+npx hushgate setup     # writes hushgate.config.json, then checks it
+npx hushgate serve
+```
+
+For scripts and CI, where there is no terminal to ask questions, `init` writes
+the same commented file with nothing filled in:
+
+```sh
 npx hushgate init      # write a commented starter config
 npx hushgate doctor    # check it; non-zero exit on anything unsafe
 npx hushgate serve

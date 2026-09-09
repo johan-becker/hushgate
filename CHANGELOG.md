@@ -14,6 +14,26 @@ and the re-hydration mappings that already exist.
 
 ### Added
 
+- **`hushgate setup`: one command from nothing to either a working
+  configuration or a demonstration.** The first question decides which. Trying
+  it out asks for a provider and an API key, then opens a page on loopback with
+  four boxes: your text, what the provider would receive, the reply as it
+  streams in, and the reply with your data put back. Nothing is written to
+  disk, and the key never leaves the process that asked for it.
+
+  Setting up asks the same provider question and makes everything after it
+  optional, including the legal basis — `doctor` runs underneath and says what
+  is still missing rather than blocking the path to ask for it. Only the
+  provider must be answered, because it is the only thing hushgate cannot work
+  out for itself.
+
+  The trial page is mounted by `setup` alone. It turns placeholders back into
+  personal data, so `serve` has no flag that switches it on.
+
+- **`hushgate init` is unchanged**, and is now documented as the path for
+  scripts and CI. Both commands render the same commented starter file from one
+  template, pinned byte for byte against what 0.1.0 shipped.
+
 - **The machine-readable zone off a passport or identity card.** New kind
   `TRAVEL_DOCUMENT_MRZ` (priority 99, directly below `SECRET`), reading ICAO
   Doc 9303 TD1, TD2 and TD3.
