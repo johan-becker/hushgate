@@ -22,6 +22,7 @@ import {
   UpstreamError,
 } from '../errors.js';
 import { Metrics } from '../metrics/registry.js';
+import { handlePlayground, PLAYGROUND_PREFIX, type PlaygroundOptions } from '../playground/index.js';
 import { applyDataControls } from '../residency/controls.js';
 import { QuotaTracker } from '../tenants/quota.js';
 import {
@@ -84,6 +85,14 @@ export interface ProxyOptions {
   readonly onInternalError?: (error: unknown) => void;
   /** Sink for residency warnings. Defaults to `console.warn`. */
   readonly onWarning?: (message: string) => void;
+  /**
+   * Mounts the trial page. Set only by `hushgate setup`.
+   *
+   * The page turns placeholders back into personal data, which is exactly what
+   * a production proxy must not offer — so there is deliberately no flag on
+   * `serve` that switches this on, not even a loopback-only one.
+   */
+  readonly playground?: PlaygroundOptions;
 }
 
 export interface ProxyServer {
@@ -158,6 +167,11 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const pathname = pathOf(request);
+
+    const playground = options.playground;
+    if (playground !== undefined && pathname.startsWith(PLAYGROUND_PREFIX)) {
+      if (await handlePlayground(request, response, playground, pathname)) return;
+    }
 
     if (pathname === '/healthz') {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
