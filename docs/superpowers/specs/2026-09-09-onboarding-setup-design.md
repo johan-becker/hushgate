@@ -175,17 +175,20 @@ instead of blocking the path or disappearing.
 
 ## Distribution
 
-`hushgate` is unclaimed on npm (registry returns 404 as of 2026-09-09), and
-`scripts/verify-package.mjs` already checks that the tarball carries `dist` and
-a runnable `bin`. There is no publish workflow.
+**0.1.0 is published**, on 2026-09-09, and verified from the registry with
+`npx hushgate@0.1.0 init && doctor` in an empty directory. The README's
+quickstart is npm-first, and the clone is now described as the path for working
+on hushgate itself.
 
-Two steps:
+Getting there surfaced two packaging faults that would otherwise have shipped,
+both now guarded in `scripts/verify-package.mjs`: a stale `dist/` carrying a
+second source tree and the compiled test suite, and a `bin` value whose leading
+`./` made npm strip the entry from the registry manifest — which would have
+left the package with no `hushgate` command at all.
 
-1. **0.1.0 now.** Claims the name, retires the clone paragraph at the top of the
-   README, and makes `npx hushgate doctor` work today. Needs `npm login` from
-   the maintainer's own machine — no token is added to CI for this step.
-2. **0.2.0 with `setup`.** After this design ships, so that `npx hushgate setup`
-   is real. The README's opening becomes one line.
+**0.2.0 ships this design**, so that `npx hushgate setup` is real and the
+README's opening becomes one line. Publishing is the maintainer's step; the
+release is prepared and verified here, then handed over.
 
 ## Testing
 
