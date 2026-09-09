@@ -35,9 +35,19 @@ for (const path of required) {
   if (!files.includes(path)) problems.push(`missing from the tarball: ${path}`);
 }
 
-const forbidden = files.filter(
-  (path) => path.startsWith('src/') || path.startsWith('test/') || path.endsWith('.tsbuildinfo'),
-);
+// Segment-wise, not prefix-wise. A stale `dist/` once carried a whole second
+// tree — `dist/src/**` and the compiled test suite under `dist/test/**` — from
+// a build made before `rootDir` was set. `startsWith('src/')` matched none of
+// it, and the tarball was one `npm publish` away from shipping the tests.
+const forbidden = files.filter((path) => {
+  const segments = path.split('/');
+  return (
+    segments.includes('src') ||
+    segments.includes('test') ||
+    path.endsWith('.tsbuildinfo') ||
+    /\.test\.(js|d\.ts)$/u.test(path)
+  );
+});
 for (const path of forbidden) problems.push(`should not be published: ${path}`);
 
 // The bin entry has to exist and has to run.

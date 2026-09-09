@@ -43,7 +43,7 @@
     "TRADEMARKS.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "lint": "oxlint --deny-warnings src test scripts",
     "test": "vitest run",
     "test:watch": "vitest",
