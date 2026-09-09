@@ -139,6 +139,24 @@ and the re-hydration mappings that already exist.
 
 ### Fixed
 
+- **A `redaction.policies` key that names no real kind is now a load error.**
+  The table checked the spelling of a key — UPPER_SNAKE_CASE, nothing else —
+  and `EMIAL` passes that. So the config parsed, `doctor` printed the rule
+  back, and every e-mail address left under the default policy, because no
+  finding is ever reported under that name. This is the failure mode the
+  residency block was already closed against (`residency.categories`), and the
+  policy table is the more dangerous of the two: it is where an operator writes
+  `block`.
+
+  The key set is closed against what the profile can actually produce — the
+  built-in kinds, plus every kind a custom rule or a dictionary entry
+  introduces — and the error suggests the near miss (`did you mean "EMAIL"?`).
+  Scope is respected in both directions: the global table is inherited by every
+  tenant, so a rule defined in any one of them is enough to give a global key a
+  meaning, while a tenant's own table is checked against that tenant's rules
+  alone. A config that leaned on the old silence will now refuse to load, and
+  the message says which key and what to write instead.
+
 - Attachment decoding no longer depends on the platform carrying the legacy
   encoding tables. Four places asked `new TextDecoder('windows-1252')` for the
   mapping, and none of them failed loudly when the platform could not supply
