@@ -53,16 +53,12 @@ their counts but never the values.
 
 ## 2. Quickstart
 
-0.1.0 is **not on the npm registry yet**, so the clone is the path that works.
-It needs nothing but Node 20 and the dev toolchain:
+Node 20 or newer, and nothing else:
 
 ```sh
-git clone https://github.com/johan-becker/hushgate
-cd hushgate && npm install && npm run build
-
-node dist/cli/main.js init      # write a commented starter config
-node dist/cli/main.js doctor    # check it; non-zero exit on anything unsafe
-node dist/cli/main.js serve
+npx hushgate init      # write a commented starter config
+npx hushgate doctor    # check it; non-zero exit on anything unsafe
+npx hushgate serve
 ```
 
 `doctor` exits 1 on that first run, and is meant to: a fresh config has no
@@ -70,15 +66,18 @@ node dist/cli/main.js serve
 allowlist in — or pass `--allow-warnings` to accept the warnings — and it goes
 quiet. That non-zero exit is the tool working, not the install failing.
 
-Once 0.1.0 is published, every `node dist/cli/main.js` below becomes plain
-`hushgate`, which is the name the transcripts in this README use:
+Install it once and the `npx` goes away, which is the form the transcripts in
+this README use:
 
 ```sh
-npm install -g hushgate   # not published yet
+npm install -g hushgate
 hushgate init
 hushgate doctor
 hushgate serve
 ```
+
+From a clone — the path for working on hushgate itself — `npm install && npm
+run build` first, and every `hushgate` below is `node dist/cli/main.js`.
 
 Then change one line in your application:
 
