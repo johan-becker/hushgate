@@ -16,6 +16,7 @@ import { residency, RESIDENCY_FLAGS, RESIDENCY_SUMMARY } from './commands/reside
 import { extract, EXTRACT_FLAGS, EXTRACT_SUMMARY } from './commands/extract.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
+import { setup, SETUP_FLAGS, SETUP_SUMMARY } from './commands/setup.js';
 
 interface Command {
   readonly summary: string;
@@ -30,6 +31,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate init [--path <path>] [--force]',
     flags: INIT_FLAGS,
     run: init,
+  },
+  setup: {
+    summary: SETUP_SUMMARY,
+    usage: 'hushgate setup [--path <path>] [--force]',
+    flags: SETUP_FLAGS,
+    run: setup,
   },
   serve: {
     summary: SERVE_SUMMARY,
