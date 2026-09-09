@@ -326,13 +326,31 @@ export const PAGE_JS = `(() => {
 
     say(inputStatus, 'reading ' + file.name + '…');
 
-    const body = new FormData();
-    body.append('file', file);
+    // Base64 in a JSON body, so the server needs no multipart parser and the
+    // bytes take the same door as everything else.
+    const data = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('unreadable'));
+      reader.onload = () => {
+        const url = String(reader.result);
+        resolve(url.slice(url.indexOf(',') + 1));
+      };
+      reader.readAsDataURL(file);
+    });
 
-    const response = await fetch('/__playground/preview', { method: 'POST', body });
+    const response = await fetch('/__playground/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        file: { name: file.name, mediaType: file.type || null, data },
+        model: model.value,
+      }),
+    });
+
     if (!response.ok) {
       const detail = await response.json().catch(() => null);
-      say(inputStatus, detail && detail.message ? detail.message : 'that file could not be read');
+      const message = detail && detail.error && detail.error.message;
+      say(inputStatus, message || 'that file could not be read');
       return;
     }
 
