@@ -50,6 +50,16 @@ const forbidden = files.filter((path) => {
 });
 for (const path of forbidden) problems.push(`should not be published: ${path}`);
 
+// A `bin` value with a leading `./` makes npm rewrite the manifest it sends to
+// the registry — it warns "was invalid and removed" and publishes anyway. The
+// tarball keeps the entry, so nothing local shows the damage. `exports` is the
+// opposite: there the `./` is required. So this checks only `bin`.
+for (const [name, target] of Object.entries(pkg.bin ?? {})) {
+  if (target.startsWith('./')) {
+    problems.push(`bin.${name} starts with "./"; npm rewrites that on publish — use ${target.slice(2)}`);
+  }
+}
+
 // The bin entry has to exist and has to run.
 const bin = join(root, pkg.bin.hushgate);
 let version = '';

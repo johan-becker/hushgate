@@ -22,7 +22,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "hushgate": "./dist/cli/main.js"
+    "hushgate": "dist/cli/main.js"
   },
   "exports": {
     ".": {
