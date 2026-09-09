@@ -89,6 +89,87 @@ describe('parseConfig', () => {
     );
   });
 
+  // The typo case the shape check cannot see: EMIAL is well-formed, so it was
+  // accepted, matched nothing, and left EMAIL on the default policy while the
+  // operator read "block" back out of their own file.
+  it('rejects a policy for a kind nothing can report, and names the near miss', () => {
+    const bad = { redaction: { policies: { EMIAL: 'block' } } };
+    expect(() => parseConfig(bad)).toThrow(ConfigError);
+    expect(() => parseConfig(bad)).toThrow(/"EMIAL" is not a kind hushgate can report/u);
+    expect(() => parseConfig(bad)).toThrow(/did you mean "EMAIL"/u);
+  });
+
+  it('accepts a policy naming the kind a custom rule reports', () => {
+    const config = parseConfig({
+      redaction: {
+        custom: [{ name: 'employee id', pattern: 'EMP-\\d{5}' }],
+        policies: { EMPLOYEE_ID: 'block' },
+      },
+    });
+    expect(config.redaction.policies['EMPLOYEE_ID']).toBe('block');
+  });
+
+  it('accepts a policy naming the kind a dictionary entry reports', () => {
+    const config = parseConfig({
+      redaction: {
+        dictionary: { entries: [{ value: 'Projekt Nord', kind: 'CODENAME' }] },
+        policies: { CODENAME: 'redact' },
+      },
+    });
+    expect(config.redaction.policies['CODENAME']).toBe('redact');
+  });
+
+  // The global table applies to every tenant, so a rule that exists in one of
+  // them is enough to make the key mean something.
+  it('accepts a global policy for a kind only one tenant defines', () => {
+    const config = parseConfig({
+      redaction: { policies: { EMPLOYEE_ID: 'block' } },
+      tenants: [
+        {
+          id: 'support',
+          keyHash: 'a'.repeat(64),
+          redaction: { custom: [{ name: 'employee id', pattern: 'EMP-\\d{5}' }] },
+        },
+      ],
+    });
+    expect(config.redaction.policies['EMPLOYEE_ID']).toBe('block');
+    expect(config.tenants[0]!.redaction.policies['EMPLOYEE_ID']).toBe('block');
+  });
+
+  it('rejects an unknown kind in a tenant policy table', () => {
+    expect(() =>
+      parseConfig({
+        tenants: [
+          {
+            id: 'support',
+            keyHash: 'a'.repeat(64),
+            redaction: { policies: { EMIAL: 'block' } },
+          },
+        ],
+      }),
+    ).toThrow(/tenants"\[0\]: "redaction"\.policies: "EMIAL"/u);
+  });
+
+  // A tenant sees the global custom rules, but not another tenant's.
+  it('rejects a tenant policy for a kind only a different tenant defines', () => {
+    expect(() =>
+      parseConfig({
+        tenants: [
+          {
+            id: 'support',
+            keyHash: 'a'.repeat(64),
+            redaction: { custom: [{ name: 'employee id', pattern: 'EMP-\\d{5}' }] },
+          },
+          {
+            id: 'sales',
+            keyHash: 'b'.repeat(64),
+            redaction: { policies: { EMPLOYEE_ID: 'block' } },
+          },
+        ],
+      }),
+    ).toThrow(/"EMPLOYEE_ID" is not a kind hushgate can report/u);
+  });
+
   it('rejects an out-of-range port but allows the ephemeral 0', () => {
     expect(parseConfig({ port: 0 }).port).toBe(0);
     expect(() => parseConfig({ port: -1 })).toThrow(/between 0 and 65535/u);

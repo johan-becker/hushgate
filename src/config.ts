@@ -17,7 +17,11 @@ import {
 import type { PostalAddressOptions } from './detectors/address.js';
 import type { BicOptions } from './detectors/bic.js';
 import { normaliseKindName, type CustomRule } from './detectors/custom.js';
-import type { DictionaryInput, DictionaryOptions } from './detectors/dictionary.js';
+import {
+  withinEditDistanceOne,
+  type DictionaryInput,
+  type DictionaryOptions,
+} from './detectors/dictionary.js';
 import type { DobYearRange } from './detectors/dob.js';
 import type { Icd10Options, MedicationOptions } from './detectors/health.js';
 import type { BankAccountOptions } from './detectors/bankaccount.js';
@@ -419,9 +423,13 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
   const audit = asObject(root['audit'] ?? {}, `${where}: "audit"`);
   rejectUnknownKeys(audit, new Set(['enabled', 'path']), `${where}: "audit"`);
 
-  const redaction = parseRedaction(root['redaction'], where, base.redaction);
+  // Collected across every scope and checked once, below: the global table is
+  // inherited by every tenant, so whether one of its keys names a real kind
+  // cannot be decided before the tenants have been read.
+  const declared: PolicyScope[] = [];
+  const redaction = parseRedaction(root['redaction'], where, base.redaction, declared, true);
 
-  return {
+  const config: HushgateConfig = {
     host: optionalString(root['host'], `${where}: "host"`) ?? base.host,
     port: optionalPort(root['port'], `${where}: "port"`) ?? base.port,
     upstreams: {
@@ -461,9 +469,12 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
     },
     attachments: parseAttachments(root['attachments'], where, base.attachments),
     residency: parseResidency(root['residency'], where, base.residency),
-    tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction),
+    tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction, declared),
     organisation: parseOrganisation(root['organisation'], `${where}: "organisation"`),
   };
+
+  assertPolicyKinds(declared);
+  return config;
 }
 
 function parseOrganisation(raw: unknown, where: string): OrganisationConfig {
@@ -486,6 +497,7 @@ function parseTenants(
   raw: unknown,
   where: string,
   globalRedaction: RedactionConfig,
+  declared: PolicyScope[],
 ): Tenant[] {
   if (raw === undefined || raw === null) return [];
 
@@ -522,7 +534,7 @@ function parseTenants(
       id,
       name: optionalString(node['name'], `${scope}.name`) ?? id,
       keyHashes: parseKeyHashes(node, scope),
-      redaction: parseRedaction(node['redaction'], scope, globalRedaction),
+      redaction: parseRedaction(node['redaction'], scope, globalRedaction, declared, false),
       quotas: parseQuotas(node['quotas'], `${scope}.quotas`),
       auditPath: optionalString(audit['path'], `${scope}.audit.path`) ?? null,
       upstreamKeyEnv: optionalString(node['upstreamKeyEnv'], `${scope}.upstreamKeyEnv`) ?? null,
@@ -801,7 +813,13 @@ function optionalMode(value: unknown, where: string): EnforcementMode | undefine
   return value;
 }
 
-function parseRedaction(raw: unknown, where: string, base: RedactionConfig): RedactionConfig {
+function parseRedaction(
+  raw: unknown,
+  where: string,
+  base: RedactionConfig,
+  declared: PolicyScope[],
+  isGlobal: boolean,
+): RedactionConfig {
   const scope = `${where}: "redaction"`;
   const node = asObject(raw ?? {}, scope);
   rejectUnknownKeys(
@@ -818,15 +836,20 @@ function parseRedaction(raw: unknown, where: string, base: RedactionConfig): Red
     scope,
   );
 
+  // Only the keys written *here*. An inherited one is the global table's to
+  // answer for, and re-checking it against a tenant that never asked for it is
+  // how a legitimate global rule gets blamed on the wrong scope.
+  const own = parsePolicies(node['policies'], `${scope}.policies`);
+
   // Every field is folded *over* the base rather than replacing it. A tenant
   // block is an override, not a fresh start: an organisation's blocked kinds,
   // name dictionary and custom rules must keep applying to a tenant that never
   // mentioned them, and the common case — a tenant with no redaction block at
   // all — has to behave exactly like the global profile.
-  return {
+  const resolved: RedactionConfig = {
     defaultPolicy: optionalPolicy(node['defaultPolicy'], `${scope}.defaultPolicy`) ??
       base.defaultPolicy,
-    policies: { ...base.policies, ...parsePolicies(node['policies'], `${scope}.policies`) },
+    policies: { ...base.policies, ...own },
     dictionary: mergeDictionaries(
       base.dictionary,
       parseDictionary(node['dictionary'], `${scope}.dictionary`),
@@ -840,6 +863,92 @@ function parseRedaction(raw: unknown, where: string, base: RedactionConfig): Red
       parseDobYearRange(node['dobYearRange'], `${scope}.dobYearRange`) ?? base.dobYearRange,
     hmacKey: optionalString(node['hmacKey'], `${scope}.hmacKey`) ?? base.hmacKey,
   };
+
+  declared.push({
+    where: `${scope}.policies`,
+    keys: Object.keys(own),
+    kinds: reportableKinds(resolved),
+    global: isGlobal,
+  });
+
+  return resolved;
+}
+
+/**
+ * One `policies` table as it was written, held until every table has been read.
+ */
+interface PolicyScope {
+  /** Where an error about this table should point. */
+  readonly where: string;
+  /** The keys written at this scope, not the ones folded in from the base. */
+  readonly keys: readonly string[];
+  /** What this scope can report: the built-ins plus whatever it configures. */
+  readonly kinds: ReadonlySet<string>;
+  /** True for the global table, which every tenant inherits. */
+  readonly global: boolean;
+}
+
+/**
+ * Kinds a resolved profile can actually produce: the built-in detectors, plus
+ * every kind the operator introduced through a custom rule or a dictionary
+ * entry. `LITERAL` is deliberately absent — it exists to protect text that
+ * already looks like a placeholder, and is not a finding anyone sets a policy
+ * on.
+ */
+function reportableKinds(redaction: RedactionConfig): Set<string> {
+  const kinds = new Set<string>(BUILTIN_KINDS);
+
+  for (const rule of redaction.custom) {
+    // A name too mangled to normalise is not this check's error to report;
+    // createCustomDetector says so precisely, when the rule is compiled.
+    try {
+      kinds.add(normaliseKindName(rule.name));
+    } catch {
+      continue;
+    }
+  }
+
+  for (const entry of redaction.dictionary.entries ?? []) {
+    if (entry.kind !== undefined) kinds.add(entry.kind);
+  }
+
+  return kinds;
+}
+
+/**
+ * A policy keyed on a kind nothing reports is the quietest way this file can
+ * fail. The table parses, `hushgate doctor` prints it back, the operator reads
+ * `"EMIAL": "block"` out of their own config — and every e-mail address leaves
+ * under the default policy, because no finding ever carries that name. The
+ * spelling check in `parsePolicies` cannot see it: `EMIAL` is well-formed. So
+ * the key set is closed against what the profile can actually produce, exactly
+ * as `residency.categories` is closed against what hushgate can recognise.
+ */
+function assertPolicyKinds(declared: readonly PolicyScope[]): void {
+  const anywhere = new Set<string>();
+  for (const scope of declared) {
+    for (const kind of scope.kinds) anywhere.add(kind);
+  }
+
+  for (const scope of declared) {
+    // The global table reaches every tenant, so a rule in any one of them is
+    // enough to give its key a meaning. A tenant's own table reaches only that
+    // tenant — and already carries the global rules folded into it.
+    const known = scope.global ? anywhere : scope.kinds;
+
+    for (const key of scope.keys) {
+      if (known.has(key)) continue;
+
+      // Iteration order is the built-ins first, in declaration order, so the
+      // suggestion for a typo on a built-in is stable.
+      const near = [...known].find((kind) => withinEditDistanceOne(kind, key));
+      throw new ConfigError(
+        `${scope.where}: "${key}" is not a kind hushgate can report${
+          near === undefined ? '' : ` (did you mean "${near}"?)`
+        }; use a built-in (${BUILTIN_KINDS.join(', ')}), or a kind one of your custom rules or dictionary entries introduces`,
+      );
+    }
+  }
 }
 
 /** Every detector group at its seeded default: narrowed by nobody. */

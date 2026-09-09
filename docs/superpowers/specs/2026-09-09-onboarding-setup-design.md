@@ -219,10 +219,11 @@ Along the existing in-process CLI patterns (`test/cli.doctor.test.ts`):
 Found during the same walkthrough, worth fixing, deliberately not part of this
 design:
 
-- `redaction.policies` accepts any UPPER_SNAKE_CASE key without checking it
+- ~~`redaction.policies` accepts any UPPER_SNAKE_CASE key without checking it
   names a real kind (`src/config.ts:1167`), so a typo silently enforces
   nothing. `residency` already rejects unknown keys for exactly this reason
-  (`src/config.ts:629`); the fix is to copy that.
+  (`src/config.ts:629`); the fix is to copy that.~~ Fixed separately, after
+  this design shipped — see `assertPolicyKinds` in `src/config.ts`.
 - `$schema` is accepted and ignored (`src/config.ts:298`) but no schema file
   ships, so editors cannot complete or validate the config.
 - `keys new` prints a JSON snippet to paste by hand; no `--write`.
