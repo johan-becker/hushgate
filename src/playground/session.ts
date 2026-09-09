@@ -19,6 +19,11 @@ const ID_BYTES = 16;
 export interface TrialSession {
   readonly id: string;
   readonly session: Session;
+  /**
+   * The sanitised text, held so that Send transmits exactly what the operator
+   * was shown — not a second redaction of the original, which could differ.
+   */
+  readonly sanitised: string;
   readonly model: string;
   readonly createdAt: number;
 }
@@ -44,7 +49,7 @@ export class TrialStore {
     this.clock = options.now ?? ((): number => Date.now());
   }
 
-  create(session: Session, model: string): TrialSession {
+  create(session: Session, sanitised: string, model: string): TrialSession {
     this.sweep();
 
     // Map iterates in insertion order, so the first key is the oldest.
@@ -57,6 +62,7 @@ export class TrialStore {
     const entry: TrialSession = {
       id: randomBytes(ID_BYTES).toString('base64url'),
       session,
+      sanitised,
       model,
       createdAt: this.clock(),
     };

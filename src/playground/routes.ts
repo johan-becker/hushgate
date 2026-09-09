@@ -7,7 +7,9 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { errorPayload, parseJsonObject, readBody, sendJson } from '../proxy/http.js';
+import { nodeUpstreamClient, type UpstreamClient } from '../proxy/upstream.js';
 import { countByKind, Session } from '../redact/session.js';
+import { SseParser, StreamRehydrator } from '../stream/index.js';
 import { PAGE_CSS, PAGE_JS, renderPage, type PlaygroundEndpoint } from './page.js';
 import type { TrialStore } from './session.js';
 
@@ -38,6 +40,8 @@ export interface PlaygroundOptions {
   readonly dictionaryIsEmpty: boolean;
   /** Reads a dropped document. Without it, dropping one is refused. */
   readonly extract?: ExtractText;
+  /** Substitutable so a test can stand in for the provider. */
+  readonly upstream?: UpstreamClient;
 }
 
 /** Enough for a pasted letter or a decent-sized PDF; not a file upload service. */
@@ -105,6 +109,10 @@ export function handlePlayground(
 
   if (request.method === 'POST' && pathname === `${PLAYGROUND_PREFIX}/preview`) {
     return preview(request, response, options).then(() => true);
+  }
+
+  if (request.method === 'POST' && pathname === `${PLAYGROUND_PREFIX}/send`) {
+    return send(request, response, options).then(() => true);
   }
 
   return Promise.resolve(false);
@@ -180,7 +188,7 @@ async function preview(
 
   const session = new Session();
   const result = session.redact(text);
-  const entry = options.store.create(session, model);
+  const entry = options.store.create(session, result.text, model);
 
   sendJson(
     response,
@@ -209,4 +217,173 @@ function isDroppedFile(value: unknown): value is DroppedPayload {
     value !== null &&
     typeof (value as { data?: unknown }).data === 'string'
   );
+}
+
+/** How long to wait on the provider before giving up on the trial. */
+const UPSTREAM_TIMEOUT_MS = 120_000;
+/** Anthropic requires a ceiling; the trial is a demonstration, not a workload. */
+const TRIAL_MAX_TOKENS = 1024;
+
+/**
+ * Send the sanitised text, and stream the answer back on two channels.
+ *
+ * `raw` is the provider's delta exactly as it arrived, placeholders intact.
+ * `hydrated` is the same delta through a {@link StreamRehydrator}, which holds
+ * characters back whenever a placeholder falls across a chunk boundary. The
+ * lag that produces is not smoothed away: it is the mechanism, visible.
+ */
+async function send(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: PlaygroundOptions,
+): Promise<void> {
+  let body: Record<string, unknown>;
+  try {
+    body = parseJsonObject(await readBody(request, MAX_BODY_BYTES));
+  } catch {
+    sendJson(response, 400, errorPayload('bad_request', 'that was not a JSON object'), SECURITY_HEADERS);
+    return;
+  }
+
+  const sessionId = typeof body['sessionId'] === 'string' ? body['sessionId'] : '';
+  const entry = options.store.get(sessionId);
+  if (entry === undefined) {
+    sendJson(
+      response,
+      404,
+      errorPayload('no_such_session', 'that preview has expired; check the text again'),
+      SECURITY_HEADERS,
+    );
+    return;
+  }
+
+  // Whatever the page sent as a key is ignored on purpose. The page has no
+  // business carrying one, and a page that could choose the credential would
+  // be a way to spend someone else's.
+  const client = options.upstream ?? nodeUpstreamClient;
+  const shape = requestFor(options, entry.model);
+
+  let upstream;
+  try {
+    upstream = await client({
+      url: `${options.endpoint.baseUrl}${shape.path}`,
+      method: 'POST',
+      headers: shape.headers,
+      body: JSON.stringify(shape.payload(entry.sanitised)),
+      timeoutMs: UPSTREAM_TIMEOUT_MS,
+    });
+  } catch {
+    sendJson(
+      response,
+      502,
+      errorPayload('upstream_unreachable', 'the provider could not be reached'),
+      SECURITY_HEADERS,
+    );
+    return;
+  }
+
+  if (upstream.status >= 400) {
+    upstream.body.resume();
+    sendJson(
+      response,
+      502,
+      errorPayload('upstream_error', `the provider answered ${upstream.status}`),
+      SECURITY_HEADERS,
+    );
+    return;
+  }
+
+  response.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    connection: 'keep-alive',
+    ...SECURITY_HEADERS,
+  });
+
+  const parser = new SseParser();
+  const rehydrator = new StreamRehydrator((token) => entry.session.lookup(token));
+  const emit = (event: string, delta: string): void => {
+    if (delta === '') return;
+    response.write(`event: ${event}\ndata: ${JSON.stringify({ delta })}\n\n`);
+  };
+
+  upstream.body.setEncoding('utf8');
+  for await (const chunk of upstream.body) {
+    for (const event of parser.push(String(chunk))) {
+      if (!event.hasData || event.data.trim() === '[DONE]') continue;
+
+      let json: unknown;
+      try {
+        json = JSON.parse(event.data);
+      } catch {
+        continue;
+      }
+
+      const delta = deltaOf(json, options.endpoint.api);
+      emit('raw', delta);
+      emit('hydrated', rehydrator.push(delta));
+    }
+  }
+
+  emit('hydrated', rehydrator.flush());
+  response.write('event: done\ndata: {}\n\n');
+  response.end();
+}
+
+interface RequestShape {
+  readonly path: string;
+  readonly headers: Readonly<Record<string, string>>;
+  payload(text: string): unknown;
+}
+
+/** The two protocols hushgate speaks, as the trial has to send them. */
+function requestFor(options: PlaygroundOptions, model: string): RequestShape {
+  if (options.endpoint.api === 'anthropic') {
+    return {
+      path: '/v1/messages',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': options.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      payload: (text) => ({
+        model,
+        max_tokens: TRIAL_MAX_TOKENS,
+        stream: true,
+        messages: [{ role: 'user', content: text }],
+      }),
+    };
+  }
+
+  return {
+    path: '/v1/chat/completions',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${options.apiKey}`,
+    },
+    payload: (text) => ({
+      model,
+      stream: true,
+      messages: [{ role: 'user', content: text }],
+    }),
+  };
+}
+
+/** The incremental text in one event, for whichever protocol produced it. */
+function deltaOf(json: unknown, api: 'openai' | 'anthropic'): string {
+  if (typeof json !== 'object' || json === null) return '';
+
+  if (api === 'anthropic') {
+    const delta = (json as { delta?: { text?: unknown } }).delta;
+    return typeof delta?.text === 'string' ? delta.text : '';
+  }
+
+  const choices = (json as { choices?: unknown }).choices;
+  if (!Array.isArray(choices)) return '';
+
+  let out = '';
+  for (const choice of choices) {
+    const content = (choice as { delta?: { content?: unknown } })?.delta?.content;
+    if (typeof content === 'string') out += content;
+  }
+  return out;
 }
