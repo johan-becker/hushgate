@@ -2,6 +2,8 @@
  * The ambient environment a command runs in, injected rather than reached for,
  * so every command can be exercised in-process by the tests.
  */
+import { createPrompter, type Prompter } from './prompt.js';
+
 export type Writer = (text: string) => void;
 
 export interface Cli {
@@ -13,6 +15,15 @@ export interface Cli {
   readonly cwd: string;
   /** Standard input, for `check` and for `scan -`. */
   readonly stdin?: NodeJS.ReadableStream;
+  /**
+   * Opens an interactive prompt. Absent when there is no terminal, which is how
+   * `setup` knows to send the caller to `init` instead.
+   *
+   * A factory rather than a {@link Prompter}, because building one attaches
+   * readline to stdin — and `check` and `scan -` read stdin themselves.
+   * Nothing is attached until a command actually asks a question.
+   */
+  readonly prompt?: () => Prompter;
   /** Aborting stops long-running commands such as `serve`. */
   readonly signal?: AbortSignal;
 }
@@ -35,6 +46,12 @@ export function processCli(argv: readonly string[] = process.argv.slice(2)): Cli
     env: process.env,
     cwd: process.cwd(),
     stdin: process.stdin,
+    ...(process.stdin.isTTY === true
+      ? {
+          prompt: (): Prompter =>
+            createPrompter({ input: process.stdin, output: process.stdout }),
+        }
+      : {}),
   };
 }
 
