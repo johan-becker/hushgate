@@ -32,9 +32,9 @@ One command, two branches, chosen by the first question.
 
     $ npx hushgate setup
 
-      Was willst du?
-        1 Ausprobieren — in einer Minute sehen, was der Anbieter zu sehen bekäme
-        2 Einrichten   — Konfiguration für den echten Betrieb schreiben
+      What would you like to do?
+        1 Try it     — see in a minute what the provider would receive
+        2 Set it up  — write a configuration for real use
 
 **Trial** asks two questions — which provider, and the API key — then starts a
 loopback server and opens `http://127.0.0.1:8787/__playground` in the browser.
@@ -50,23 +50,31 @@ offers the trial page at the end.
 
 Only the provider question is mandatory in either branch.
 
+## Language
+
+The wizard speaks English, like every other command, the README and the config
+comments. The product's first buyers are German, and the vocabulary it asks
+about — Article 30, legal basis, data protection officer — is German law in
+English words; that is what the rest of the tool already does. A German build
+is a later decision, not a mixed-language tool today.
+
 ## The trial page
 
 Four boxes on one page at `http://127.0.0.1:8787/__playground`, top to bottom:
 
-1. **Dein Text** — a textarea, or a PDF dropped onto it.
-2. **Was der Anbieter sähe** — the pseudonymised text, with the findings listed
-   by kind, a model field, and a **Senden** button. The model is prefilled from
+1. **Your text** — a textarea, or a PDF dropped onto it.
+2. **What the provider sees** — the pseudonymised text, with the findings listed
+   by kind, a model field, and a **Send** button. The model is prefilled from
    the chosen registry entry's `trialModel` and stays editable, because a
    default model name ages faster than this document.
-3. **Antwort (roh)** — the provider's reply as it arrives, placeholders intact.
-4. **Rehydriert** — the same reply with the real values put back.
+3. **Reply, as it arrives** — the provider's reply, placeholders intact.
+4. **Reply, rehydrated** — the same reply with the real values put back.
 
 Boxes 3 and 4 stream at once from a single SSE response carrying two event
 kinds:
 
-    event: raw       data: {"delta":"Ich schreibe an [EMAIL_1]"}
-    event: hydrated  data: {"delta":"Ich schreibe an k.vogelsang@nordwerk.de"}
+    event: raw       data: {"delta":"I will write to [EMAIL_1]"}
+    event: hydrated  data: {"delta":"I will write to k.vogelsang@nordwerk.de"}
 
 `raw` is the upstream delta unchanged. `hydrated` comes from the existing
 `SseRehydrator`, which withholds characters when a placeholder straddles a
@@ -77,8 +85,8 @@ smoothed away: it is the mechanism doing its work.
 Below box 2, one line of standing text, shown whenever the dictionary is empty
 — which in the trial it always is:
 
-> Personennamen kommen ausschließlich aus deinem Wörterbuch. Trag eure Namen
-> unter `redaction.dictionary.names` ein.
+> Personal names come only from your dictionary. Add yours under
+> `redaction.dictionary.names`.
 
 The condition is the configuration, not the text. Nothing inspects the input
 for name-shaped candidates: no guessing, no false confidence in either
@@ -167,8 +175,9 @@ does not ask for it up front, because it is the one answer an operator does not
 have at the keyboard. It writes the file without an allowlist, and the inline
 doctor run then says so:
 
-    warn  keine Rechtsgrundlage hinterlegt, also ist jeder Upstream erlaubt
-          → residency.allow ausfüllen, sobald die Rechtsabteilung geliefert hat
+    warn  no residency allowlist is configured, so any upstream is permitted
+          → list the endpoints you have assessed in residency.allow, each with
+            its legal basis
 
 The operator reaches a working proxy, and the open question stays visible
 instead of blocking the path or disappearing.
