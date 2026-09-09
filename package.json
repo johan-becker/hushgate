@@ -1,6 +1,6 @@
 {
   "name": "hushgate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-first PII firewall between your app and a cloud LLM API. Nothing personal leaves the machine.",
   "keywords": [
     "pii",
