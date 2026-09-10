@@ -235,7 +235,7 @@ $ node examples/upstream.mjs &
 fake upstream on http://127.0.0.1:9099
 
 $ hushgate serve -c examples/demo.config.json
-hushgate 0.2.0 listening on http://127.0.0.1:8787
+hushgate 0.3.0 listening on http://127.0.0.1:8787
   config     /home/you/hushgate/examples/demo.config.json
   upstreams  openai     http://127.0.0.1:9099
              anthropic  http://127.0.0.1:9099
@@ -1090,7 +1090,7 @@ for example.
 $ curl -sS http://127.0.0.1:8787/metrics
 # HELP hushgate_build_info Version of the running hushgate.
 # TYPE hushgate_build_info gauge
-hushgate_build_info{version="0.2.0"} 1
+hushgate_build_info{version="0.3.0"} 1
 # HELP hushgate_requests_total Requests handled, by route, outcome and tenant.
 # TYPE hushgate_requests_total counter
 hushgate_requests_total{outcome="blocked",route="openai.chat.completions",status="403",tenant="none"} 1
