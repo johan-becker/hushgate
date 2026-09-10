@@ -44,6 +44,7 @@
   ],
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "prepublishOnly": "npm run build && npm run typecheck && npm run lint && npm test && npm run verify:package",
     "lint": "oxlint --deny-warnings src test scripts",
     "test": "vitest run",
     "test:watch": "vitest",
