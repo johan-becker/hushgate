@@ -24,11 +24,11 @@ interface Capture {
   err(): string;
 }
 
-function capture(argv: string[], cwd: string): Capture {
+function capture(argv: string[], cwd: string, env: NodeJS.ProcessEnv = {}): Capture {
   const out: string[] = [];
   const err: string[] = [];
   return {
-    cli: { argv, stdout: (t) => out.push(t), stderr: (t) => err.push(t), env: {}, cwd },
+    cli: { argv, stdout: (t) => out.push(t), stderr: (t) => err.push(t), env, cwd },
     out: () => out.join(''),
     err: () => err.join(''),
   };
@@ -74,6 +74,19 @@ describe('hushgate init', () => {
     await run(c.cli);
     expect(c.out()).toContain('hushgate doctor');
     expect(c.out()).toContain('residency.allow');
+  });
+
+  it('names the commands the way the caller can run them', async () => {
+    const dir = workspace();
+    // init is the branch for scripts and CI, and `npx hushgate init` is how a
+    // Dockerfile or a Makefile reaches it — with no hushgate on PATH after.
+    const c = capture(['init'], dir, { npm_command: 'exec' });
+    await run(c.cli);
+
+    expect(c.out()).toContain('"npx hushgate doctor"');
+    expect(c.out()).toContain('"npx hushgate serve"');
+    expect(c.out()).toContain('"npx hushgate residency --registry"');
+    expect(c.out()).not.toMatch(/(?<!npx )hushgate (doctor|serve|residency)/u);
   });
 
   it('refuses to overwrite without --force', async () => {

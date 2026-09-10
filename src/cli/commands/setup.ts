@@ -25,6 +25,8 @@ import { createProxyServer } from '../../proxy/server.js';
 import { proxyableEndpoints, type EndpointEntry } from '../../residency/registry.js';
 import { boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
+import { NPX, invokedAs } from '../invocation.js';
+import type { InstallScope } from '../install.js';
 import type { Choice, Prompter } from '../prompt.js';
 import { untilStopped } from '../stop.js';
 import { renderConfig, type SetupAnswers } from '../template.js';
@@ -47,6 +49,9 @@ export const SETUP_FLAGS: FlagSpecs = {
 };
 
 export const SETUP_SUMMARY = 'answer a few questions to set hushgate up, or try it out';
+
+/** Sections whose notes report an absent capability rather than a default. */
+const CAPABILITY_SECTIONS: ReadonlySet<string> = new Set(['attachments']);
 
 const MARKS: Readonly<Record<Severity, string>> = {
   ok: 'ok  ',
@@ -277,8 +282,59 @@ async function writeConfiguration(
       `  residency.allow with its own legal basis when you have one.\n\n`,
   );
 
-  reportOnIt(cli, path);
+  reportOnIt(cli, path, await leaveItRunnable(cli, prompter));
   return EXIT.ok;
+}
+
+/**
+ * Offer to leave hushgate where the operator can run it, and answer with the
+ * command that then works.
+ *
+ * Asked only when it needs asking. A hushgate already on PATH, or already in
+ * this folder's `node_modules`, is one the next command resolves without
+ * fetching anything. That leaves `npx` from a cache npm discards, which is the
+ * one case where the wizard would otherwise end by naming a command that does
+ * not exist — the operator's first act after answering five questions being to
+ * read `command not found`.
+ *
+ * Optional on purpose. hushgate installing itself on a machine that did not
+ * ask is worse than an extra `npx`.
+ */
+async function leaveItRunnable(cli: Cli, prompter: Prompter): Promise<string> {
+  const fallback = invokedAs(cli.env);
+  const install = cli.install;
+
+  // Anything but npx already resolved a hushgate on PATH: there is nothing to
+  // install, and asking about it would be a question with no consequence.
+  if (
+    fallback !== NPX ||
+    install === undefined ||
+    // npx resolves node_modules before it fetches: this folder already has one.
+    existsSync(joinPath(cli.cwd, 'node_modules', 'hushgate'))
+  ) {
+    return fallback;
+  }
+
+  const scope = await prompter.choose<InstallScope | undefined>(
+    'hushgate ran from a cache npm will discard. Install it (optional)?',
+    [
+      { label: 'This folder', hint: '— beside the configuration', value: 'folder' },
+      { label: 'Everywhere', hint: '— on PATH, for every project', value: 'global' },
+      { label: 'Neither', hint: '— keep running it through npx', value: undefined },
+    ],
+  );
+
+  if (scope === undefined) return fallback;
+
+  const outcome = await install(scope, cli.cwd);
+  if (!outcome.ok) {
+    // A failed install is not a failed setup: the configuration is written and
+    // npx still runs it. Say what npm said, then name the command that works.
+    cli.stdout(`\n  install failed: ${outcome.reason ?? 'npm did not finish'}\n`);
+    return fallback;
+  }
+
+  return scope === 'global' ? 'hushgate' : NPX;
 }
 
 /**
@@ -306,7 +362,7 @@ export function upstreamsFor(entry: EndpointEntry): { openai?: string; anthropic
  * questions does not need eight lines confirming that the defaults are the
  * defaults. `hushgate doctor` remains the whole report.
  */
-function reportOnIt(cli: Cli, configPath: string): void {
+function reportOnIt(cli: Cli, configPath: string, command: string): void {
   const { config, source } = loadConfig({ path: configPath, cwd: cli.cwd, env: cli.env });
   const findings = runChecks({
     config,
@@ -318,7 +374,13 @@ function reportOnIt(cli: Cli, configPath: string): void {
 
   const lines: string[] = ['  doctor'];
   for (const finding of findings) {
-    if (finding.severity === 'ok' || finding.severity === 'note') continue;
+    if (finding.severity === 'ok') continue;
+    // Notes are suppressed as noise — an operator who has just answered five
+    // questions does not need the defaults read back. The exception is a
+    // capability that is silently absent: a missing extractor means every PDF
+    // is refused, which they will meet as "hushgate is broken" months later,
+    // from a user whose invoice bounced.
+    if (finding.severity === 'note' && !CAPABILITY_SECTIONS.has(finding.section)) continue;
     lines.push(`    ${MARKS[finding.severity]}  ${finding.message}`);
     if (finding.remedy !== undefined) lines.push(`          → ${finding.remedy}`);
   }
@@ -327,9 +389,9 @@ function reportOnIt(cli: Cli, configPath: string): void {
   lines.push(
     counts.fail + counts.warn === 0
       ? '    nothing unsafe found'
-      : '    "hushgate doctor" prints the whole report',
+      : `    "${command} doctor" prints the whole report`,
     '',
-    '  Start it with:  hushgate serve',
+    `  Start it with:  ${command} serve`,
     '',
   );
 

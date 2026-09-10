@@ -15,6 +15,7 @@ import { HushgateError } from '../../errors.js';
 import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { renderConfig } from '../template.js';
 import { EXIT, type Cli } from '../cli.js';
+import { invokedAs } from '../invocation.js';
 
 export const INIT_FLAGS: FlagSpecs = {
   path: { type: 'string', alias: 'p', description: 'where to write it', placeholder: '<path>' },
@@ -34,6 +35,8 @@ export function init(cli: Cli, argv: readonly string[]): Promise<number> {
 
   writeFileSync(path, renderConfig(), 'utf8');
 
+  const command = invokedAs(cli.env);
+
   cli.stdout(
     [
       `wrote ${relative(cli.cwd, path) || path}`,
@@ -41,10 +44,10 @@ export function init(cli: Cli, argv: readonly string[]): Promise<number> {
       'Next:',
       '  1. Fill in the organisation block — it heads the Article 30 report.',
       '  2. Decide your upstreams, then list them in residency.allow with the',
-      '     legal basis you actually rely on. Run "hushgate residency --registry"',
+      `     legal basis you actually rely on. Run "${command} residency --registry"`,
       '     to see the EU-hosted options hushgate knows about.',
-      '  3. Run "hushgate doctor" until it is quiet.',
-      '  4. Start it with "hushgate serve" and point your SDK at it.',
+      `  3. Run "${command} doctor" until it is quiet.`,
+      `  4. Start it with "${command} serve" and point your SDK at it.`,
       '',
     ].join('\n'),
   );

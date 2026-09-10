@@ -2,6 +2,7 @@
  * The ambient environment a command runs in, injected rather than reached for,
  * so every command can be exercised in-process by the tests.
  */
+import { npmInstaller, type Installer } from './install.js';
 import { createPrompter, type Prompter } from './prompt.js';
 
 export type Writer = (text: string) => void;
@@ -24,6 +25,11 @@ export interface Cli {
    * Nothing is attached until a command actually asks a question.
    */
   readonly prompt?: () => Prompter;
+  /**
+   * Installs hushgate when `setup` offers to and the operator accepts. Absent
+   * the same way {@link prompt} is: no installer, no offer.
+   */
+  readonly install?: Installer;
   /** Aborting stops long-running commands such as `serve`. */
   readonly signal?: AbortSignal;
 }
@@ -50,6 +56,7 @@ export function processCli(argv: readonly string[] = process.argv.slice(2)): Cli
       ? {
           prompt: (): Prompter =>
             createPrompter({ input: process.stdin, output: process.stdout }),
+          install: npmInstaller(),
         }
       : {}),
   };

@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EXIT, type Cli } from '../src/cli/cli.js';
+import type { InstallScope } from '../src/cli/install.js';
 import type { Choice, Prompter } from '../src/cli/prompt.js';
 import { run } from '../src/cli/run.js';
 import { waitFor } from './helpers/wait.js';
@@ -50,7 +51,12 @@ interface Capture {
   err(): string;
 }
 
-function capture(argv: string[], cwd: string, prompt?: () => Prompter): Capture {
+function capture(
+  argv: string[],
+  cwd: string,
+  prompt?: () => Prompter,
+  extra: Partial<Cli> = {},
+): Capture {
   const out: string[] = [];
   const err: string[] = [];
   return {
@@ -60,6 +66,7 @@ function capture(argv: string[], cwd: string, prompt?: () => Prompter): Capture 
       stderr: (t) => err.push(t),
       env: {},
       cwd,
+      ...extra,
       ...(prompt === undefined ? {} : { prompt }),
     },
     out: () => out.join(''),
@@ -284,5 +291,163 @@ describe('hushgate setup — the trial branch', () => {
 
     expect(c.err()).toContain('key');
     expect(c.out()).not.toContain('__playground');
+  });
+});
+
+/**
+ * What `setup` says at the end has to be a command the operator can actually
+ * run. Reached through `npx`, `hushgate serve` is not one: npx installs
+ * nothing that outlives the run, so the wizard finishes by leaving the tool
+ * within reach — or, when it does not, by naming the invocation that works.
+ */
+describe('hushgate setup — leaving a runnable command behind', () => {
+  /** npm sets this for everything it runs under `npx`. */
+  const VIA_NPX: NodeJS.ProcessEnv = { npm_command: 'exec' };
+
+  it('tells an npx caller to use npx when it installs nothing', async () => {
+    const dir = workspace();
+    const script = configure([...NOTHING, '3']); // 3: install neither way
+    const c = capture(['setup'], dir, script.prompt, { env: VIA_NPX });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(c.out()).toContain('npx hushgate serve');
+  });
+
+  it('names the doctor command the same way it named serve', async () => {
+    const dir = workspace();
+    const script = configure([...NOTHING, '3']);
+    const c = capture(['setup'], dir, script.prompt, { env: VIA_NPX });
+    await run(c.cli);
+
+    // The warning line points at doctor for the rest of the report; a command
+    // the operator cannot run is not a pointer.
+    expect(c.out()).toContain('"npx hushgate doctor"');
+  });
+
+  it('installs into the folder when asked, and then says npx', async () => {
+    const dir = workspace();
+    const calls: { scope: InstallScope; cwd: string }[] = [];
+    const script = configure([...NOTHING, '1']); // 1: this folder
+    const c = capture(['setup'], dir, script.prompt, {
+      env: VIA_NPX,
+      install: (scope, cwd) => {
+        calls.push({ scope, cwd });
+        return Promise.resolve({ ok: true });
+      },
+    });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(calls).toEqual([{ scope: 'folder', cwd: dir }]);
+
+    // Installed beside the configuration, npx resolves it from node_modules:
+    // no fetch, and the version that answered the questions is the one that runs.
+    expect(c.out()).toContain('npx hushgate serve');
+  });
+
+  it('installs everywhere when asked, and then says the bare command', async () => {
+    const dir = workspace();
+    const calls: { scope: InstallScope; cwd: string }[] = [];
+    const script = configure([...NOTHING, '2']); // 2: everywhere
+    const c = capture(['setup'], dir, script.prompt, {
+      env: VIA_NPX,
+      install: (scope, cwd) => {
+        calls.push({ scope, cwd });
+        return Promise.resolve({ ok: true });
+      },
+    });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(calls).toEqual([{ scope: 'global', cwd: dir }]);
+    expect(c.out()).toContain('Start it with:  hushgate serve');
+    expect(c.out()).not.toContain('npx hushgate');
+  });
+
+  it('installs nothing when the operator declines', async () => {
+    const dir = workspace();
+    let called = false;
+    const script = configure([...NOTHING, '3']); // 3: neither
+    const c = capture(['setup'], dir, script.prompt, {
+      env: VIA_NPX,
+      install: () => {
+        called = true;
+        return Promise.resolve({ ok: true });
+      },
+    });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(called).toBe(false);
+    expect(c.out()).toContain('npx hushgate serve');
+  });
+
+  it('says so when npm fails, and still ends on a command that works', async () => {
+    const dir = workspace();
+    const script = configure([...NOTHING, '2']); // 2: everywhere
+    const c = capture(['setup'], dir, script.prompt, {
+      env: VIA_NPX,
+      install: () => Promise.resolve({ ok: false, reason: 'EACCES on /usr/local/lib' }),
+    });
+
+    // A global install is exactly the one that fails on a locked-down machine,
+    // and it fails after the configuration is written. Setup is not what broke.
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(existsSync(join(dir, 'hushgate.config.json'))).toBe(true);
+    expect(c.out()).toContain('EACCES on /usr/local/lib');
+    expect(c.out()).toContain('npx hushgate serve');
+  });
+
+  it('does not ask an operator who already has hushgate on PATH', async () => {
+    const dir = workspace();
+    let called = false;
+    const script = configure(NOTHING); // nothing scripted for an install question
+    const c = capture(['setup'], dir, script.prompt, {
+      install: () => {
+        called = true;
+        return Promise.resolve({ ok: true });
+      },
+    });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(called).toBe(false);
+    expect(script.asked.some((question) => /install/iu.test(question))).toBe(false);
+    expect(c.out()).toContain('Start it with:  hushgate serve');
+  });
+
+  it('says when documents will not be read, though that is only a note', async () => {
+    const dir = workspace();
+    const c = capture(['setup'], dir, configure(NOTHING).prompt);
+
+    // No pdftotext anywhere on PATH: the operator's PDFs will be refused, and
+    // they will read that as hushgate being broken unless they hear it here.
+    const realPath = process.env['PATH'];
+    process.env['PATH'] = join(dir, 'nothing-here');
+    try {
+      expect(await run(c.cli)).toBe(EXIT.ok);
+    } finally {
+      process.env['PATH'] = realPath;
+    }
+
+    expect(c.out()).toContain('pdftotext');
+    expect(c.out()).toContain('brew install poppler');
+  });
+
+  it('does not ask when the folder already has hushgate', async () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'node_modules', 'hushgate'), { recursive: true });
+    let called = false;
+    const script = configure(NOTHING);
+    const c = capture(['setup'], dir, script.prompt, {
+      env: VIA_NPX,
+      install: () => {
+        called = true;
+        return Promise.resolve({ ok: true });
+      },
+    });
+
+    // npx resolves node_modules before it fetches anything, so this operator
+    // already has a working "npx hushgate serve" — and a pinned one.
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(called).toBe(false);
+    expect(script.asked.some((question) => /install/iu.test(question))).toBe(false);
+    expect(c.out()).toContain('npx hushgate serve');
   });
 });
