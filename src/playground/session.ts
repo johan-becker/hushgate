@@ -25,6 +25,11 @@ export interface TrialSession {
    */
   readonly sanitised: string;
   readonly model: string;
+  /**
+   * What the model will be told about the placeholders, decided at preview and
+   * held so Send transmits the briefing that describes *this* text.
+   */
+  readonly briefing: string | null;
   readonly createdAt: number;
 }
 
@@ -49,7 +54,13 @@ export class TrialStore {
     this.clock = options.now ?? ((): number => Date.now());
   }
 
-  create(session: Session, sanitised: string, model: string): TrialSession {
+  /** `briefing` defaults to none: a stored session without one is meaningful. */
+  create(
+    session: Session,
+    sanitised: string,
+    model: string,
+    briefing: string | null = null,
+  ): TrialSession {
     this.sweep();
 
     // Map iterates in insertion order, so the first key is the oldest.
@@ -64,6 +75,7 @@ export class TrialStore {
       session,
       sanitised,
       model,
+      briefing,
       createdAt: this.clock(),
     };
 

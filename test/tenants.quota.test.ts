@@ -20,6 +20,7 @@ const tenant = (id: string, key: string, quotas: Partial<Tenant['quotas']> = {})
   name: id,
   keyHashes: [hashKey(key)],
   redaction: defaultConfig().redaction,
+  briefing: defaultConfig().briefing,
   quotas: { requestsPerMinute: null, tokensPerDay: null, ...quotas },
   auditPath: null,
   upstreamKeyEnv: null,

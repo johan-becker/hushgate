@@ -748,3 +748,84 @@ describe('redaction.detectors', () => {
     ).toEqual([{ kind: 'BANK_ACCOUNT', value: '532013000' }]);
   });
 });
+
+describe('the briefing section', () => {
+  it('defaults to the built-in text, attached where it applies', () => {
+    expect(defaultConfig().briefing).toEqual({ mode: 'auto', text: null, append: null });
+  });
+
+  it('takes a mode, a replacement and an addition', () => {
+    const config = parseConfig({
+      briefing: { mode: 'always', text: 'Answer as Acme.', append: 'In German.' },
+    });
+
+    expect(config.briefing).toEqual({
+      mode: 'always',
+      text: 'Answer as Acme.',
+      append: 'In German.',
+    });
+  });
+
+  it('rejects a mode that is not one of the three', () => {
+    expect(() => parseConfig({ briefing: { mode: 'sometimes' } })).toThrow(ConfigError);
+    expect(() => parseConfig({ briefing: { mode: 'sometimes' } })).toThrow(/auto, always, off/u);
+  });
+
+  it('rejects an unknown key rather than ignoring it', () => {
+    expect(() => parseConfig({ briefing: { txt: 'oops' } })).toThrow(ConfigError);
+  });
+
+  it('rejects an empty string, which reads like a disabled briefing but is not', () => {
+    expect(() => parseConfig({ briefing: { text: '   ' } })).toThrow(/use null/u);
+  });
+
+  it('refuses a briefing long enough to be somebody’s whole prompt', () => {
+    expect(() => parseConfig({ briefing: { text: 'x'.repeat(4001) } })).toThrow(
+      /at most 4000 characters/u,
+    );
+  });
+
+  it('gives a tenant the global section when it says nothing', () => {
+    const config = parseConfig({
+      briefing: { mode: 'always', append: 'House rule.' },
+      tenants: [{ id: 'support', keyHash: `sha256:${'0'.repeat(64)}` }],
+    });
+
+    expect(config.tenants[0]!.briefing).toEqual({
+      mode: 'always',
+      text: null,
+      append: 'House rule.',
+    });
+  });
+
+  it('merges a tenant’s section over the global one key by key', () => {
+    const config = parseConfig({
+      briefing: { mode: 'always', append: 'House rule.' },
+      tenants: [
+        { id: 'support', keyHash: `sha256:${'0'.repeat(64)}`, briefing: { append: 'In German.' } },
+      ],
+    });
+
+    expect(config.tenants[0]!.briefing).toEqual({
+      mode: 'always',
+      text: null,
+      append: 'In German.',
+    });
+  });
+
+  it('lets a tenant switch a global override back off with null', () => {
+    const config = parseConfig({
+      briefing: { text: 'Answer as Acme.' },
+      tenants: [
+        { id: 'legal', keyHash: `sha256:${'0'.repeat(64)}`, briefing: { text: null } },
+      ],
+    });
+
+    expect(config.tenants[0]!.briefing.text).toBeNull();
+  });
+
+  it('survives an overrides overlay', () => {
+    const config = applyOverrides(defaultConfig(), { briefing: { mode: 'off' } });
+    expect(config.briefing).toEqual({ mode: 'off', text: null, append: null });
+  });
+});

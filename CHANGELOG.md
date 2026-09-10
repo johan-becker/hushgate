@@ -12,6 +12,40 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+### Added
+
+- **A short briefing for the model, attached to sanitised requests.** A model
+  that has never been told what `[EMAIL_1]` is tends to answer about the
+  placeholder, open with a paragraph about the address it cannot see, or invent
+  one to fill the gap — and an invented address is not in the mapping, so
+  re-hydration leaves it as written. Requests that carried personal data now
+  carry a paragraph saying what the placeholders are, which kinds are in this
+  request, that they must be echoed back verbatim, and that inventing one is
+  forbidden. It names categories only, never a value.
+
+- **`hushgate briefing`** prints that text for a given config, tenant and set of
+  kinds — `--tenant <id>`, `--kinds EMAIL,SECRET:redact`, `--json`. No key, no
+  network.
+
+- **A `briefing` section in the config**, global and per tenant. `mode` is
+  `auto` (attach it when a request carries a placeholder), `always` or `off`;
+  `text` replaces the wording outright and `append` adds house rules after it. A
+  tenant's section merges over the global one key by key. `hushgate doctor`
+  reports which state you are in, as notes rather than warnings.
+
+### Changed
+
+- **Requests that carried personal data now include one extra system message**
+  (OpenAI) or system block (Anthropic). It goes *after* the caller's own system
+  prompt, never before it: both providers cache on a prefix, so inserting at the
+  head would invalidate cached tokens on every request. The caller's own system
+  prompt is never edited, reordered or replaced, and a request that tripped no
+  detector is still forwarded exactly as it arrived. `briefing.mode: "off"`
+  restores the previous behaviour in full.
+
+- The trial page served by `hushgate setup` sends the same briefing, so the
+  demonstration matches what `serve` does.
+
 ## [0.2.0] — 2026-09-10
 
 ### Added

@@ -357,3 +357,43 @@ describe('reporting the attachment extractors', () => {
     expect(findings.some((finding) => finding.message.includes('forwarded unread'))).toBe(true);
   });
 });
+
+describe('reporting the briefing', () => {
+  it('confirms the model is briefed when a request carries placeholders', () => {
+    const findings = check(defaultConfig());
+    expect(has(findings, 'ok', 'briefed on the placeholders when a request carries any')).toBe(true);
+  });
+
+  it('says so when every request gets one', () => {
+    const config = parseConfig({ briefing: { mode: 'always' } });
+    expect(has(check(config), 'ok', 'on every request')).toBe(true);
+  });
+
+  it('notes, without failing, that the briefing is switched off', () => {
+    // A note and not a warning on purpose: doctor exits non-zero on a warning,
+    // and an operator who set this meant to.
+    const config = parseConfig({ briefing: { mode: 'off' } });
+    const findings = check(config);
+
+    expect(has(findings, 'note', 'no briefing is attached')).toBe(true);
+    expect(findings.some((f) => f.severity === 'warn' && f.section === 'briefing')).toBe(false);
+  });
+
+  it('flags that the built-in wording has been replaced', () => {
+    const config = parseConfig({ briefing: { text: 'Answer as Acme.' } });
+    expect(has(check(config), 'note', 'replaced by briefing.text')).toBe(true);
+  });
+
+  it('flags house rules and tenant overrides by name', () => {
+    const config = parseConfig({
+      briefing: { append: 'House rule.' },
+      tenants: [
+        { id: 'support', keyHash: `sha256:${'0'.repeat(64)}`, briefing: { mode: 'off' } },
+      ],
+    });
+    const findings = check(config);
+
+    expect(has(findings, 'note', 'characters of house rules')).toBe(true);
+    expect(has(findings, 'note', '1 tenant(s) override the briefing: support')).toBe(true);
+  });
+});

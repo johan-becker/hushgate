@@ -7,6 +7,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { nullAuditLog, type AuditSink } from '../audit/log.js';
+import { attachBriefing, briefingFor } from '../briefing/index.js';
 import type { AuditOutcome, AuditResidency } from '../audit/record.js';
 import { redactionOptions, type HushgateConfig } from '../config.js';
 import {
@@ -357,10 +358,24 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         );
       }
 
+      // Tell the model what the placeholders are — after redaction, so
+      // hushgate's own words are never scanned by hushgate's own detectors,
+      // and never in `warn` or `allow`, where the body above is the caller's
+      // original and a briefing about placeholders would describe tokens that
+      // are not in it.
+      const briefing =
+        decision.mode === 'warn' || decision.mode === 'allow'
+          ? null
+          : briefingFor(tenant === null ? config.briefing : tenant.briefing, findings);
+      const briefed =
+        briefing === null
+          ? (outbound as JsonValue)
+          : attachBriefing(outbound as JsonValue, route.provider, briefing);
+
       // Retention and training opt-outs are set here, not left to each caller:
       // one application forgetting `store: false` should not opt the whole
       // organisation back into retention.
-      const controlled = applyDataControls(verdict.dataControls, outbound as JsonValue);
+      const controlled = applyDataControls(verdict.dataControls, briefed);
       residency = { ...residency, controls: controlled.applied };
 
       reached = hostOf(base);

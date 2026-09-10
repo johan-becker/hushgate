@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import type { BriefingConfig } from '../src/briefing/index.js';
 import type { PlaygroundEndpoint, PlaygroundOptions } from '../src/playground/index.js';
 import { TrialStore } from '../src/playground/session.js';
 import { startFakeUpstream, type FakeHandler, type FakeUpstream } from './helpers/fake-upstream.js';
@@ -28,6 +29,7 @@ afterEach(async () => {
 async function trial(
   handler: FakeHandler,
   endpointOver: Partial<PlaygroundEndpoint> = {},
+  briefing?: BriefingConfig,
 ): Promise<{ harness: Harness; upstream: FakeUpstream; store: TrialStore }> {
   const upstream = await startFakeUpstream(handler);
   const store = new TrialStore();
@@ -45,6 +47,7 @@ async function trial(
     apiKey: 'sk-from-the-terminal',
     endpoint,
     dictionaryIsEmpty: true,
+    ...(briefing === undefined ? {} : { briefing }),
   };
 
   const harness = await startHarness({ proxy: { playground } });
@@ -183,5 +186,43 @@ describe('POST /__playground/send', () => {
     const harness = await startHarness();
     open.push({ harness });
     expect((await harness.post('/__playground/send', { sessionId: 'x' })).status).toBe(404);
+  });
+});
+
+describe('the briefing the trial sends', () => {
+  it('goes to the provider with the sanitised text, as serve would send it', async () => {
+    // The trial exists to show the round trip as it will really behave. A trial
+    // that skipped the briefing would demo the answer the briefing prevents.
+    const { harness, upstream } = await trial(SPLIT_PLACEHOLDER);
+    const sessionId = await preview(harness);
+    await harness.post('/__playground/send', { sessionId });
+
+    const body = JSON.parse(upstream.requests[0]!.body) as {
+      messages: { role: string; content: string }[];
+    };
+
+    expect(body.messages[0]?.role).toBe('system');
+    expect(body.messages[0]?.content).toContain('e-mail addresses ([EMAIL_n])');
+    expect(body.messages.at(-1)?.content).toContain('[EMAIL_1]');
+    // Still nothing real, on either message.
+    expect(upstream.requests[0]!.body).not.toContain('k.vogelsang');
+  });
+
+  it('is left off a request nothing was found in', async () => {
+    const { harness, upstream } = await trial(SPLIT_PLACEHOLDER);
+    const sessionId = await preview(harness, 'What is the capital of France?');
+    await harness.post('/__playground/send', { sessionId });
+
+    const body = JSON.parse(upstream.requests[0]!.body) as { messages: unknown[] };
+    expect(body.messages).toHaveLength(1);
+  });
+
+  it('honours a configuration that switches it off', async () => {
+    const { harness, upstream } = await trial(SPLIT_PLACEHOLDER, {}, { mode: 'off', text: null, append: null });
+    const sessionId = await preview(harness);
+    await harness.post('/__playground/send', { sessionId });
+
+    const body = JSON.parse(upstream.requests[0]!.body) as { messages: unknown[] };
+    expect(body.messages).toHaveLength(1);
   });
 });

@@ -8,6 +8,7 @@
  * an attacker, a key there is a gift.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { BriefingConfig } from '../briefing/policy.js';
 import { ConfigError } from '../errors.js';
 // Type-only: erased at compile time, so there is no import cycle at runtime.
 import type { RedactionConfig } from '../config.js';
@@ -26,6 +27,8 @@ export interface Tenant {
   readonly keyHashes: readonly string[];
   /** Complete redaction profile, already merged over the global one. */
   readonly redaction: RedactionConfig;
+  /** Complete briefing profile, already merged over the global one. */
+  readonly briefing: BriefingConfig;
   readonly quotas: TenantQuotas;
   /** Dedicated audit trail, or `null` to share the global one. */
   readonly auditPath: string | null;

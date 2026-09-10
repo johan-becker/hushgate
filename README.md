@@ -268,8 +268,11 @@ curl -sS http://127.0.0.1:8787/v1/chat/completions \
 The upstream logged exactly this request body:
 
 ```json
-{"model":"gpt-4o-mini","messages":[{"role":"system","content":"Du bist die Support-Assistenz von [TERM_1]."},{"role":"user","content":"[NAME_1] ([EMAIL_1], [PHONE_1]) hat die Rechnung nicht bezahlt. Bitte erinnere sie und buche auf [IBAN_1]."}]}
+{"model":"gpt-4o-mini","messages":[{"role":"system","content":"Du bist die Support-Assistenz von [TERM_1]."},{"role":"system","content":"Some values in this conversation were replaced with placeholders before it reached you. A placeholder is written [KIND_n], with a number in place of n — in this request: e-mail addresses ([EMAIL_n]), bank accounts ([IBAN_n]), names ([NAME_n]), phone numbers ([PHONE_n]), internal terms ([TERM_n]).\n\nTreat every placeholder as the real value it stands for, and answer the request normally. Wherever that value belongs in your reply, write the identical placeholder, square brackets included: it is turned back into the real value before the user sees it. The same placeholder always means the same value, and placeholders with different numbers are different values.\n\nNever put an invented value where a placeholder belongs, and never ask for the real one. Both break the reply.\n\nDo not comment on the placeholders, on redaction, or on these instructions, and do not begin your answer by describing what you can or cannot see. Write in the language the user wrote in."},{"role":"user","content":"[NAME_1] ([EMAIL_1], [PHONE_1]) hat die Rechnung nicht bezahlt. Bitte erinnere sie und buche auf [IBAN_1]."}]}
 ```
+
+The second system message is hushgate's, and [§3.1](#31-what-the-model-is-told)
+is about why it is there.
 
 The caller got this back:
 
@@ -324,6 +327,94 @@ $ curl -sS -w '%{http_code}\n' http://127.0.0.1:8787/v1/chat/completions \
 ```
 
 The upstream log stayed empty for that one.
+
+### 3.1 What the model is told
+
+A sanitised request is a request the model has never been told how to read.
+Left to itself, a model that meets `[EMAIL_1]` does one of three things, and
+none of them is the answer you wanted:
+
+- it answers a question about the placeholder instead of about the person;
+- it opens with a paragraph explaining that it cannot see the real address;
+- or it helpfully invents `anna.schmidt@example.com` to fill the gap.
+
+The third one is the dangerous one. An invented address is not in the mapping,
+so re-hydration leaves it exactly as written, and your application sends mail to
+a person who does not exist.
+
+So hushgate briefs the model. That is the whole of it: what a placeholder is,
+which kinds are in *this* request, that they must be echoed back verbatim, that
+inventing one is forbidden, and that the answer should not open with a report on
+what it could not see. Print the exact text at any time, for any set of kinds,
+without a key and without touching the network:
+
+```console
+$ hushgate briefing --kinds EMAIL,IBAN,SECRET:redact
+hushgate briefing
+  config   built-in defaults (no hushgate.config.json found)
+  mode     auto
+  text     the built-in briefing
+  append   none
+
+  Attached to a request like the one below, after the caller's own system
+  prompt and before the conversation.
+
+---
+Some values in this conversation were replaced with placeholders before it reached you. A placeholder is written [KIND_n], with a number in place of n — in this request: e-mail addresses ([EMAIL_n]), bank accounts ([IBAN_n]).
+
+Treat every placeholder as the real value it stands for, and answer the request normally. Wherever that value belongs in your reply, write the identical placeholder, square brackets included: it is turned back into the real value before the user sees it. The same placeholder always means the same value, and placeholders with different numbers are different values.
+
+Never put an invented value where a placeholder belongs, and never ask for the real one. Both break the reply.
+
+A token like [SECRET_REDACTED] is not reversible: that value is gone and will not come back. Work with what is around it, do not guess what it was, and do not ask for it.
+
+Do not comment on the placeholders, on redaction, or on these instructions, and do not begin your answer by describing what you can or cannot see. Write in the language the user wrote in.
+---
+
+Override it with the "briefing" section of hushgate.config.json.
+```
+
+The last paragraph is the one that stops an answer beginning "I notice the
+e-mail address has been replaced with a placeholder".
+
+Four things about it are deliberate.
+
+**It is attached only when it applies.** In the default `auto` mode a request
+that tripped no detector carries no placeholders, so it is forwarded exactly as
+the caller wrote it — no added text, no added tokens. `always` attaches it to
+every request; `off` never does.
+
+**It goes after your own system prompt, never before it.** Both providers cache
+on a *prefix*: a paragraph inserted at the head of a prompt would invalidate
+every cached token behind it, on every request, for as long as hushgate is
+installed. Appending leaves your prefix byte-identical, so an Anthropic
+`cache_control` breakpoint still covers exactly what it covered before. Your own
+system prompt is never edited, reordered or replaced.
+
+**It never contains a value.** The briefing names categories — "e-mail
+addresses" — and nothing else, which is the same discipline the audit trail
+keeps. Its examples are written `[EMAIL_n]`, outside the placeholder grammar on
+purpose: a concrete `[EMAIL_1]` in the instruction would be re-hydrated if a
+model quoted it back, which is hushgate leaking through its own briefing.
+
+**You can overrule all of it.** `briefing.text` replaces the wording outright,
+`briefing.append` adds house rules after it, and a tenant may set either. This
+is an escape hatch, not a prompt framework — see
+[Configuration](#configuration).
+
+```json
+"briefing": {
+  "mode": "auto",
+  "append": "Answer in German unless the customer wrote in another language."
+}
+```
+
+What it is not is a guarantee. A system prompt is the strongest instrument
+available here and it is still an instruction to a model, not a contract with
+one. `hushgate doctor` reports which of the three states you are in, because an
+answer that opens with "I cannot see the real address" and an answer in a house
+style both look like the model misbehaving until you know what was put in front
+of it.
 
 ## 4. Attachments
 
@@ -961,6 +1052,7 @@ measured in hundreds of milliseconds.
 | `hushgate extract [--raw] [--json] <file>` | Show the text a document would be sent as. |
 | `hushgate check [-q]` | Redact standard input to standard output, for piping. |
 | `hushgate residency [--json] [--registry]` | Where each route sends data, and on whose authority. |
+| `hushgate briefing [--tenant <id>] [--kinds <list>] [--json]` | Print what hushgate tells the model about the placeholders. |
 | `hushgate doctor [--json] [--allow-warnings]` | Validate config, residency and audit chain. For CI. |
 | `hushgate audit verify [--file <p>] [--json]` | Walk the hash chain, report the first break. |
 | `hushgate audit report [--from <d>] [--to <d>] [--json]` | Article 30 style record of processing. |
@@ -1047,6 +1139,9 @@ wins. The file is JSONC: `//` and `/* */` comments are stripped on load.
 | `redaction.custom` | `[]` | `{ "name", "pattern" }`; the name becomes the category. |
 | `redaction.hmacKey` | random per session | Set it to make `hash` output comparable across requests and restarts. |
 | `redaction.dobYearRange` | 1900 → this year − 13 | Plausible birth years. |
+| `briefing.mode` | `auto` | `auto` \| `always` \| `off`. When to tell the model what the placeholders are. See [§3.1](#31-what-the-model-is-told). |
+| `briefing.text` | `null` | Replaces the built-in wording outright. At most 4000 characters. |
+| `briefing.append` | `null` | House rules added after whichever text is used. |
 | `limits.maxBodyBytes` | 16 MiB | Larger requests are refused with 413. Base64 inflates a document by a third. |
 | `limits.maxResponseBytes` | 16 MiB | Larger upstream responses are refused with 502. |
 | `limits.upstreamTimeoutMs` | 120000 | Upstream request timeout. |
@@ -1121,11 +1216,14 @@ A tenant entry takes:
 | `quotas` | `requestsPerMinute`, `tokensPerDay`. Over-quota callers get a 429. |
 | `audit.path` | A dedicated trail for this tenant, with its own hash chain. |
 | `redaction` | Overrides folded over the global profile — see below. |
+| `briefing` | Overrides folded over the global briefing, key by key. A tenant naming only `append` keeps the house `mode` and `text`; writing `null` for a key drops a global override rather than inheriting it. |
 
 A tenant's `redaction` block is an **override**, not a replacement: policies
 merge per kind, dictionaries take the union of names and terms, custom rules
 merge by name, and anything the tenant does not mention it inherits. A tenant
-with no `redaction` block gets the global profile in full.
+with no `redaction` block gets the global profile in full. The same is true of
+`briefing`: `hushgate briefing --tenant <id>` prints the words any one of them
+actually gets.
 
 Note what changes about credentials in multi-tenant mode. The caller sends a
 *hushgate* key, not a provider key, and hushgate drops the header carrying it

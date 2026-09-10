@@ -29,6 +29,12 @@ import type { PostcodeOptions } from './detectors/postcode.js';
 import type { SessionTokenOptions } from './detectors/sessiontoken.js';
 import type { VatIdOptions } from './detectors/vatid.js';
 import type { VehiclePlateOptions } from './detectors/vehicleplate.js';
+import {
+  BRIEFING_MAX_LENGTH,
+  defaultBriefingConfig,
+  isBriefingMode,
+  type BriefingConfig,
+} from './briefing/policy.js';
 import { ConfigError } from './errors.js';
 // Importing from proxy/ is safe in this direction: routes.ts reaches only the
 // shape tables, none of which import this file, so nothing here closes a cycle.
@@ -268,6 +274,8 @@ export interface HushgateConfig {
   readonly port: number;
   readonly upstreams: UpstreamConfig;
   readonly redaction: RedactionConfig;
+  /** What hushgate tells the model about the placeholders it is sending. */
+  readonly briefing: BriefingConfig;
   readonly limits: LimitsConfig;
   readonly audit: AuditConfig;
   readonly attachments: AttachmentsConfig;
@@ -289,6 +297,7 @@ export interface ConfigOverrides {
   readonly upstreams?: Partial<UpstreamConfig>;
   readonly limits?: Partial<LimitsConfig>;
   readonly redaction?: Partial<RedactionConfig>;
+  readonly briefing?: Partial<BriefingConfig>;
   readonly audit?: Partial<AuditConfig>;
   readonly attachments?: Partial<AttachmentsConfig>;
   readonly residency?: Partial<ResidencyConfig>;
@@ -304,6 +313,7 @@ const KNOWN_KEYS = new Set([
   'port',
   'upstreams',
   'redaction',
+  'briefing',
   'limits',
   'audit',
   'attachments',
@@ -337,6 +347,10 @@ export function defaultConfig(): HushgateConfig {
       dobYearRange: null,
       hmacKey: null,
     },
+    // On by default. A model that has not been told what `[EMAIL_1]` is will
+    // either explain that it cannot see the address or invent one, and the
+    // invented one is the failure that reaches a real inbox.
+    briefing: defaultBriefingConfig(),
     limits: {
       // Raised from 4 MiB when attachments arrived: base64 inflates a document
       // by a third, so the old cap refused most real ones before an extractor
@@ -428,6 +442,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
   // cannot be decided before the tenants have been read.
   const declared: PolicyScope[] = [];
   const redaction = parseRedaction(root['redaction'], where, base.redaction, declared, true);
+  const briefing = parseBriefing(root['briefing'], `${where}: "briefing"`, base.briefing);
 
   const config: HushgateConfig = {
     host: optionalString(root['host'], `${where}: "host"`) ?? base.host,
@@ -440,6 +455,7 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
         base.upstreams.anthropic,
     },
     redaction,
+    briefing,
     limits: {
       maxBodyBytes:
         optionalPositiveInt(limits['maxBodyBytes'], `${where}: "limits.maxBodyBytes"`) ??
@@ -469,12 +485,72 @@ export function parseConfig(raw: unknown, where = CONFIG_FILENAME): HushgateConf
     },
     attachments: parseAttachments(root['attachments'], where, base.attachments),
     residency: parseResidency(root['residency'], where, base.residency),
-    tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction, declared),
+    tenants: parseTenants(root['tenants'], `${where}: "tenants"`, redaction, briefing, declared),
     organisation: parseOrganisation(root['organisation'], `${where}: "organisation"`),
   };
 
   assertPolicyKinds(declared);
   return config;
+}
+
+/**
+ * The `briefing` section, global or per tenant.
+ *
+ * `base` is what this scope inherits — the defaults at the top level, the
+ * resolved global section inside a tenant — so a tenant that names only `mode`
+ * keeps the house `append` rather than silently losing it.
+ */
+function parseBriefing(raw: unknown, where: string, base: BriefingConfig): BriefingConfig {
+  if (raw === undefined || raw === null) return base;
+
+  const node = asObject(raw, where);
+  rejectUnknownKeys(node, new Set(['mode', 'text', 'append']), where);
+
+  const mode = optionalString(node['mode'], `${where}.mode`);
+  if (mode !== undefined && !isBriefingMode(mode)) {
+    throw new ConfigError(
+      `${where}.mode must be one of auto, always, off, got ${JSON.stringify(mode)}`,
+    );
+  }
+
+  // `??` would be wrong here: an explicit `null` means "use the built-in text",
+  // and folding it into the inherited value is exactly the way a tenant would
+  // fail to switch a global override back off.
+  const text = briefingProse(node['text'], `${where}.text`);
+  const append = briefingProse(node['append'], `${where}.append`);
+
+  return {
+    mode: mode ?? base.mode,
+    text: text === undefined ? base.text : text,
+    append: append === undefined ? base.append : append,
+  };
+}
+
+/**
+ * A block of operator prose: a string, or `null` meaning "use the built-in".
+ *
+ * `undefined` — the key absent — means "inherit", which is a third answer and
+ * why this cannot just call {@link optionalString}: that helper folds `null`
+ * into `undefined`, and here the two have to stay apart so a tenant can drop a
+ * global `append` by writing `null`.
+ */
+function briefingProse(value: unknown, where: string): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  if (typeof value !== 'string') {
+    throw new ConfigError(`${where} must be a string or null, got ${describe(value)}`);
+  }
+  if (value.trim() === '') {
+    throw new ConfigError(`${where} must not be empty; use null to fall back to the built-in text`);
+  }
+  if (value.length > BRIEFING_MAX_LENGTH) {
+    throw new ConfigError(
+      `${where} must be at most ${BRIEFING_MAX_LENGTH} characters, got ${value.length}`,
+    );
+  }
+
+  return value;
 }
 
 function parseOrganisation(raw: unknown, where: string): OrganisationConfig {
@@ -497,6 +573,7 @@ function parseTenants(
   raw: unknown,
   where: string,
   globalRedaction: RedactionConfig,
+  globalBriefing: BriefingConfig,
   declared: PolicyScope[],
 ): Tenant[] {
   if (raw === undefined || raw === null) return [];
@@ -516,6 +593,7 @@ function parseTenants(
         'quotas',
         'audit',
         'redaction',
+        'briefing',
       ]),
       scope,
     );
@@ -535,6 +613,7 @@ function parseTenants(
       name: optionalString(node['name'], `${scope}.name`) ?? id,
       keyHashes: parseKeyHashes(node, scope),
       redaction: parseRedaction(node['redaction'], scope, globalRedaction, declared, false),
+      briefing: parseBriefing(node['briefing'], `${scope}.briefing`, globalBriefing),
       quotas: parseQuotas(node['quotas'], `${scope}.quotas`),
       auditPath: optionalString(audit['path'], `${scope}.audit.path`) ?? null,
       upstreamKeyEnv: optionalString(node['upstreamKeyEnv'], `${scope}.upstreamKeyEnv`) ?? null,
@@ -1473,6 +1552,7 @@ export function applyOverrides(
     port: overrides.port ?? config.port,
     upstreams: { ...config.upstreams, ...overrides.upstreams },
     redaction: { ...config.redaction, ...overrides.redaction },
+    briefing: { ...config.briefing, ...overrides.briefing },
     limits: { ...config.limits, ...overrides.limits },
     audit: { ...config.audit, ...overrides.audit },
     attachments: { ...config.attachments, ...overrides.attachments },

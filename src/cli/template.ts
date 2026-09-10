@@ -118,6 +118,21 @@ export function renderConfig(answers: SetupAnswers = {}): string {
     "custom": []
   },
 
+  // What hushgate tells the model about the placeholders it is about to read.
+  // Without it, a model that meets [EMAIL_1] tends to answer about the
+  // placeholder, open with a paragraph about what it cannot see, or invent an
+  // address to fill the gap — and an invented address is not put back.
+  //   "auto"   attach it when a request actually carries a placeholder
+  //   "always" attach it to every request
+  //   "off"    never attach it; forward exactly what the caller wrote
+  // "text" replaces the built-in wording outright, "append" adds house rules
+  // after it. Run "hushgate briefing" to print what either one produces.
+  "briefing": {
+    "mode": "auto",
+    "text": null,
+    "append": null
+  },
+
   "residency": {
     // block | sanitize | warn | allow. Start at "warn" for a staged rollout if
     // you must, but "hushgate doctor" will keep reminding you.

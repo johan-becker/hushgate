@@ -7,7 +7,15 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { errorPayload, parseJsonObject, readBody, sendJson } from '../proxy/http.js';
+import type { ProviderId } from '../proxy/routes.js';
 import { nodeUpstreamClient, type UpstreamClient } from '../proxy/upstream.js';
+import {
+  attachBriefing,
+  briefingFor,
+  defaultBriefingConfig,
+  type BriefingConfig,
+} from '../briefing/index.js';
+import type { JsonValue } from '../redact/traverse.js';
 import { countByKind, Session } from '../redact/session.js';
 import { SseParser, StreamRehydrator } from '../stream/index.js';
 import { PAGE_CSS, PAGE_JS, renderPage, type PlaygroundEndpoint } from './page.js';
@@ -42,6 +50,14 @@ export interface PlaygroundOptions {
   readonly extract?: ExtractText;
   /** Substitutable so a test can stand in for the provider. */
   readonly upstream?: UpstreamClient;
+  /**
+   * What to tell the model about the placeholders, as the proxy would.
+   *
+   * The trial exists to show the round trip as it will actually behave, so it
+   * sends the same briefing `serve` sends. Leaving it out here would demo the
+   * one failure the briefing was written to fix.
+   */
+  readonly briefing?: BriefingConfig;
 }
 
 /** Enough for a pasted letter or a decent-sized PDF; not a file upload service. */
@@ -188,7 +204,8 @@ async function preview(
 
   const session = new Session();
   const result = session.redact(text);
-  const entry = options.store.create(session, result.text, model);
+  const briefing = briefingFor(options.briefing ?? defaultBriefingConfig(), result.findings);
+  const entry = options.store.create(session, result.text, model, briefing);
 
   sendJson(
     response,
@@ -269,7 +286,7 @@ async function send(
       url: `${options.endpoint.baseUrl}${shape.path}`,
       method: 'POST',
       headers: shape.headers,
-      body: JSON.stringify(shape.payload(entry.sanitised)),
+      body: JSON.stringify(shape.payload(entry.sanitised, entry.briefing)),
       timeoutMs: UPSTREAM_TIMEOUT_MS,
     });
   } catch {
@@ -332,7 +349,7 @@ async function send(
 interface RequestShape {
   readonly path: string;
   readonly headers: Readonly<Record<string, string>>;
-  payload(text: string): unknown;
+  payload(text: string, briefing: string | null): unknown;
 }
 
 /** The two protocols hushgate speaks, as the trial has to send them. */
@@ -345,12 +362,17 @@ function requestFor(options: PlaygroundOptions, model: string): RequestShape {
         'x-api-key': options.apiKey,
         'anthropic-version': '2023-06-01',
       },
-      payload: (text) => ({
-        model,
-        max_tokens: TRIAL_MAX_TOKENS,
-        stream: true,
-        messages: [{ role: 'user', content: text }],
-      }),
+      payload: (text, briefing) =>
+        withBriefing(
+          {
+            model,
+            max_tokens: TRIAL_MAX_TOKENS,
+            stream: true,
+            messages: [{ role: 'user', content: text }],
+          },
+          'anthropic',
+          briefing,
+        ),
     };
   }
 
@@ -360,12 +382,14 @@ function requestFor(options: PlaygroundOptions, model: string): RequestShape {
       'content-type': 'application/json',
       authorization: `Bearer ${options.apiKey}`,
     },
-    payload: (text) => ({
-      model,
-      stream: true,
-      messages: [{ role: 'user', content: text }],
-    }),
+    payload: (text, briefing) =>
+      withBriefing({ model, stream: true, messages: [{ role: 'user', content: text }] }, 'openai', briefing),
   };
+}
+
+/** The trial's request, briefed exactly as the proxy would brief it. */
+function withBriefing(body: JsonValue, provider: ProviderId, briefing: string | null): unknown {
+  return briefing === null ? body : attachBriefing(body, provider, briefing);
 }
 
 /** The incremental text in one event, for whichever protocol produced it. */
