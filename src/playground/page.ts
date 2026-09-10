@@ -193,6 +193,20 @@ export const PAGE_JS = `(() => {
 
   const say = (node, text) => { node.textContent = text; };
 
+  /**
+   * End a failed path.
+   *
+   * Every handler on this page sets a status before it does anything slow, so
+   * a path that returns without clearing it leaves the operator reading
+   * "checking…" at a page that stopped working minutes ago. Failing goes
+   * through here so that a message and a usable control always travel
+   * together.
+   */
+  const fail = (node, message, button) => {
+    say(node, message);
+    if (button) button.disabled = false;
+  };
+
   /** Ask what the provider would see, and hold the session it opens. */
   async function check() {
     const text = input.value;
@@ -222,6 +236,10 @@ export const PAGE_JS = `(() => {
       say(sendStatus, '');
       raw.textContent = '';
       hydrated.textContent = '';
+    } catch (error) {
+      // Without this the status line keeps saying "checking…" and the failure
+      // reads as work still in progress — for as long as the operator waits.
+      fail(inputStatus, 'the check did not go out — is the trial still running?');
     } finally {
       checkButton.disabled = false;
     }
@@ -260,14 +278,12 @@ export const PAGE_JS = `(() => {
         body: JSON.stringify({ sessionId }),
       });
     } catch (error) {
-      say(sendStatus, 'the request did not go out');
-      sendButton.disabled = false;
+      fail(sendStatus, 'the request did not go out', sendButton);
       return;
     }
 
     if (!response.ok || response.body === null) {
-      say(sendStatus, 'the provider refused: ' + response.status);
-      sendButton.disabled = false;
+      fail(sendStatus, 'the provider refused: ' + response.status, sendButton);
       return;
     }
 
@@ -275,18 +291,25 @@ export const PAGE_JS = `(() => {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true });
 
-      let cut = buffer.indexOf('\\n\\n');
-      while (cut !== -1) {
-        apply(buffer.slice(0, cut));
-        buffer = buffer.slice(cut + 2);
-        cut = buffer.indexOf('\\n\\n');
+        let cut = buffer.indexOf('\\n\\n');
+        while (cut !== -1) {
+          apply(buffer.slice(0, cut));
+          buffer = buffer.slice(cut + 2);
+          cut = buffer.indexOf('\\n\\n');
+        }
       }
+    } catch (error) {
+      // A stream that dies mid-answer must not leave the status on "waiting
+      // for the first token…"; whatever arrived stays in the boxes.
+      fail(sendStatus, 'the answer stopped partway', sendButton);
+      return;
     }
 
     say(sendStatus, 'done');
@@ -326,6 +349,18 @@ export const PAGE_JS = `(() => {
 
     say(inputStatus, 'reading ' + file.name + '…');
 
+    try {
+      await read(file);
+    } catch (error) {
+      // The status line is the only thing the operator can see. Leaving it on
+      // "reading…" turns any failure into an unbounded wait.
+      fail(inputStatus, 'that file could not be read');
+    }
+  }
+
+  /** The part that can fail: bytes off disk, then the preview round trip. */
+  async function read(file) {
+
     // Base64 in a JSON body, so the server needs no multipart parser and the
     // bytes take the same door as everything else.
     const data = await new Promise((resolve, reject) => {
@@ -362,6 +397,14 @@ export const PAGE_JS = `(() => {
     sendButton.disabled = false;
     say(inputStatus, file.name + ' — read as text, the file itself stays here');
   }
+
+  // Every path above reports its own failure. This is the floor under them:
+  // a rejection that escapes one — including from code added to this page
+  // later — says so instead of leaving the last status up forever.
+  addEventListener('unhandledrejection', (event) => {
+    fail(inputStatus, 'something went wrong on this page; the trial is still running');
+    checkButton.disabled = false;
+  });
 
   checkButton.addEventListener('click', () => { void check(); });
   sendButton.addEventListener('click', () => { void send(); });
