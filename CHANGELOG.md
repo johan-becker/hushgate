@@ -12,6 +12,48 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-11
+
+### Added
+
+- **`setup` offers to leave hushgate where it can be run.** Reached the way the
+  README says to reach it — `npx hushgate setup` — the wizard used to finish by
+  telling the operator to run `hushgate serve`, a command npx had not installed
+  and would not leave behind. The first thing they typed after answering five
+  questions was one that could not work. Setup now offers, once and optionally,
+  to install the running version into the folder beside the configuration or
+  onto PATH, and says which. Nothing is installed unless it is asked for.
+
+### Fixed
+
+- **The trial page reports a failed request instead of waiting forever.**
+  `check()` and the drop handler set a status — `checking…`, `reading X…` —
+  and had no rejection path; both are invoked as `void fn()`, so a fetch that
+  never arrived was swallowed and the status stayed on screen indefinitely. An
+  operator reads that as work still in progress and waits. Every path now ends
+  in a message, including a response stream that dies mid-answer, which used to
+  leave `waiting for the first token…` up for good. The page's own script is
+  now exercised as code in a vm rather than asserted as a string, which is what
+  a swallowed rejection needs to be caught by a test. The proxy is unaffected:
+  the trial page is mounted only by `setup`, never by `serve`.
+
+- **`setup` says when documents will not be readable.** The closing report
+  printed warnings and failures only, and a missing `pdftotext` is a note —
+  correctly, since refusing PDFs is the safe direction and must not fail
+  `doctor`. But it meant the one operator most likely to be missing poppler
+  heard nothing, and met it later as a rejected invoice. Notes from the
+  attachments section now survive the filter, with the `apt`/`brew` line the
+  doctor remedy already carried.
+
+- **`setup` and `init` name commands the caller can actually run.** Under npx
+  every pointer they print — `serve`, `doctor`, `residency --registry` — is
+  spelled `npx hushgate …`; installed on PATH, they are spelled as before. The
+  question is skipped entirely when there is nothing to install: on PATH
+  already, or already in this folder's `node_modules`, where npx resolves it
+  without fetching. An install that fails says what npm said and falls back to
+  the invocation that works, because a configuration was still written and the
+  install is not what setup is for.
+
 ## [0.3.0] — 2026-09-10
 
 ### Added
@@ -452,7 +494,8 @@ version under different terms.
   second test run behind a closed proxy that proves the suite needs no network,
   and a workflow that verifies the publishable artefact.
 
-[Unreleased]: https://github.com/johan-becker/hushgate/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/johan-becker/hushgate/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/johan-becker/hushgate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/johan-becker/hushgate/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/johan-becker/hushgate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/johan-becker/hushgate/releases/tag/v0.1.0
