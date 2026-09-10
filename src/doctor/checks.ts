@@ -39,6 +39,7 @@ export interface DoctorInput {
 export function runChecks(input: DoctorInput): Finding[] {
   return [
     ...configuration(input),
+    ...briefing(input),
     ...residency(input),
     ...enforcement(input),
     ...security(input),
@@ -134,6 +135,75 @@ function attachments({ config, onPath }: DoctorInput): Finding[] {
       severity: 'warn',
       message: `limits.maxBodyBytes (${config.limits.maxBodyBytes}) is below attachments.maxBytes (${settings.maxBytes}), so the largest allowed attachment could never arrive`,
       remedy: 'raise limits.maxBodyBytes to at least attachments.maxBytes plus room for the prompt',
+    });
+  }
+
+  return out;
+}
+
+/**
+ * What the model is being told, and by whom.
+ *
+ * Every state here is a legitimate choice, so none of them fails or warns —
+ * `doctor` exits non-zero on a warning and an operator who turned the briefing
+ * off meant to. What the section is for is that all three states are
+ * *invisible* at runtime: an answer that opens with "I cannot see the real
+ * address" and an answer written to a house style both look like the model
+ * misbehaving until you know which words hushgate put in front of it.
+ */
+function briefing({ config }: DoctorInput): Finding[] {
+  const out: Finding[] = [];
+  const { mode, text, append } = config.briefing;
+
+  out.push(
+    mode === 'off'
+      ? {
+          section: 'briefing',
+          severity: 'note',
+          message:
+            'no briefing is attached, so the model is never told what the placeholders are',
+          remedy: 'set briefing.mode to "auto" if answers mention placeholders or invent values',
+        }
+      : {
+          section: 'briefing',
+          severity: 'ok',
+          message:
+            mode === 'auto'
+              ? 'the model is briefed on the placeholders when a request carries any'
+              : 'the model is briefed on the placeholders on every request',
+        },
+  );
+
+  if (text !== null) {
+    out.push({
+      section: 'briefing',
+      severity: 'note',
+      message: `the built-in briefing is replaced by briefing.text (${text.length} characters)`,
+      remedy: 'run "hushgate briefing" to see exactly what the model is told',
+    });
+  }
+
+  if (append !== null) {
+    out.push({
+      section: 'briefing',
+      severity: 'note',
+      message: `briefing.append adds ${append.length} characters of house rules`,
+      remedy: 'run "hushgate briefing" to see exactly what the model is told',
+    });
+  }
+
+  const custom = config.tenants.filter(
+    (tenant) =>
+      tenant.briefing.mode !== mode ||
+      tenant.briefing.text !== text ||
+      tenant.briefing.append !== append,
+  );
+  if (custom.length > 0) {
+    out.push({
+      section: 'briefing',
+      severity: 'note',
+      message: `${custom.length} tenant(s) override the briefing: ${custom.map((tenant) => tenant.id).join(', ')}`,
+      remedy: 'run "hushgate briefing --tenant <id>" to see each one',
     });
   }
 

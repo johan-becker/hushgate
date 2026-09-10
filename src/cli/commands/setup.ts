@@ -172,6 +172,7 @@ async function runTrial(
       apiKey,
       endpoint,
       dictionaryIsEmpty: true,
+      briefing: config.briefing,
       extract: extractorFor(config),
     },
   });

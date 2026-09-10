@@ -27,6 +27,7 @@ const tenant = (id: string, key: string, overrides: Partial<Tenant> = {}): Tenan
   name: id,
   keyHashes: [hashKey(key)],
   redaction: defaultConfig().redaction,
+  briefing: defaultConfig().briefing,
   quotas: { requestsPerMinute: null, tokensPerDay: null },
   auditPath: null,
   upstreamKeyEnv: null,

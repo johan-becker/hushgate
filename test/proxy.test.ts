@@ -133,7 +133,9 @@ describe('inbound re-hydration', () => {
     harness = await startHarness({
       handler: (request) => {
         const body = request.json as { messages: { content: string }[] };
-        const echoed = body.messages[0]!.content;
+        // The last message, not the first: hushgate puts its briefing about the
+        // placeholders in front of the conversation, so index 0 is its text.
+        const echoed = body.messages.at(-1)!.content;
         return {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: echoed } }] }),
@@ -209,7 +211,7 @@ describe('inbound re-hydration', () => {
         const body = request.json as { messages: { content: string }[] };
         return {
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ echo: body.messages[0]!.content }),
+          body: JSON.stringify({ echo: body.messages.at(-1)!.content }),
         };
       },
     });

@@ -8,6 +8,7 @@ export * from './types.js';
 export * from './errors.js';
 export * from './detectors/index.js';
 export * from './redact/index.js';
+export * from './briefing/index.js';
 export * from './stream/index.js';
 export * from './audit/index.js';
 export * from './residency/index.js';

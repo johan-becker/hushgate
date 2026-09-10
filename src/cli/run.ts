@@ -8,6 +8,7 @@ import { VERSION } from '../version.js';
 import { formatFlags, type FlagSpecs } from './args.js';
 import { EXIT, type Cli } from './cli.js';
 import { audit, AUDIT_FLAGS, AUDIT_SUMMARY } from './commands/audit.js';
+import { briefing, BRIEFING_FLAGS, BRIEFING_SUMMARY } from './commands/briefing.js';
 import { check, CHECK_FLAGS, CHECK_SUMMARY } from './commands/check.js';
 import { doctor, DOCTOR_FLAGS, DOCTOR_SUMMARY } from './commands/doctor.js';
 import { init, INIT_FLAGS, INIT_SUMMARY } from './commands/init.js';
@@ -61,6 +62,12 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'hushgate residency [--json] [--registry]',
     flags: RESIDENCY_FLAGS,
     run: residency,
+  },
+  briefing: {
+    summary: BRIEFING_SUMMARY,
+    usage: 'hushgate briefing [--tenant <id>] [--kinds EMAIL,IBAN] [--json]',
+    flags: BRIEFING_FLAGS,
+    run: briefing,
   },
   doctor: {
     summary: DOCTOR_SUMMARY,

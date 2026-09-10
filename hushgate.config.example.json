@@ -28,6 +28,12 @@
     "dobYearRange": { "minYear": 1900, "maxYear": 2012 }
   },
 
+  "briefing": {
+    "mode": "auto",
+    "text": null,
+    "append": "Sign off as the Acme GmbH support desk."
+  },
+
   "limits": {
     "maxBodyBytes": 16777216,
     "upstreamTimeoutMs": 120000,
@@ -77,6 +83,9 @@
       "audit": { "path": "audit/support.jsonl" },
       "redaction": {
         "policies": { "SECRET": "block" }
+      },
+      "briefing": {
+        "append": "Answer in German unless the customer wrote in another language."
       }
     }
   ],
