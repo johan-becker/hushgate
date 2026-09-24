@@ -1598,6 +1598,6 @@ Nothing needs to be renegotiated for that to happen; it is in the licence.
 Contributions are taken under the [DCO](DCO) — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Copyright © 2026 Johan Becker. The licence covers the code; "hushgate" and its
+Copyright © 2026 [Johan Becker](https://johanbecker.com). The licence covers the code; "hushgate" and its
 logo are trade marks and are not licensed with it — see
 [TRADEMARKS.md](TRADEMARKS.md).
