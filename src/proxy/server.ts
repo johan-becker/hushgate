@@ -367,6 +367,10 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         rule: decision.rule,
         jurisdiction: verdict.jurisdiction.code,
         controls: [],
+        // Which allowlist entry admitted this upstream, as the operator wrote
+        // it: the record has to say under which agreement the data went, and
+        // the host alone cannot when one gateway fronts several providers.
+        endpoint: verdict.endpoint,
       };
 
       // Refuses before serialisation: in `block` mode nothing leaves at all.
