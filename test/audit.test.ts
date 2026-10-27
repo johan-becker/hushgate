@@ -139,11 +139,29 @@ describe('JsonlAuditLog', () => {
 
 describe('parseAuditLines', () => {
   it('reports the line number of anything unreadable', () => {
-    const { records, malformed } = parseAuditLines('{"ts":"t","route":"r"}\nnot json\n\n{}\n');
+    const good = JSON.stringify(toRecord(event(), '2026-01-01T00:00:00.000Z', 'id-1'));
+    const { records, lines, malformed } = parseAuditLines(`${good}\nnot json\n\n{}\n`);
     expect(records).toHaveLength(1);
+    expect(lines).toEqual([1]);
     expect(malformed).toEqual([
-      { line: 2, reason: expect.any(String) },
-      { line: 4, reason: 'missing ts or route' },
+      { line: 2, reason: expect.stringMatching(/^not valid JSON/u) },
+      { line: 4, reason: 'ts is missing' },
+    ]);
+  });
+
+  it('refuses a record it could not verify, naming the field at fault', () => {
+    const { prev: _prev, ...withoutPrev } = toRecord(event(), '2026-01-01T00:00:00.000Z', 'id-1');
+    const { malformed } = parseAuditLines(
+      [
+        '{"ts":"t","route":"r"}',
+        JSON.stringify(withoutPrev),
+        JSON.stringify({ ...toRecord(event(), 't', 'id-2'), hash: 'ABC' }),
+      ].join('\n'),
+    );
+    expect(malformed).toEqual([
+      { line: 1, reason: 'id is missing' },
+      { line: 2, reason: 'prev is missing' },
+      { line: 3, reason: 'hash is not a 64-character hex hash' },
     ]);
   });
 });

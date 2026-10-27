@@ -140,6 +140,13 @@ describe('verifyChain', () => {
       records: 0,
       firstBreak: null,
       head: GENESIS_HASH,
+      from: GENESIS_HASH,
+      breaks: [],
+      breakCount: 0,
+      gaps: [],
+      gapCount: 0,
+      dropped: 0,
+      anchors: [],
     });
   });
 
