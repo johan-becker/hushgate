@@ -474,6 +474,39 @@ describe('anchors', () => {
       HushgateError,
     );
   });
+
+  it('finds the genesis head serve prints for a trail with no records, at the start of the chain', () => {
+    // An empty trail at one shutdown, and the head kept as the README says.
+    expect(verifyChain([], { anchors: [GENESIS_HASH] })).toMatchObject({
+      ok: true,
+      anchors: [{ hash: GENESIS_HASH, found: true, index: 0, line: null, following: 0 }],
+    });
+
+    // The same trail after three requests: the anchor is still where it was.
+    const records = chain(3);
+    expect(verifyTrailFile(file(text(records)), { anchors: [GENESIS_HASH] }).verification).toMatchObject({
+      ok: true,
+      anchors: [{ hash: GENESIS_HASH, found: true, index: 0, line: null, following: 3 }],
+    });
+  });
+
+  it('finds the hash a pruned trail continues from, which no record in it stores', () => {
+    const records = chain(4);
+    const from = records[1]!.hash;
+    const result = verifyChain(records.slice(2), { from, anchors: [from.toUpperCase()] });
+
+    expect(result.ok).toBe(true);
+    expect(result.anchors).toEqual([{ hash: from, found: true, index: 0, line: null, following: 2 }]);
+  });
+
+  it('does not let an anchor on the chain start pass a first record that links elsewhere', () => {
+    const records = chain(3);
+    const result = verifyChain(records.slice(1), { anchors: [GENESIS_HASH] });
+
+    expect(result.anchors[0]).toMatchObject({ found: true, index: 0 });
+    expect(result.firstBreak).toMatchObject({ index: 1, reason: 'unlinked' });
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe('lines not in canonical form', () => {

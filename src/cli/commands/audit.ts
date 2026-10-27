@@ -435,11 +435,16 @@ function separated(blocks: readonly (readonly string[])[]): string[] {
   return out;
 }
 
+/**
+ * Where an anchor was found. Index 0 is the hash the chain starts from, which
+ * no record stores: a head taken while the trail was still empty.
+ */
 function describeAnchor(anchor: ChainVerification['anchors'][number]): string {
   if (!anchor.found) return `${anchor.hash} NOT FOUND`;
   const line = anchor.line === null ? '' : ` (line ${anchor.line})`;
+  const where = anchor.index === 0 ? 'the start of the chain' : `record ${anchor.index}${line}`;
   const following = anchor.following ?? 0;
-  return `${anchor.hash} found at record ${anchor.index}${line}, ${following} record${following === 1 ? '' : 's'} after it`;
+  return `${anchor.hash} found at ${where}, ${following} record${following === 1 ? '' : 's'} after it`;
 }
 
 /**

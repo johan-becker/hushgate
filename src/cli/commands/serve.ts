@@ -268,17 +268,34 @@ function describeTrails(trails: Trails | null, labelled: boolean): string[] {
  * Records dropped from the end of a trail can only be noticed against a head
  * kept somewhere hushgate cannot rewrite. Printing it on the way out puts it in
  * the service log — journald, the container log — at no cost to anybody.
+ *
+ * Two notes follow the head when they apply. A trail with no records has the
+ * genesis hash as its head, which is worth anchoring all the same — verify
+ * finds it at the start of the chain — but should not read as a record's. And
+ * records lost after the last one written are counted nowhere in the trail,
+ * since no later record carried them, so this line is where they are said.
  */
 function describeHeads(trails: Trails | null): string {
   if (trails === null) return '';
   const lines = trails.all.map((trail, index) => {
     const lead = index === 0 ? '  audit      ' : '             ';
-    const dropped = trail.sink.droppedRecords;
-    const note =
-      dropped === 0 ? '' : ` (${dropped} ${dropped === 1 ? 'record' : 'records'} could not be written)`;
+    const notes = [
+      ...(trail.sink.headHash === GENESIS_HASH ? ['no records yet'] : []),
+      ...describeDropped(trail.sink),
+    ];
+    const note = notes.length === 0 ? '' : ` (${notes.join('; ')})`;
     return `${lead}${trail.path} head ${trail.sink.headHash}${note}`;
   });
   return `${lines.join('\n')}\n`;
+}
+
+/** The records a trail's writer lost, and how many of them the trail does not count. */
+function describeDropped(sink: JsonlAuditLog): string[] {
+  const dropped = sink.droppedRecords;
+  if (dropped === 0) return [];
+  const lost = `${dropped} ${dropped === 1 ? 'record' : 'records'} could not be written`;
+  const uncounted = sink.droppedSinceLastRecord;
+  return [uncounted === 0 ? lost : `${lost}, ${uncounted} of them not counted in the trail`];
 }
 
 function banner(

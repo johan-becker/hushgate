@@ -335,6 +335,21 @@ describe('hushgate audit verify --anchor', () => {
       anchors: [{ hash: anchored, found: false, index: null, line: null, following: null }],
     });
   });
+
+  it('finds the head serve printed for a trail that had no records yet', async () => {
+    const dir = workspace({ 'archive.jsonl': '' });
+
+    const empty = await hushgateIn(dir, 'audit', 'verify', 'archive.jsonl', '--anchor', GENESIS_HASH);
+    expect(empty.code).toBe(EXIT.ok);
+    expect(empty.out()).toContain(`anchor       ${GENESIS_HASH} found at the start of the chain, 0 records after it`);
+    expect(empty.out()).not.toContain('NOT FOUND');
+
+    // Records written since then follow it, as they would any other head.
+    await writeTrail(join(dir, 'archive.jsonl'), 2);
+    const later = await hushgateIn(dir, 'audit', 'verify', 'archive.jsonl', '--anchor', GENESIS_HASH);
+    expect(later.code).toBe(EXIT.ok);
+    expect(later.out()).toContain('found at the start of the chain, 2 records after it');
+  });
 });
 
 describe('hushgate audit verify --continues-from', () => {
@@ -352,6 +367,18 @@ describe('hushgate audit verify --continues-from', () => {
     expect(result.code).toBe(EXIT.ok);
     expect(result.out()).toContain(`from         ${hashOf(written[0]!)}`);
     expect(result.out()).toContain('records      2');
+  });
+
+  it('finds an anchor equal to the hash the pruned trail continues from', async () => {
+    const dir = workspace();
+    const path = join(dir, 'hushgate-audit.jsonl');
+    const written = await writeTrail(path, 3);
+    writeFileSync(path, `${written.slice(1).join('\n')}\n`);
+    const from = hashOf(written[0]!);
+
+    const result = await hushgateIn(dir, 'audit', 'verify', '--continues-from', from, '--anchor', from);
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.out()).toContain(`anchor       ${from} found at the start of the chain, 2 records after it`);
   });
 });
 

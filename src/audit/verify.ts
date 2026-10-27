@@ -66,8 +66,13 @@ export interface AnchorCheck {
   /** The anchor, as 64 lower-case hex digits. */
   readonly hash: string;
   readonly found: boolean;
-  /** The record whose stored hash it is, or `null` when no record has it. */
+  /**
+   * The record whose stored hash it is; 0 when it is the hash the chain starts
+   * from (genesis, or `from`), which comes before every record; `null` when
+   * no record has it.
+   */
   readonly index: number | null;
+  /** The file line of that record, or `null` when there is none to name. */
   readonly line: number | null;
   /** Records after it: what has been appended since the anchor was taken. */
   readonly following: number | null;
@@ -107,8 +112,9 @@ export interface VerifyOptions {
   readonly from?: string;
   /**
    * Head hashes recorded outside hushgate. Each must be the stored hash of a
-   * record that verifies, or the chain fails: that is how truncation and
-   * wholesale rewriting, which leave a shorter but consistent chain, show up.
+   * record that verifies, or the hash the chain starts from, or the chain
+   * fails: that is how truncation and wholesale rewriting, which leave a
+   * shorter but consistent chain, show up.
    */
   readonly anchors?: readonly string[];
 }
@@ -172,8 +178,17 @@ export class ChainVerifier {
   constructor(options: VerifyOptions = {}) {
     this.start = options.from === undefined ? GENESIS_HASH : normaliseHash(options.from, 'from');
     this.previous = this.start;
+    // The hash the chain starts from is a state every trail with that start
+    // has been in, before its first record: what `serve` prints as the head of
+    // a trail that holds no records yet, and what a pruned trail continues.
+    // No record stores it, so it is found at the start rather than looked for.
+    // That vouches for nothing it should not: a first record that does not
+    // link to it is a break, and fails the chain on its own.
     this.anchors = new Map(
-      (options.anchors ?? []).map((anchor) => [normaliseHash(anchor, 'an anchor'), null]),
+      (options.anchors ?? []).map((anchor) => {
+        const hash = normaliseHash(anchor, 'an anchor');
+        return [hash, hash === this.start ? { index: 0, line: null } : null];
+      }),
     );
   }
 
