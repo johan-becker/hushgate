@@ -364,13 +364,7 @@ export function upstreamsFor(entry: EndpointEntry): { openai?: string; anthropic
  */
 function reportOnIt(cli: Cli, configPath: string, command: string): void {
   const { config, source } = loadConfig({ path: configPath, cwd: cli.cwd, env: cli.env });
-  const findings = runChecks({
-    config,
-    configPath: source.path,
-    auditPath: isAbsolute(config.audit.path)
-      ? config.audit.path
-      : joinPath(cli.cwd, config.audit.path),
-  });
+  const findings = runChecks({ config, configPath: source.path, cwd: cli.cwd });
 
   const lines: string[] = ['  doctor'];
   for (const finding of findings) {

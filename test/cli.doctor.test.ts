@@ -47,6 +47,7 @@ const check = (
     configPath: '/srv/hushgate.config.json',
     auditPath: '/srv/audit.jsonl',
     readTrail: () => null,
+    writeProblem: () => null,
     ...overrides,
   });
 
