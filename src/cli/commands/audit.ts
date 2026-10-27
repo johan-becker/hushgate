@@ -247,6 +247,10 @@ function select(cli: Cli, request: AuditRequest, loaded: LoadedConfig): Selectio
     );
   }
 
+  // However the global trail is reached — for a tenant without a trail of its
+  // own, or one whose own path names the global file — it leaves out the same
+  // tenants, and a report on it has to say so in the document, not only in a
+  // note on stderr that `> report.md` does not keep.
   if (tenant.auditPath === null) {
     return {
       path: global.path,
@@ -255,12 +259,18 @@ function select(cli: Cli, request: AuditRequest, loaded: LoadedConfig): Selectio
       notes: [
         `tenant ${tenant.id} has no audit trail of its own, so its records are in the global trail, which is what was ${request.subcommand === 'verify' ? 'verified' : 'reported on'}; it also holds every other request recorded there`,
       ],
-      elsewhere: [],
+      elsewhere: tenantsElsewhere(trails),
     };
   }
 
   const own = trails.find((trail) => trail.tenants.includes(tenant.id))!;
-  return { path: own.path, trail: own, labelled, notes: [], elsewhere: [] };
+  return {
+    path: own.path,
+    trail: own,
+    labelled,
+    notes: [],
+    elsewhere: own.global ? tenantsElsewhere(trails) : [],
+  };
 }
 
 /** A trail named on the command line: no label, since nothing says whose it is. */
