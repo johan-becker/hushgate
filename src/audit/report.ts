@@ -23,7 +23,7 @@ import type { HushgateConfig } from '../config.js';
 import { UsageError } from '../errors.js';
 import { jurisdiction, type TransferStatus } from '../residency/jurisdictions.js';
 import { VERSION } from '../version.js';
-import type { AuditRecord } from './record.js';
+import { GENESIS_HASH, type AuditRecord } from './record.js';
 import { verifyChain, type ChainVerification } from './verify.js';
 
 export interface ReportPeriod {
@@ -107,6 +107,11 @@ export interface ProcessingReport {
    * found and the defaults were used. Absent when the caller did not say.
    */
   readonly configPath?: string | null;
+  /**
+   * Tenants whose records go to audit trails of their own and are therefore
+   * not in this document. Absent when the caller named none.
+   */
+  readonly tenantsElsewhere?: readonly string[];
   readonly period: ReportPeriod & { readonly first: string | null; readonly last: string | null };
   readonly organisation: HushgateConfig['organisation'];
   readonly volumes: {
@@ -180,6 +185,13 @@ export interface ReportOptions {
   readonly configPath?: string | null;
   /** Lines of the trail that could not be read, as the reader counted them. */
   readonly malformed?: MalformedLines;
+  /**
+   * Tenants that keep audit trails of their own, which this report does not
+   * read. A tenant with its own `audit.path` is recorded only there, so a
+   * report on the global trail is not the organisation's whole processing,
+   * and the document has to say whose processing it leaves out.
+   */
+  readonly tenantsElsewhere?: readonly string[];
 }
 
 /** Everything {@link ReportBuilder} needs up front; the evidence comes at the end. */
@@ -406,6 +418,9 @@ export class ReportBuilder {
       generator: `hushgate ${VERSION}`,
       source: this.options.source,
       ...(this.options.configPath === undefined ? {} : { configPath: this.options.configPath }),
+      ...(this.options.tenantsElsewhere === undefined || this.options.tenantsElsewhere.length === 0
+        ? {}
+        : { tenantsElsewhere: [...this.options.tenantsElsewhere] }),
       period: { from: this.period.from, to: this.period.to, first: this.first, last: this.last },
       organisation: config.organisation,
       volumes: {
@@ -548,6 +563,7 @@ export function renderMarkdown(report: ProcessingReport): string {
     `- **Generated**: ${plain(report.generatedAt)}`,
     `- **Generator**: ${plain(report.generator)}`,
     `- **Source**: ${plain(report.source)}`,
+    ...describeElsewhere(report.tenantsElsewhere),
     ...describeConfiguration(report.configPath),
     `- **Period**: ${describePeriod(report)}`,
     `- **Controller**: ${optional(report.organisation.name, 'not recorded (set organisation.name)')}`,
@@ -705,6 +721,21 @@ function optional(value: string | null, missing: string): string {
   return value === null ? missing : plain(value);
 }
 
+/**
+ * The line naming the tenants whose processing this document leaves out.
+ *
+ * Their requests are in trails of their own, so nothing about them is in the
+ * figures below — which would otherwise read as covering the whole
+ * organisation.
+ */
+function describeElsewhere(tenants: readonly string[] | undefined): string[] {
+  if (tenants === undefined || tenants.length === 0) return [];
+  const ids = tenants.map(plain).join(', ');
+  return [
+    `- **Not covered**: tenant${tenants.length === 1 ? '' : 's'} ${ids} ${tenants.length === 1 ? 'keeps an audit trail' : 'keep audit trails'} of ${tenants.length === 1 ? 'its' : 'their'} own, which this document does not include; report on each with \`hushgate audit report --tenant <id>\``,
+  ];
+}
+
 function describeConfiguration(path: string | null | undefined): string[] {
   if (path === undefined) return [];
   if (path === null) {
@@ -728,7 +759,10 @@ function describePeriod(report: ProcessingReport): string {
  * The head is printed in full, with the number of records it covers, because
  * it is what an operator anchors outside hushgate and a prefix is a weak
  * thing to compare against later. Unreadable lines are never called intact:
- * the chain can only vouch for the records it was able to read.
+ * the chain can only vouch for the records it was able to read. A break names
+ * the file line as well as the record, because the line is what somebody
+ * opens the file at, and an anchored head that is missing is said to be,
+ * because a shortened trail links up as cleanly as a whole one.
  */
 function describeChain(report: ProcessingReport): string {
   const { chain, unreadable } = report;
@@ -736,18 +770,38 @@ function describeChain(report: ProcessingReport): string {
     unreadable.count === 0
       ? ''
       : `**${unreadable.count} unreadable line${unreadable.count === 1 ? '' : 's'}**${unreadable.firstLine === null ? '' : `, first at line ${unreadable.firstLine}`}`;
+  const missing = describeMissingAnchors(chain);
 
-  if (!chain.ok) {
+  if (chain.breakCount > 0) {
     const first = chain.firstBreak;
-    const broken = `**BROKEN at record ${first?.index ?? 0}** of ${chain.records} — ${plain(first?.detail ?? 'unknown')}`;
-    return unreadable.count === 0 ? broken : `${broken}; also ${unread}`;
+    const line = first?.line === undefined ? '' : ` (line ${first.line})`;
+    const more = chain.breakCount === 1 ? '' : `; ${chain.breakCount} breaks in all`;
+    const broken = `**BROKEN at record ${first?.index ?? 0}** of ${chain.records} — ${plain(first?.detail ?? 'unknown')}${line}${more}`;
+    return [broken, missing, unread].filter((part) => part !== '').join('; also ');
+  }
+
+  if (missing !== '') {
+    const also = unread === '' ? '' : `; also ${unread}`;
+    const present = chain.records === 1 ? 'the 1 record present links' : `the ${chain.records} records present link`;
+    return `${missing}: ${present} up to head ${chain.head}, but records were removed from the end or the trail was rewritten${also}`;
   }
 
   if (unreadable.count > 0) {
     return `${unread}: a line that cannot be read cannot be checked, so the figures in this document cannot be relied on (the ${chain.records} records that could be read link up to head ${chain.head})`;
   }
 
-  return `intact over ${chain.records} records (head ${chain.head})`;
+  const from = chain.from === GENESIS_HASH ? '' : `continuing from ${chain.from}; `;
+  return `intact over ${chain.records} records (${from}head ${chain.head})`;
+}
+
+/** The anchored heads that no verified record carries, or nothing when every one was found. */
+function describeMissingAnchors(chain: ChainVerification): string {
+  const missing = chain.anchors.filter((anchor) => !anchor.found);
+  if (missing.length === 0) return '';
+  const heads = missing.map((anchor) => anchor.hash).join(', ');
+  return missing.length === 1
+    ? `**anchored head ${heads} not found**`
+    : `**${missing.length} anchored heads not found** (${heads})`;
 }
 
 function describeLoss(lost: number): string[] {
