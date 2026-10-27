@@ -20,7 +20,7 @@ import { decodeBase64, formatBytes } from './decode.js';
 import { probePdf } from './pdf.js';
 import { assessText, hidesIdentifiers } from './quality.js';
 import { findAttachmentSites, type AttachmentSite } from './shapes.js';
-import { mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
+import { isKnownMediaType, mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
 import type {
   AttachmentFormat,
   AttachmentReport,
@@ -58,6 +58,12 @@ export interface RewriteOptions {
    * that actually matters rather than a proxy for it.
    */
   readonly countFindings?: (text: string) => number;
+  /**
+   * The operator's external extractors, so that the media types they claim
+   * count as known when deciding what may be written to the audit trail.
+   * Taken from config; omitted, only hushgate's own media types are known.
+   */
+  readonly externalExtractors?: readonly { readonly mediaTypes: readonly string[] }[];
 }
 
 export interface RewriteResult {
@@ -137,7 +143,8 @@ async function handleSite(
   soFar: readonly AttachmentReport[],
 ): Promise<SiteOutcome> {
   const { limits } = options;
-  const declared = normaliseMediaType(site.declaredMediaType) ?? 'application/octet-stream';
+  // Nothing sniffed yet, so a declared type is kept only if hushgate knows it.
+  const declared = auditMediaType(site.declaredMediaType, 'unknown', options);
 
   if (site.unresolvable !== null) {
     return refuse(site, 'unknown', declared, 0, site.unresolvable, limits.onUnreadable, soFar);
@@ -174,7 +181,7 @@ async function handleSite(
     return refuse(
       site,
       format,
-      normaliseMediaType(site.declaredMediaType) ?? mediaTypeForFormat(format),
+      auditMediaType(site.declaredMediaType, format, options),
       bytes.byteLength,
       'this attachment sits where redaction does not reach, so its text could not be pseudonymised',
       limits.onUnreadable,
@@ -183,7 +190,10 @@ async function handleSite(
     );
   }
 
-  const mediaType = normaliseMediaType(site.declaredMediaType) ?? mediaTypeForFormat(format);
+  const mediaType = auditMediaType(site.declaredMediaType, format, options);
+  // The prompt-facing header may show what the caller declared: it travels in
+  // the text the detectors redact, and never reaches the trail.
+  const headerMediaType = normaliseMediaType(site.declaredMediaType) ?? mediaType;
   const context = {
     format,
     mediaType: site.declaredMediaType,
@@ -251,11 +261,29 @@ async function handleSite(
           ? `text was cut at the ${limits.maxTextChars} character limit`
           : null,
       },
-      replacement: textPart(header(site.filename, mediaType, pages, truncated), text),
+      replacement: textPart(header(site.filename, headerMediaType, pages, truncated), text),
     };
   }
 
   return refuse(site, format, mediaType, bytes.byteLength, lastReason, limits.onUnreadable, soFar);
+}
+
+/**
+ * The media type that may be written to the audit trail.
+ *
+ * The declared type is the caller's choice and can carry anything that is a
+ * valid token, so it is recorded only when hushgate recognises it. Otherwise
+ * the type the sniffed format implies stands in, and `application/octet-stream`
+ * when even the format is unknown.
+ */
+function auditMediaType(
+  declared: string | null,
+  format: AttachmentFormat,
+  options: RewriteOptions,
+): string {
+  const config = { extractors: options.externalExtractors ?? [] };
+  if (isKnownMediaType(declared, config)) return normaliseMediaType(declared) as string;
+  return mediaTypeForFormat(format);
 }
 
 /**
