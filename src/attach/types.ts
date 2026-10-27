@@ -121,7 +121,12 @@ export interface ExtractionContext {
 /** One line of the audit trail's attachment list. Counts only, never content. */
 export interface AttachmentReport {
   readonly format: AttachmentFormat;
-  /** Media type as detected, falling back to what the caller declared. */
+  /**
+   * Media type as hushgate knows it: the declared one only when it is a type
+   * hushgate recognises or an operator configured, otherwise the one the
+   * sniffed format implies, or `application/octet-stream`. Never free text
+   * chosen by the caller.
+   */
   readonly mediaType: string;
   readonly bytes: number;
   /** Characters of text extracted. A length, not the text. */
