@@ -342,6 +342,9 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         // The same detectors that will run over the text a moment later, so the
         // rewrite can ask whether the extraction hid anything from them.
         countFindings: (text) => session.countFindings(text),
+        // The media types the operator's extractors claim are known ones, so
+        // the trail records them as declared rather than as what was sniffed.
+        externalExtractors: config.attachments.extractors,
       });
       const parsed = rewritten.body;
       attachments = rewritten.reports;

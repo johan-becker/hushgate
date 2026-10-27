@@ -173,9 +173,11 @@ export interface AuditRecord extends AuditEvent {
  *
  * Copying field by field is the guarantee that no unnamed field can ride along,
  * and the counts are re-derived as numbers so a caller cannot smuggle a string
- * through the `findings` map. The hash is computed last, over exactly the text
- * that precedes it on the line, which is what makes verification a
- * re-serialisation rather than a parse of a separate format.
+ * through the `findings` map. The hash is computed last, over the record's
+ * other fields serialised in order — which is the line as written with
+ * `,"hash":"<64 hex digits>"` taken out before its closing brace. That is what
+ * makes verification a re-serialisation rather than a parse of a separate
+ * format, and what lets anybody check a line with nothing but `sha256sum`.
  *
  * It does not throw on anything a caller can put in a field — a BigInt, a
  * Symbol, an object whose `toString` throws, a map or a list that is not one —

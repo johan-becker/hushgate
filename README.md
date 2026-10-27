@@ -235,12 +235,12 @@ $ node examples/upstream.mjs &
 fake upstream on http://127.0.0.1:9099
 
 $ hushgate serve -c examples/demo.config.json
-hushgate 0.3.0 listening on http://127.0.0.1:8787
+hushgate 0.4.0 listening on http://127.0.0.1:8787
   config     /home/you/hushgate/examples/demo.config.json
   upstreams  openai     http://127.0.0.1:9099
              anthropic  http://127.0.0.1:9099
   policy     pseudonymize by default; overrides: SECRET=block
-  audit      examples/hushgate-audit.jsonl
+  audit      /home/you/hushgate/examples/hushgate-audit.jsonl — continuing chain from 5531e6c715d8
   tenants    none — single tenant, no key required (loopback only)
   routes     POST /v1/chat/completions, POST /v1/messages, GET /healthz, GET /metrics
              /metrics is open on loopback
@@ -249,6 +249,10 @@ hushgate 0.3.0 listening on http://127.0.0.1:8787
     OPENAI_BASE_URL=http://127.0.0.1:8787/v1
     ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 ```
+
+The `audit` line says where the trail is and where its hash chain stood when
+hushgate opened it: the committed trail shown in [§7](#7-the-audit-trail) ends
+at `5531e6c715d8…`, so new records continue from there.
 
 Send a ticket through it:
 
@@ -759,36 +763,85 @@ start.
 
 ## 7. The audit trail
 
-Every request appends one JSONL record: timestamp, route, outcome, latency,
-upstream, the count of findings per category, the policy applied to each, and
-the residency verdict. **No values.** That includes the requests hushgate
-refused — a blocked category, a residency rule, a rejected tenant key, an
-exhausted quota, an oversized body — which are recorded as `outcome:
-"rejected"` or `"blocked"` with the status that says which. A brute force
-against tenant keys leaves a line per attempt. Each record carries the SHA-256
-of the previous one, so the file is a hash chain.
+Every request appends one JSONL record: when it happened, which route it came
+in on, how it ended, where it went, how many findings of each category it
+carried and the policy applied to each, and the residency verdict. **No
+values.** That includes the requests hushgate refused — a blocked category, a
+residency rule, a rejected tenant key, an exhausted quota, an oversized body —
+which are recorded as `outcome: "rejected"` or `"blocked"` with the status that
+says which. A brute force against tenant keys leaves a line per attempt. Each
+record carries the SHA-256 of the previous one, so the file is a hash chain.
 
 The trail below is [`examples/hushgate-audit.jsonl`](examples/hushgate-audit.jsonl),
 committed to the repository so this section can be read without running
-anything. It is exactly what the two requests in §3 and the stream in §5
-produce; delete it and re-run them and you get the same records, though the
-hashes differ because the chain covers timestamps.
+anything. It was recorded from the two requests in §3 and the stream in §5.
+Re-running them writes the same kind of records with new ids and timestamps,
+and therefore new hashes; a current build also writes `residency.endpoint`,
+which this file predates.
 
 ```json
 {"ts":"2026-08-23T10:40:09.900Z","id":"fa47a947-5723-4c1a-be43-2a9fdc10dca5","tenant":null,"route":"openai.chat.completions","outcome":"forwarded","status":200,"latencyMs":25,"stream":false,"upstream":"127.0.0.1:9099","tokens":64,"findings":{"TERM":1,"NAME":1,"EMAIL":1,"PHONE":1,"IBAN":1},"policies":{"TERM":"pseudonymize","NAME":"pseudonymize","EMAIL":"pseudonymize","PHONE":"pseudonymize","IBAN":"pseudonymize"},"residency":{"mode":"sanitize","rule":"residency.mode","jurisdiction":"LOCAL","controls":[]},"attachments":[],"prev":"0000000000000000000000000000000000000000000000000000000000000000","hash":"2db1a2b738345c5762bb12c02d1a5b514b3118015850af81035c086e2a042139"}
 ```
 
-`hushgate audit verify` walks the chain:
+### What a record holds
+
+Every field, in the order it is written:
+
+| Field | Meaning |
+| --- | --- |
+| `ts` | When the record was written: an RFC 3339 timestamp in UTC. |
+| `id` | A random UUID for this record. |
+| `tenant` | The tenant the request authenticated as, or `null` in single-tenant mode. |
+| `route` | The route it came in on, such as `openai.chat.completions`. |
+| `outcome` | `forwarded`; `blocked` by a `block` policy or rule; `rejected` before anything left the machine (a tenant key, a quota, a malformed or oversized body); or `failed` at the upstream. |
+| `status` | The HTTP status returned to the caller. |
+| `latencyMs` | How long the request took, in milliseconds. |
+| `stream` | Whether the response was an event stream. |
+| `upstream` | The host the request was sent to, or `null` if it was never sent. |
+| `tokens` | Tokens the upstream reported, or 0 when it reported none. |
+| `findings` | How many findings of each category, such as `"EMAIL":1`. |
+| `policies` | The policy applied to each category: `pseudonymize`, `redact`, `hash`, `allow` or `block`. |
+| `residency` | The residency decision, or `null` when the request never reached one: `mode` (`block`, `sanitize`, `warn` or `allow`), `rule` (the config path that decided), `jurisdiction`, `controls` (the retention and training controls set on the outbound request) and `endpoint` (the `residency.allow` entry that admitted the request, as configured, or `null` when no entry decided; absent from records written by 0.4.0 and earlier). |
+| `attachments` | One entry per document, in the order they appeared, or `[]`: `format`, `mediaType`, `bytes`, `chars` (characters of text extracted — a length, not the text), `pages`, `extractor`, `outcome` (`extracted`, `truncated`, `withheld`, `forwarded` or `blocked`) and `reason`. |
+| `dropped` | Present only after the writer failed to write records: how many were lost immediately before this one. See [How it is written](#how-it-is-written). |
+| `prev` | The `hash` of the record before it, or 64 zeros for the first. |
+| `hash` | SHA-256 of this record's line with the `hash` field taken out. |
+
+Filenames and document contents never reach the trail. A filename is
+routinely personal data on its own — `Kuendigung_Anna_Schmidt.pdf` names a
+person and an employment event — so it goes into the outbound prompt, where the
+detectors pseudonymise it like any other text, and nowhere else. An
+attachment's `reason` is assembled from fixed phrases, sizes and media types,
+and its `mediaType` is one hushgate recognises — the declared type when
+hushgate knows it or a configured extractor claims it, otherwise the type of
+the format it detected — so a caller cannot write text of its own into the
+trail through either. Where a field with a fixed set of values — `outcome`,
+`residency.mode`, a policy, an attachment's `outcome` — is given anything
+outside that set, the record says `invalid` rather than copying what it was
+given.
+
+Tenant ids are written as configured, and they are the one field where the
+name you choose decides whether the trail itself holds personal data.
+[Multi-tenant operation](#multi-tenant-operation) explains why they should name
+teams or applications rather than people.
+
+### Verifying it
+
+`hushgate audit verify` walks the chain. Name the trail after the subcommand,
+or with `--file`; without one it reads the global trail from the
+configuration. A file named without `-c` is verified without loading any
+configuration at all, so an auditor handed a copy needs nothing else:
 
 ```console
-$ hushgate audit verify -c examples/demo.config.json
+$ hushgate audit verify examples/hushgate-audit.jsonl
 audit trail /home/you/hushgate/examples/hushgate-audit.jsonl
   records      3
   chain        intact
-  head         b2e5930378425ec5265a1bc8d61c51147dd756e19c3880176f0f591152883be2
+  head         5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f
 
 Anchor the head hash outside hushgate (a ticket, a signed note, another
-system) if you also need to detect records being dropped from the end.
+system) and pass it back with --anchor, so that records dropped from the
+end are detected too.
 ```
 
 Change a single field of a single record — here the count that says a
@@ -797,24 +850,169 @@ chain broke:
 
 ```console
 $ sed 's/"SECRET":1/"SECRET":0/' examples/hushgate-audit.jsonl > examples/tampered.jsonl
-$ hushgate audit verify --file examples/tampered.jsonl
+$ hushgate audit verify examples/tampered.jsonl
 audit trail /home/you/hushgate/examples/tampered.jsonl
   records      3
-  chain        BROKEN
-  first break  record 2 (altered)
-  id           eb05e168-4577-4d03-9755-c87773f86fe5
-  timestamp    2026-08-22T14:55:49.213Z
-  detail       record hash is b40af9be67b1…, but its contents hash to 4f1fae52d170…
+  chain        BROKEN at 1 point
+  break        record 2 (altered), line 2: id fa030c32-7b27-4947-9448-8567b7ca154b, ts 2026-08-23T10:40:09.921Z
+               record hash is 07b73ca315a9…, but its contents hash to 25d22e0325ab…
+  head         5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f
 
-Everything before that record still verifies. Everything from it onwards
-has been altered, or had records inserted or removed.
+Records outside the points listed still link correctly. At each listed
+point a record was altered, or records were inserted or removed.
 
 $ echo $?
 1
 ```
 
+Every break is listed, up to a hundred and then counted, with the record's
+number and the line of the file it is on. A record is `altered` when it no
+longer hashes to its own `hash`, and `unlinked` when its `prev` does not name
+the record before it, which is what an insertion or a removal leaves behind.
+The chain is judged afresh after each break, so one edited record is one
+break; the records after it are not condemned with it. On a broken chain,
+`head` is the hash stored in the last record.
+
+Three more things are reported, because each would otherwise pass in silence:
+
+- A line that is not a record — not JSON, not UTF-8, missing a field, or over
+  16 MiB — is listed as `unreadable` with its line number, and fails
+  verification: nothing it held is covered by the verdict.
+- A record that carries `dropped` is reported as a gap, such as
+  `2 records could not be written before record 7 (line 7)`. The writer linked
+  that record to the last one that reached the disk and said what is missing,
+  so the chain still verifies, with a warning that requests were served for
+  which there is no evidence.
+- A trail with no records verifies trivially, and so does one that was
+  emptied. verify says so in a warning.
+
+`--json` prints the same verdict for a script, with the keys `file`, `ok`,
+`chainOk`, `records`, `firstBreak`, `head`, `from`, `breaks`, `breakCount`,
+`gaps`, `gapCount`, `dropped`, `anchors`, `malformed` and `malformedCount`.
+`ok` is the whole verdict and always agrees with the exit code: no breaks,
+every anchor found, every line readable. `chainOk` is the chain's own verdict
+— no breaks and every anchor found — leaving unreadable lines aside. The exit
+code is 0 when the trail verifies, 1 when it does not, and 2 for a usage
+error: a malformed hash, a file named twice, or a flag that does not apply,
+such as `--from` on verify.
+
+### Anchoring the head, and rotating the trail
+
+A chain shows that nothing in it was altered, inserted or removed. It cannot
+show that records were cut off the end, because a shorter chain is still a
+consistent one, and anyone who can write the file can recompute every hash
+after an edit. Both are answered the same way: keep the head somewhere
+hushgate cannot rewrite. `serve` helps. Its banner says where each chain stood
+when it was opened — `continuing chain from 5531e6c715d8` in §3, or `starting a
+new trail` — and on shutdown it prints each trail's head in full, so the
+service log, journald or the container log, holds one at no cost:
+
+```console
+^C
+hushgate: shutting down
+  audit      /home/you/hushgate/examples/hushgate-audit.jsonl head 5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f
+```
+
+Pass a head back with `--anchor` (repeatable; upper or lower case), and
+verification fails unless a record that verifies carries exactly that hash.
+Here the last record has been cut off a copy of the trail. The chain still
+links; the anchor is gone:
+
+```console
+$ head -n 2 examples/hushgate-audit.jsonl > examples/truncated.jsonl
+$ hushgate audit verify examples/truncated.jsonl --anchor 5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f
+audit trail /home/you/hushgate/examples/truncated.jsonl
+  records      2
+  chain        intact
+  head         07b73ca315a9c30abe0fe7a96c855dec7ccc45326dc2c9c04d18a13d3d830576
+  anchor       5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f NOT FOUND
+
+An anchored head that no verified record carries means records were
+removed from the end of the trail, or the trail was rewritten, after the
+anchor was taken.
+
+$ echo $?
+1
+```
+
+On the whole trail the same anchor reads
+`found at record 3 (line 3), 0 records after it`: where it is, and how many
+records were appended since it was taken.
+
+To rotate the trail:
+
+1. Stop hushgate. The lines it prints last give the head of each trail it was
+   writing.
+2. Move the file away: `mv hushgate-audit.jsonl hushgate-audit-2026-09.jsonl`.
+3. Start hushgate. The banner says `starting a new trail`, and the new file's
+   chain starts from 64 zeros.
+4. Keep the old head with the archive.
+   `hushgate audit verify hushgate-audit-2026-09.jsonl --anchor <head>` checks
+   it, now or in five years.
+
+Never rotate with `copytruncate`. It copies the file and then empties it in
+place, so records written between the two steps are lost, and the first record
+in the emptied file links to one that exists only in the copy. hushgate notices
+a trail moved, deleted or truncated underneath it and says so on stderr, with
+the head to anchor, but that is a warning about damage, not a way to rotate.
+
+A trail whose beginning was removed on purpose — records past their retention
+period, cut from the front — no longer starts from 64 zeros, and verify reports
+its first record as `unlinked`. Note the hash of the last record you remove
+when you remove it, and pass it back with `--continues-from`:
+
+```console
+$ tail -n 1 examples/hushgate-audit.jsonl > examples/pruned.jsonl
+$ hushgate audit verify examples/pruned.jsonl --continues-from 07b73ca315a9c30abe0fe7a96c855dec7ccc45326dc2c9c04d18a13d3d830576
+audit trail /home/you/hushgate/examples/pruned.jsonl
+  records      1
+  from         07b73ca315a9c30abe0fe7a96c855dec7ccc45326dc2c9c04d18a13d3d830576
+  chain        intact
+  head         5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f
+
+Anchor the head hash outside hushgate (a ticket, a signed note, another
+system) and pass it back with --anchor, so that records dropped from the
+end are detected too.
+```
+
+### Tenants' trails
+
+A tenant with its own `audit.path` is recorded in that file and nowhere else.
+`--tenant <id>` verifies, or reports on, that tenant's trail; a tenant without
+one is recorded in the global trail, which is then what is read, and a note
+says so. A plain `hushgate audit verify` still checks the global trail alone,
+and ends by naming the tenant trails it did not check. `--all` checks every
+distinct trail the configuration names — the global one and each tenant's,
+once per file however many tenants share it — prints a block for each, ends
+with `All 3 trails verified.` or `1 of 3 trails did not verify.`, and fails if
+any one does, including a trail that cannot be read. `--anchor` and
+`--continues-from` describe a single trail, so they do not combine with
+`--all`.
+
+### Checking it without hushgate
+
+The verifier is a convenience, not the authority. Each line is its record
+serialised as JSON with no added whitespace and the fields in the order above,
+and its `hash` is the SHA-256 of that line with `,"hash":"<64 hex digits>"`
+taken out:
+
+```console
+$ head -n 1 examples/hushgate-audit.jsonl | sed 's/,"hash":"[0-9a-f]\{64\}"}$/}/' | tr -d '\n' | sha256sum
+2db1a2b738345c5762bb12c02d1a5b514b3118015850af81035c086e2a042139  -
+```
+
+That is the `hash` at the end of the first line and the `prev` of the second.
+Because the hash covers bytes, a line has to stay in exactly that form. One
+that parses to the same record but is spelt differently — added whitespace, a
+number written another way, a key given twice — is not what was hashed, and
+`audit verify` reports it as altered. A duplicate key is the case that
+matters: two JSON readers can disagree about which of its values the record
+holds.
+
+### The report
+
 `hushgate audit report` turns the same file into an Article 30 style record of
-processing activities, in Markdown or JSON:
+processing activities, in Markdown or, with `--json`, as data:
 
 ```console
 $ hushgate audit report -c examples/demo.config.json
@@ -822,13 +1020,15 @@ $ hushgate audit report -c examples/demo.config.json
 
 _Article 30 style summary, generated by hushgate from its own audit trail._
 
-- **Generated**: 2026-08-22T14:56:18.842Z
+- **Generated**: 2026-10-27T17:35:06.717Z
+- **Generator**: hushgate 0.4.0
 - **Source**: /home/you/hushgate/examples/hushgate-audit.jsonl
-- **Period**: beginning → end (records from 2026-08-22T14:55:49.202Z to 2026-08-22T14:55:49.226Z)
+- **Configuration**: /home/you/hushgate/examples/demo.config.json
+- **Period**: beginning → end (UTC days, inclusive; records from 2026-08-23T10:40:09.900Z to 2026-08-23T10:40:09.939Z)
 - **Controller**: Nordlicht GmbH
 - **Contact**: datenschutz@nordlicht.example
 - **Data protection officer**: A. Datenschutz
-- **Audit chain**: intact over 3 records (head b2e593037842…)
+- **Audit chain**: intact over 3 records (head 5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f)
 
 ## Purposes of processing
 
@@ -837,10 +1037,11 @@ _Article 30 style summary, generated by hushgate from its own audit trail._
 ## Volumes
 
 - Requests: **3**
-- Tokens reported by providers: **64**
+- Tokens reported by providers: **128**
 - Outcomes: blocked 1, forwarded 2
 - Routes: openai.chat.completions 3
 - Residency enforcement: n/a 1, sanitize 2
+- Requests forwarded unredacted under residency warn or allow: **0**
 
 ## Categories of personal data
 
@@ -857,18 +1058,22 @@ _Article 30 style summary, generated by hushgate from its own audit trail._
 
 | Recipient | Jurisdiction | Transfer | Requests | Tokens | Safeguard recorded |
 | --- | --- | --- | ---: | ---: | --- |
-| 127.0.0.1:9099 | Your own infrastructure (LOCAL) | no transfer | 2 | 64 | Processing on our own hardware; no transfer occurs. |
+| 127\.0.0.1:9099 | Your own infrastructure (LOCAL) | no transfer | 2 | 128 | Processing on our own hardware; no transfer occurs. |
+
+_Safeguards are read from the configuration in force when this report was generated, not from the time of each request: an allowlist entry added, changed or removed since then changes this column._
 
 ### Controls applied to outbound requests
 
-- 127.0.0.1:9099: none set per request
+- 127\.0.0.1:9099 (LOCAL): none set per request
 
 ## Technical measures
 
-Personal data detected in outbound requests is replaced with pseudonymous
-placeholders before the request leaves the machine, and restored in the
-response. The audit trail records categories and counts only; it contains no
-personal data itself, by construction.
+- Where a category is handled by `pseudonymize` (EMAIL, IBAN, NAME, PHONE, TERM), its values were replaced with placeholders before the request left the machine, and restored in the response.
+- Where a category is handled by `block` (SECRET), the request was refused and nothing in it left the machine.
+
+The audit trail records categories and counts only; it holds no personal
+data from requests. Identifiers the operator chooses, such as tenant ids,
+are recorded as configured.
 
 ---
 
@@ -876,6 +1081,64 @@ This document is generated from a technical control. It supports a record of
 processing activities; it is not legal advice and does not by itself make any
 transfer lawful.
 ```
+
+It says what the trail supports and no more. The whole trail is verified,
+whatever the period, because a break outside it still means the figures inside
+cannot be trusted; the **Audit chain** line reads `intact` only when every link
+holds, every anchor is found and every line can be read, and otherwise names
+the first break with its line, the number of breaks, the missing anchor or the
+unreadable lines. Where they apply, the document also states:
+
+- what was sent **unredacted**. Categories forwarded under a residency `warn`
+  or `allow` mode, or an `allow` policy, are counted as such and never listed
+  as pseudonymised, and with attachments switched off the document says that
+  documents were forwarded unread;
+- a safeguard it cannot attribute. Records without `residency.endpoint` are
+  matched to the allowlist by host, and where several entries share a host
+  with different legal bases, the row says **ambiguous** and lists them;
+- records the writer could not write, as **N audit records were lost**, which
+  makes every figure a lower bound;
+- the configuration it was generated with, or **none found — defaults used**,
+  and the hushgate version that generated it;
+- tenants whose own trails it does not include, under **Not covered**, when it
+  reads the global trail.
+
+`--from` and `--to` take UTC days, `YYYY-MM-DD`, both inclusive; a date that
+does not exist, such as `2026-02-31`, or a `--from` after the `--to`, is a
+usage error. `--tenant` chooses which trail is read and does not filter
+records: a tenant without a trail of its own is reported together with
+everything else in the global one, and a note on stderr says so. The report
+takes `--anchor` and `--continues-from` as verify does, always loads the
+configuration for the organisation and its safeguards, and exits 1 when the
+chain has a break, an anchor is missing or a line is unreadable. Lost records
+alone do not change the exit code; the document states them.
+
+### How it is written
+
+Each record is appended with one synchronous write, so a request hushgate has
+answered for has its record in the kernel rather than in a buffer a crash would
+lose. On a local disk that takes microseconds; on a
+network filesystem it can stall every request for far longer. Keep the trail on
+a local disk. New trail files are created readable by their owner and group
+only.
+
+`serve` opens every trail before it binds the port, and if one cannot be
+opened — a directory it may not write, a read-only volume, a path that is a
+directory — it exits 1 with nothing listening, because a proxy that cannot
+write its trail must not forward personal data without one. `hushgate doctor`
+runs the same check ahead of time. A record that cannot be written once hushgate
+is running, on a full disk say, is counted and reported on stderr, and the next
+record that does reach the file carries the count as `dropped`.
+`hushgate_audit_dropped_records_total` exposes the same count to monitoring,
+and anything above zero is worth an alert. On shutdown, requests still in
+flight get five seconds to finish; after that their upstream calls are
+abandoned and they are recorded as `failed`. Either way their records are
+written before the trails are closed.
+
+Tenants that name the same file, or the global trail's file however it is
+spelt, share one writer and one chain, and each record still names its tenant.
+Two hushgate processes must not share a file: each would extend a chain of its
+own, and the file would break at the first switch between them.
 
 ## 8. How it works
 
@@ -1053,9 +1316,9 @@ measured in hundreds of milliseconds.
 | `hushgate check [-q]` | Redact standard input to standard output, for piping. |
 | `hushgate residency [--json] [--registry]` | Where each route sends data, and on whose authority. |
 | `hushgate briefing [--tenant <id>] [--kinds <list>] [--json]` | Print what hushgate tells the model about the placeholders. |
-| `hushgate doctor [--json] [--allow-warnings]` | Validate config, residency and audit chain. For CI. |
-| `hushgate audit verify [--file <p>] [--json]` | Walk the hash chain, report the first break. |
-| `hushgate audit report [--from <d>] [--to <d>] [--json]` | Article 30 style record of processing. |
+| `hushgate doctor [--json] [--allow-warnings]` | Validate config and residency, and verify every audit trail and whether `serve` could write it. For CI. |
+| `hushgate audit verify [<file> \| --tenant <id> \| --all] [--anchor <hash>]... [--continues-from <hash>] [--json]` | Walk the whole hash chain: every break, gap and unreadable line, with line numbers, and every anchor. See [§7](#verifying-it). |
+| `hushgate audit report [<file> \| --tenant <id>] [--from <date>] [--to <date>] [--anchor <hash>]... [--continues-from <hash>] [--json]` | Article 30 style record of processing, over UTC days. See [§7](#the-report). |
 | `hushgate keys new <tenant-id>` / `hushgate keys hash` | Mint a tenant key, or hash an existing one. |
 | `hushgate help [command]`, `hushgate version` | Help, and the version. |
 
@@ -1066,7 +1329,7 @@ measured in hundreds of milliseconds.
 | Exit code | Meaning |
 | ---: | --- |
 | 0 | Success. |
-| 1 | Failure — a broken chain, a `doctor` finding, a refused configuration. |
+| 1 | Failure — a broken chain, a missing anchor, an unreadable trail line, a `doctor` finding, a refused configuration, an audit trail `serve` cannot open. |
 | 2 | Usage error. |
 | 3 | `hushgate scan` found personal data. |
 
@@ -1090,11 +1353,15 @@ for example.
 $ curl -sS http://127.0.0.1:8787/metrics
 # HELP hushgate_build_info Version of the running hushgate.
 # TYPE hushgate_build_info gauge
-hushgate_build_info{version="0.3.0"} 1
+hushgate_build_info{version="0.4.0"} 1
 # HELP hushgate_requests_total Requests handled, by route, outcome and tenant.
 # TYPE hushgate_requests_total counter
 hushgate_requests_total{outcome="blocked",route="openai.chat.completions",status="403",tenant="none"} 1
 hushgate_requests_total{outcome="forwarded",route="openai.chat.completions",status="200",tenant="none"} 2
+# HELP hushgate_attachments_total Attachments handled, by format, outcome and extractor.
+# TYPE hushgate_attachments_total counter
+# HELP hushgate_attachment_bytes_total Attachment bytes decoded, by format.
+# TYPE hushgate_attachment_bytes_total counter
 # HELP hushgate_findings_total Personal data found, by category and the policy applied.
 # TYPE hushgate_findings_total counter
 hushgate_findings_total{kind="EMAIL",policy="pseudonymize"} 2
@@ -1106,6 +1373,9 @@ hushgate_findings_total{kind="TERM",policy="pseudonymize"} 1
 # HELP hushgate_blocked_total Requests refused, by what refused them.
 # TYPE hushgate_blocked_total counter
 hushgate_blocked_total{reason="policy",rule="redaction.policies"} 1
+# HELP hushgate_audit_dropped_records_total Audit records that could not be written, by trail.
+# TYPE hushgate_audit_dropped_records_total counter
+hushgate_audit_dropped_records_total{trail="global"} 0
 # HELP hushgate_upstream_tokens_total Tokens reported by upstream providers.
 # TYPE hushgate_upstream_tokens_total counter
 hushgate_upstream_tokens_total{route="openai.chat.completions",tenant="none"} 64
@@ -1113,6 +1383,13 @@ hushgate_upstream_tokens_total{route="openai.chat.completions",tenant="none"} 64
 # TYPE hushgate_request_duration_seconds histogram
 ...
 ```
+
+`hushgate_audit_dropped_records_total` counts the audit records that could not
+be written since hushgate started, one series per trail file: `trail="global"`
+for the global trail, and for a tenant's own file the ids of the tenants
+writing to it, such as `trail="sales,support"`. Anything above zero means
+requests were served without evidence, which makes it worth an alert;
+[How it is written](#how-it-is-written) in §7 has the rest.
 
 ### Policies
 
@@ -1177,10 +1454,10 @@ Environment overrides: `HUSHGATE_HOST`, `HUSHGATE_PORT`,
 ### Multi-tenant operation
 
 Each tenant gets its own policy profile, its own pseudonym namespace, its own
-audit stream and its own quotas. A placeholder minted for one tenant cannot be
-resolved by another, and there is a test that asserts exactly that. hushgate
-refuses to bind a non-loopback address until at least one tenant exists, so it
-cannot become an open relay on the LAN.
+quotas, and its own audit trail if you give it one. A placeholder minted for one
+tenant cannot be resolved by another, and there is a test that asserts exactly
+that. hushgate refuses to bind a non-loopback address until at least one tenant
+exists, so it cannot become an open relay on the LAN.
 
 ```console
 $ hushgate keys new support
@@ -1208,13 +1485,13 @@ A tenant entry takes:
 
 | Field | Meaning |
 | --- | --- |
-| `id`, `name` | Identifier used in the audit trail and the metrics labels. |
+| `id`, `name` | Identifier used in the audit trail and the metrics labels. Name a team or an application, not a person — see below. |
 | `keyHash` | `sha256:…` of the key. The key itself is never stored. |
 | `keyHashes` | Several hashes, for rotating a key without downtime. |
 | `keyEnv` | Name of an environment variable holding the key, so a container gets one without a secret in the config file. |
 | `upstreamKeyEnv` | Where this tenant's **provider** credential is read from. Defaults to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. |
 | `quotas` | `requestsPerMinute`, `tokensPerDay`. Over-quota callers get a 429. |
-| `audit.path` | A dedicated trail for this tenant, with its own hash chain. |
+| `audit.path` | A trail of this tenant's own, with its own hash chain. Without one, its requests are recorded in the global trail. |
 | `redaction` | Overrides folded over the global profile — see below. |
 | `briefing` | Overrides folded over the global briefing, key by key. A tenant naming only `append` keeps the house `mode` and `text`; writing `null` for a key drops a global override rather than inheriting it. |
 
@@ -1224,6 +1501,23 @@ merge by name, and anything the tenant does not mention it inherits. A tenant
 with no `redaction` block gets the global profile in full. The same is true of
 `briefing`: `hushgate briefing --tenant <id>` prints the words any one of them
 actually gets.
+
+A tenant's `audit.path` is resolved against the working directory, like the
+global one. Tenants that name the same file share one chain, and so does a
+tenant that names the global trail's file, however either is spelt: hushgate
+opens one writer per file, and each record still names its tenant. Only the
+global trail is read by a plain `hushgate audit verify`; `--tenant <id>` and
+`--all` read the others, and `hushgate doctor` checks them all; see
+[§7](#tenants-trails).
+
+Choose tenant ids for teams or applications — `support`, `crm-sync` — rather
+than for people. The id is written into every record next to a timestamp, so
+a per-person id such as `j.becker` turns the trail into a log of when each
+employee used the model and how much personal data their requests carried.
+That is personal data about employees in its own right, and in Germany it can
+engage the works council's co-determination right under §87(1) Nr. 6 BetrVG,
+which covers technical systems suited to monitoring employees' behaviour or
+performance.
 
 Note what changes about credentials in multi-tenant mode. The caller sends a
 *hushgate* key, not a provider key, and hushgate drops the header carrying it
@@ -1254,8 +1548,10 @@ const back = session.restore(text);
 Also exported: `detect`, `createDetectors` and every individual detector;
 `isValidIban`, `luhnValid`, `isValidGermanTaxId` and friends; `redactJson` and
 `restoreJson` for structured bodies; `StreamRehydrator` and `SseRehydrator`; the
-audit log and chain verifier; the residency registry and policy engine; the
-tenant registry; the metrics registry.
+audit writer, the streaming trail reader (`readTrailEntries`), the verifier
+(`verifyTrailFile`, `ChainVerifier`) and the report builder (`ReportBuilder`);
+the residency registry and policy engine; the tenant registry; the metrics
+registry.
 
 ## 10. Detection: what it catches, and what it does not
 
@@ -1439,7 +1735,7 @@ filesystem, `allowPrivilegeEscalation: false`, all capabilities dropped, seccomp
 `RuntimeDefault`.
 
 Put `hushgate doctor` in the pipeline. It validates the configuration, resolves
-the residency policy, verifies the audit chain and exits non-zero on anything
+the residency policy, verifies every audit trail and exits non-zero on anything
 unsafe — including `warn` mode left switched on:
 
 ```console
@@ -1449,6 +1745,8 @@ hushgate doctor
 configuration
   note  no hushgate.config.json found; running on built-in defaults
         → run "hushgate init" to write one
+briefing
+  ok    the model is briefed on the placeholders when a request carries any
 residency
   warn  no residency allowlist is configured, so any upstream is permitted
         → list the endpoints you have assessed in residency.allow, each with its legal basis
@@ -1456,6 +1754,10 @@ residency
   note  upstreams.anthropic → api.anthropic.com [US, third-country] via residency.allow (empty)
 security
   ok    bound to 127.0.0.1, so only this machine can reach it
+attachments
+  ok    attachment handling is on
+  note  extractor pdftotext is configured but is not on PATH, so application/pdf, pdf will be refused
+        → install it with "apt install poppler-utils" or "brew install poppler"
 audit
   note  no trail at /home/you/hushgate/hushgate-audit.jsonl yet; it is written on the first request
 
@@ -1473,23 +1775,38 @@ hushgate doctor
 
 configuration
   ok    config file /home/you/hushgate/examples/demo.config.json
+briefing
+  ok    the model is briefed on the placeholders when a request carries any
 residency
   ok    upstreams.openai → 127.0.0.1 [LOCAL, local] via residency.allow[0]
   ok    upstreams.anthropic → 127.0.0.1 [LOCAL, local] via residency.allow[0]
 security
   ok    bound to 127.0.0.1, so only this machine can reach it
+attachments
+  ok    attachment handling is on
+  note  extractor pdftotext is configured but is not on PATH, so application/pdf, pdf will be refused
+        → install it with "apt install poppler-utils" or "brew install poppler"
 audit
-  ok    /home/you/hushgate/examples/hushgate-audit.jsonl: 3 record(s), chain intact, head b2e593037842…
+  ok    trail /home/you/hushgate/examples/hushgate-audit.jsonl: 3 record(s), chain intact, head 5531e6c715d8f4e7d6e5cbccd20c1e1005db9e8be9264073398ea37560c81b2f
 
 Nothing unsafe found.
 ```
 
-Operational behaviour: graceful shutdown, a body-size limit, an upstream
-timeout, and retries with full-jitter exponential backoff for failures that
-happened *before* a response arrived. A response is never retried, whatever its
-status — a 429 with a `retry-after` belongs to the caller, and quietly resending
-a request the provider has already seen and charged for would be worse than the
-error.
+The `audit` section covers every trail `serve` would write — the global one
+and each tenant's `audit.path`, resolved against the working directory the way
+`serve` resolves them, once per file. For each it checks that `serve` could
+open it for writing, and fails if it could not, since `serve` would then refuse
+to start. A trail that does not exist yet is a note; one that exists and cannot
+be read, a broken chain or an unreadable line is a failure; records the writer
+could not write are a warning. The head is printed in full, because it is what
+you anchor.
+
+Operational behaviour: a graceful shutdown that lets requests in flight finish
+and writes their records, a body-size limit, an upstream timeout, and retries
+with full-jitter exponential backoff for failures that happened *before* a
+response arrived. A response is never retried, whatever its status — a 429
+with a `retry-after` belongs to the caller, and quietly resending a request the
+provider has already seen and charged for would be worse than the error.
 
 ## 13. Development
 

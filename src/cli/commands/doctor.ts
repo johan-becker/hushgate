@@ -5,7 +5,6 @@
  * it prints says what to do about it. A checker that reports a problem without a
  * remedy just moves the work.
  */
-import { isAbsolute, resolve as joinPath } from 'node:path';
 import { loadConfig } from '../../config.js';
 import { runChecks, tally, type Finding, type Severity } from '../../doctor/checks.js';
 import { ConfigError } from '../../errors.js';
@@ -40,13 +39,9 @@ export function doctor(cli: Cli, argv: readonly string[]): Promise<number> {
       env: cli.env,
     });
 
-    findings = runChecks({
-      config,
-      configPath: source.path,
-      auditPath: isAbsolute(config.audit.path)
-        ? config.audit.path
-        : joinPath(cli.cwd, config.audit.path),
-    });
+    // Audit paths, the global one and each tenant's, resolve against the
+    // working directory exactly as `serve` resolves them.
+    findings = runChecks({ config, configPath: source.path, cwd: cli.cwd });
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     // A config that will not parse is the first thing doctor should report, in

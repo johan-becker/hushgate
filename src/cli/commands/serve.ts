@@ -1,5 +1,6 @@
 /** `hushgate serve` — run the proxy in the foreground. */
 import { JsonlAuditLog, nullAuditLog } from '../../audit/log.js';
+import { resolveTrailPath, trailFileKeys } from '../../audit/paths.js';
 import { GENESIS_HASH } from '../../audit/record.js';
 import { loadConfig, type ConfigOverrides, type HushgateConfig } from '../../config.js';
 import { HushgateError } from '../../errors.js';
@@ -7,8 +8,7 @@ import { Metrics } from '../../metrics/registry.js';
 import { createProxyServer, type ProxyServer } from '../../proxy/server.js';
 import { ROUTES } from '../../proxy/routes.js';
 import { VERSION } from '../../version.js';
-import { realpathSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve as joinPath } from 'node:path';
+import { statSync } from 'node:fs';
 import { boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 import { untilStopped } from '../stop.js';
@@ -19,11 +19,6 @@ function describeTenants(config: HushgateConfig): string {
     return 'none — single tenant, no key required (loopback only)';
   }
   return config.tenants.map((tenant) => `${tenant.id} (${tenant.name})`).join(', ');
-}
-
-/** Resolve a configured path against the working directory. */
-function resolvePath(cwd: string, path: string): string {
-  return isAbsolute(path) ? path : joinPath(cwd, path);
 }
 
 export const SERVE_FLAGS: FlagSpecs = {
@@ -167,8 +162,8 @@ async function openTrails(cwd: string, config: HushgateConfig): Promise<Trails> 
   const byFile = new Map<string, Trail>();
 
   const open = (configured: string, tenant: string | null): Trail => {
-    const path = resolvePath(cwd, configured);
-    const known = fileKeys(path)
+    const path = resolveTrailPath(cwd, configured);
+    const known = trailFileKeys(path)
       .map((key) => byFile.get(key))
       .find((trail) => trail !== undefined);
     if (known !== undefined) {
@@ -180,7 +175,7 @@ async function openTrails(cwd: string, config: HushgateConfig): Promise<Trails> 
     all.push(trail);
     // Keyed again now that it is open: opening may have created the file, and
     // a file that exists can be recognised by its inode however it is spelled.
-    for (const key of fileKeys(path)) byFile.set(key, trail);
+    for (const key of trailFileKeys(path)) byFile.set(key, trail);
     return trail;
   };
 
@@ -223,37 +218,6 @@ function openTrail(path: string, tenant: string | null): Trail {
 
 function closeTrails(trails: readonly Trail[]): Promise<void> {
   return Promise.all(trails.map((trail) => trail.sink.close())).then(() => undefined);
-}
-
-/**
- * Every name one file goes by: its real path and, once it exists, its device
- * and inode. The real path catches `./a` against `a` and a symlinked directory;
- * the inode also catches a hard link, and `Audit.jsonl` against `audit.jsonl`
- * on a file system that ignores case.
- */
-function fileKeys(path: string): string[] {
-  const keys = [`path:${realPath(path)}`];
-  try {
-    const { dev, ino } = statSync(path);
-    keys.push(`inode:${dev}:${ino}`);
-  } catch {
-    // Not there yet: the path is all there is to go by.
-  }
-  return keys;
-}
-
-/** The real path, or the real directory plus the name for a file not yet created. */
-function realPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    // Not there yet; its directory may be.
-  }
-  try {
-    return join(realpathSync(dirname(path)), basename(path));
-  } catch {
-    return path;
-  }
 }
 
 function sizeOf(path: string): number {

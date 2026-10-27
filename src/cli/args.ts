@@ -3,9 +3,11 @@
  *
  * Supported forms: `--name value`, `--name=value`, `-n value`, `-n=value`,
  * boolean `--name` and `--no-name`, and `--` to end option parsing. Anything
- * else is a positional argument. Unknown options are an error rather than being
- * ignored: silently dropping `--upstrem` would be exactly the wrong behaviour
- * for a tool whose job is to be sure about where data goes.
+ * else is a positional argument. A string option marked `repeatable` collects
+ * every value it is given, in order; any other option keeps the last. Unknown
+ * options are an error rather than being ignored: silently dropping
+ * `--upstrem` would be exactly the wrong behaviour for a tool whose job is to
+ * be sure about where data goes.
  */
 import { UsageError } from '../errors.js';
 
@@ -19,12 +21,17 @@ export interface FlagSpec {
   readonly description: string;
   /** Value name shown in `--help`, e.g. `<path>`. */
   readonly placeholder?: string;
+  /**
+   * For a string option: may be given more than once, and every value is kept.
+   * Read it with {@link listFlag}.
+   */
+  readonly repeatable?: boolean;
 }
 
 export type FlagSpecs = Readonly<Record<string, FlagSpec>>;
 
 export interface ParsedFlags {
-  readonly values: Readonly<Record<string, string | number | boolean | undefined>>;
+  readonly values: Readonly<Record<string, string | readonly string[] | number | boolean | undefined>>;
   readonly positionals: readonly string[];
 }
 
@@ -34,7 +41,7 @@ export function parseFlags(argv: readonly string[], specs: FlagSpecs): ParsedFla
     if (spec.alias !== undefined) byAlias.set(spec.alias, name);
   }
 
-  const values: Record<string, string | number | boolean | undefined> = {};
+  const values: Record<string, string | readonly string[] | number | boolean | undefined> = {};
   const positionals: string[] = [];
   let onlyPositionals = false;
 
@@ -95,6 +102,12 @@ export function parseFlags(argv: readonly string[], specs: FlagSpecs): ParsedFla
       continue;
     }
 
+    if (spec.repeatable === true) {
+      const earlier = values[name];
+      values[name] = [...(Array.isArray(earlier) ? (earlier as readonly string[]) : []), value];
+      continue;
+    }
+
     values[name] = value;
   }
 
@@ -122,6 +135,19 @@ export function stringFlag(parsed: ParsedFlags, name: string): string | undefine
     throw new UsageError(`option "--${name}" needs a non-empty value`);
   }
   return value;
+}
+
+/** Read a repeatable string option: every value given, in order, or none. */
+export function listFlag(parsed: ParsedFlags, name: string): string[] {
+  const value = parsed.values[name];
+  if (value === undefined) return [];
+  const values = Array.isArray(value) ? (value as readonly unknown[]) : [value];
+  return values.map((item) => {
+    if (typeof item !== 'string' || item.length === 0) {
+      throw new UsageError(`option "--${name}" needs a non-empty value`);
+    }
+    return item;
+  });
 }
 
 /** Read an integer option within an inclusive range. */

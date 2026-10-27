@@ -77,7 +77,17 @@ const COMMANDS: Readonly<Record<string, Command>> = {
   },
   audit: {
     summary: AUDIT_SUMMARY,
-    usage: 'hushgate audit verify | hushgate audit report [--from <date>] [--to <date>]',
+    usage: [
+      'hushgate audit verify [<file> | --tenant <id> | --all] [--anchor <hash>]...',
+      '                             [--continues-from <hash>] [--json]',
+      '       hushgate audit report [<file> | --tenant <id>] [--from <date>] [--to <date>]',
+      '                             [--anchor <hash>]... [--continues-from <hash>] [--json]',
+      '',
+      'Without a file or --tenant, both read the global trail from the config. A',
+      'tenant with its own audit.path is recorded only in that file: verify --all',
+      'checks every trail the config names. Dates are UTC days, both inclusive.',
+      'Exit 0 when the trail verifies, 1 when it does not, 2 on a usage error.',
+    ].join('\n'),
     flags: AUDIT_FLAGS,
     run: audit,
   },
