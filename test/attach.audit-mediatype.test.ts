@@ -13,6 +13,7 @@ const limits = {
   enabled: true,
   maxBytes: 1024 * 1024,
   maxTotalBytes: 4 * 1024 * 1024,
+  maxCount: 256,
   maxTextChars: 10_000,
   timeoutMs: 5_000,
   onUnreadable: 'withhold' as const,

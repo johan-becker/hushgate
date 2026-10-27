@@ -471,7 +471,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         // before the one that failed — those were decoded, and the trail has to
         // say so.
         attachments = error.reports as readonly AttachmentReport[];
-        metrics.observeBlocked('attachment', 'attachments.onUnreadable');
+        metrics.observeBlocked('attachment', error.rule);
         for (const report of attachments) {
           metrics.observeAttachment({
             format: report.format,

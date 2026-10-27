@@ -117,6 +117,12 @@ export class AttachmentBlockedError extends HushgateError {
      * understates what hushgate decoded.
      */
     readonly reports: readonly unknown[] = [],
+    /**
+     * The setting that refused the request, for the blocked-requests metric:
+     * `attachments.onUnreadable` for a document that could not be read,
+     * `attachments.maxCount` for a request carrying too many.
+     */
+    readonly rule: string = 'attachments.onUnreadable',
   ) {
     super(`attachment (${mediaType}, ${bytes} bytes) could not be pseudonymised: ${detail}`);
   }
