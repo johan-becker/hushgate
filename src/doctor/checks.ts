@@ -7,8 +7,8 @@
  */
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute as isAbsolutePath, join } from 'node:path';
-import { parseAuditLines } from '../audit/log.js';
-import { verifyChain } from '../audit/record.js';
+import { parseAuditLines } from '../audit/trail.js';
+import { verifyChain } from '../audit/verify.js';
 import type { HushgateConfig } from '../config.js';
 import { leavesTheEea } from '../residency/jurisdictions.js';
 import { evaluateUpstream } from '../residency/policy.js';

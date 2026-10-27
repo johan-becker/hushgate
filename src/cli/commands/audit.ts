@@ -7,9 +7,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve as joinPath } from 'node:path';
-import { parseAuditLines } from '../../audit/log.js';
+import { parseAuditLines } from '../../audit/trail.js';
 import { buildReport, renderMarkdown } from '../../audit/report.js';
-import { verifyChain, type AuditRecord } from '../../audit/record.js';
+import type { AuditRecord } from '../../audit/record.js';
+import { verifyChain } from '../../audit/verify.js';
 import { loadConfig, type HushgateConfig } from '../../config.js';
 import { HushgateError, UsageError } from '../../errors.js';
 import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';

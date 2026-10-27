@@ -2,15 +2,16 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { JsonlAuditLog, parseAuditLines, readHead } from '../src/audit/log.js';
+import { JsonlAuditLog, readHead } from '../src/audit/log.js';
+import { parseAuditLines } from '../src/audit/trail.js';
 import {
   GENESIS_HASH,
   recomputeHash,
   toRecord,
-  verifyChain,
   type AuditEvent,
   type AuditRecord,
 } from '../src/audit/record.js';
+import { verifyChain } from '../src/audit/verify.js';
 
 const dirs: string[] = [];
 

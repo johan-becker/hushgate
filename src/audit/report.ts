@@ -14,7 +14,8 @@
  */
 import type { HushgateConfig } from '../config.js';
 import { jurisdiction, type TransferStatus } from '../residency/jurisdictions.js';
-import { verifyChain, type AuditRecord, type ChainVerification } from './record.js';
+import type { AuditRecord } from './record.js';
+import { verifyChain, type ChainVerification } from './verify.js';
 
 export interface ReportPeriod {
   /** Inclusive `YYYY-MM-DD`, or `null` for "from the beginning". */

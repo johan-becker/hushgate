@@ -8,7 +8,7 @@
 import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readSync, statSync, type WriteStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
-import { GENESIS_HASH, toRecord, type AuditEvent, type AuditRecord } from './record.js';
+import { GENESIS_HASH, toRecord, type AuditEvent } from './record.js';
 
 export interface AuditSink {
   /** Record one request. Never throws: auditing must not take the proxy down. */
@@ -122,29 +122,4 @@ export function readHead(path: string): string {
     // An unreadable tail is itself a broken chain; `audit verify` will say so.
     return GENESIS_HASH;
   }
-}
-
-/** Parse a JSONL audit file into records, reporting the lines that were not. */
-export function parseAuditLines(text: string): {
-  records: AuditRecord[];
-  malformed: { line: number; reason: string }[];
-} {
-  const records: AuditRecord[] = [];
-  const malformed: { line: number; reason: string }[] = [];
-
-  text.split('\n').forEach((line, index) => {
-    if (line.trim().length === 0) return;
-    try {
-      const parsed = JSON.parse(line) as AuditRecord;
-      if (typeof parsed.ts !== 'string' || typeof parsed.route !== 'string') {
-        malformed.push({ line: index + 1, reason: 'missing ts or route' });
-        return;
-      }
-      records.push(parsed);
-    } catch (cause) {
-      malformed.push({ line: index + 1, reason: (cause as Error).message });
-    }
-  });
-
-  return { records, malformed };
 }

@@ -37,6 +37,12 @@ export interface AuditResidency {
   readonly jurisdiction: string;
   /** Retention and training controls hushgate set on the outbound request. */
   readonly controls: readonly string[];
+  /**
+   * The `residency.allow` endpoint that admitted the request, as configured,
+   * or `null` when no allowlist entry decided. Operator text, never request
+   * data. Absent from records written before hushgate recorded it.
+   */
+  readonly endpoint?: string | null;
 }
 
 /**
@@ -98,6 +104,12 @@ export interface AuditRecord extends AuditEvent {
   readonly ts: string;
   /** Unique id for this record. */
   readonly id: string;
+  /**
+   * Records the log failed to write immediately before this one. Written only
+   * when non-zero, so an auditor sees a gap where it happened rather than a
+   * chain that links cleanly over missing requests.
+   */
+  readonly dropped?: number;
   /** SHA-256 of the record before this one, forming the chain. */
   readonly prev: string;
   /** SHA-256 of this record's other fields, in the order they are written. */
@@ -165,82 +177,6 @@ export function hashBody(body: Omit<AuditRecord, 'hash'>): string {
 export function recomputeHash(record: AuditRecord): string {
   const { hash: _ignored, ...body } = record;
   return hashBody(body);
-}
-
-export interface ChainBreak {
-  /** 1-based index of the record within the trail. */
-  readonly index: number;
-  readonly id: string;
-  readonly ts: string;
-  readonly reason: 'altered' | 'unlinked';
-  readonly detail: string;
-}
-
-export interface ChainVerification {
-  readonly ok: boolean;
-  readonly records: number;
-  /** The first break, or `null` when the chain is intact. */
-  readonly firstBreak: ChainBreak | null;
-  /** Hash of the last record, to anchor the next append. */
-  readonly head: string;
-}
-
-/**
- * Walk a chain and report the first break.
- *
- * Two kinds of break are distinguished because they mean different things: a
- * record whose own hash no longer matches its contents was *altered*, while a
- * record whose `prev` does not match the record before it means something was
- * inserted or removed at that point.
- *
- * What this cannot detect is truncation of the tail — dropping the last records
- * leaves a shorter but internally consistent chain. Ship the head hash somewhere
- * hushgate does not control if that matters to you.
- */
-export function verifyChain(records: readonly AuditRecord[]): ChainVerification {
-  let previous = GENESIS_HASH;
-
-  for (const [index, record] of records.entries()) {
-    const expected = recomputeHash(record);
-
-    if (record.hash !== expected) {
-      return {
-        ok: false,
-        records: records.length,
-        head: previous,
-        firstBreak: {
-          index: index + 1,
-          id: record.id ?? '',
-          ts: record.ts ?? '',
-          reason: 'altered',
-          detail: `record hash is ${short(record.hash)}, but its contents hash to ${short(expected)}`,
-        },
-      };
-    }
-
-    if (record.prev !== previous) {
-      return {
-        ok: false,
-        records: records.length,
-        head: previous,
-        firstBreak: {
-          index: index + 1,
-          id: record.id ?? '',
-          ts: record.ts ?? '',
-          reason: 'unlinked',
-          detail: `record links to ${short(record.prev)}, but the record before it hashes to ${short(previous)}`,
-        },
-      };
-    }
-
-    previous = record.hash;
-  }
-
-  return { ok: true, records: records.length, firstBreak: null, head: previous };
-}
-
-function short(hash: string | undefined): string {
-  return hash === undefined ? '(missing)' : `${hash.slice(0, 12)}…`;
 }
 
 function countsOnly(findings: Readonly<Record<string, number>>): Record<string, number> {
