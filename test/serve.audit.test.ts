@@ -6,7 +6,7 @@
  * opened stops the proxy before it binds, and that the operator is told where
  * each chain stood when it was opened and where it ended.
  */
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -257,7 +257,39 @@ describe('telling the operator where each chain stands', () => {
     const proxy = await serve(dir);
     expect(proxy.output.out()).toContain(`  audit      ${path} — starting a new trail\n`);
     expect(await proxy.stop()).toBe(EXIT.ok);
-    expect(proxy.output.out()).toContain(`${path} head ${GENESIS_HASH}`);
+    // Worth anchoring all the same, since verify finds it at the start of the
+    // chain, but not to be read as the hash of a record.
+    expect(proxy.output.out()).toContain(`${path} head ${GENESIS_HASH} (no records yet)\n`);
+  });
+
+  it('says on the way out how many lost records no record in the trail counts', async () => {
+    upstream = await startFakeUpstream();
+    const dir = workspace();
+    writeFileSync(join(dir, 'hushgate.config.json'), config(upstream.origin));
+    const path = join(dir, 'hushgate-audit.jsonl');
+
+    const proxy = await serve(dir);
+    await (await chat(proxy.origin, null)).text();
+    const head = readRecords(path)[0]!.hash;
+
+    // The trail becomes impossible to write: the next record is lost, and
+    // hushgate stops before another one could carry the count.
+    rmSync(path);
+    mkdirSync(path);
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]): void => void errors.push(args);
+    try {
+      expect((await chat(proxy.origin, null)).status).toBe(200);
+      expect(await proxy.stop()).toBe(EXIT.ok);
+    } finally {
+      console.error = original;
+    }
+
+    expect(errors.length).toBeGreaterThan(0);
+    expect(proxy.output.out()).toContain(
+      `${path} head ${head} (1 record could not be written, 1 of them not counted in the trail)\n`,
+    );
   });
 
   it('does not pass off a trail whose last record is unreadable as a new one', async () => {

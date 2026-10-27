@@ -5,16 +5,24 @@
  * Every assertion is made against what the fake upstream *received*, because
  * that is the only place the claim can be checked.
  */
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
+import { JsonlAuditLog } from '../src/audit/log.js';
+import { parseAuditLines } from '../src/audit/trail.js';
+import { verifyTrailFile } from '../src/audit/verify.js';
 import type { HushgateConfig } from '../src/config.js';
 import { startHarness, type Harness } from './helpers/proxy-harness.js';
 
 let harness: Harness | null = null;
+const dirs: string[] = [];
 
 afterEach(async () => {
   await harness?.close();
   harness = null;
+  while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
 const reply = (): { body: string } => ({
@@ -451,5 +459,71 @@ describe('a document cut at the character limit', () => {
 
     expect(response.status).toBe(200);
     expect(harness.upstream.requests[0]?.body ?? '').toContain('truncated by hushgate');
+  });
+});
+
+/** A Messages request carrying `count` small plain-text documents. */
+const documents = (count: number): unknown => ({
+  model: 'claude-3',
+  max_tokens: 16,
+  messages: [
+    {
+      role: 'user',
+      content: Array.from({ length: count }, () => ({
+        type: 'document',
+        source: { type: 'text', media_type: 'text/plain', data: 'Sehr geehrte Damen und Herren, hiermit kuendige ich.' },
+      })),
+    },
+  ],
+});
+
+describe('a request carrying more documents than attachments.maxCount', () => {
+  it('is refused whatever onUnreadable says, and leaves one entry in a trail that still verifies', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hushgate-attach-count-'));
+    dirs.push(dir);
+    const path = join(dir, 'audit.jsonl');
+    const audit = new JsonlAuditLog({ path });
+    harness = await startHarness({
+      handler: reply,
+      // `forward` would send an unreadable document on; a count over the
+      // limit is not about whether a document can be read, so it is refused.
+      config: withAttachments({ maxCount: 3, onUnreadable: 'forward' }),
+      proxy: { audit },
+    });
+
+    const refused = await harness.post('/v1/messages', documents(4));
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).toContain('the request carries 4 attachments, more than the attachments.maxCount limit of 3');
+    expect(harness.upstream.requests).toHaveLength(0);
+
+    const allowed = await harness.post('/v1/messages', documents(3));
+    expect(allowed.status).toBe(200);
+    await allowed.text();
+
+    const metrics = await (await harness.get('/metrics')).text();
+    expect(metrics).toContain('hushgate_blocked_total{reason="attachment",rule="attachments.maxCount"} 1');
+
+    await harness.close();
+    harness = null;
+    await audit.close();
+
+    const { records } = parseAuditLines(readFileSync(path, 'utf8'));
+    expect(records.map((record) => record.outcome)).toEqual(['blocked', 'forwarded']);
+    // One entry for the whole request, whatever it carried: the record of a
+    // request with a hundred thousand documents is no longer than this one.
+    expect(records[0]!.attachments).toEqual([
+      {
+        format: 'unknown',
+        mediaType: 'application/octet-stream',
+        bytes: 0,
+        chars: 0,
+        pages: null,
+        extractor: null,
+        outcome: 'blocked',
+        reason: 'the request carries 4 attachments, more than the attachments.maxCount limit of 3',
+      },
+    ]);
+    expect(records[1]!.attachments).toHaveLength(3);
+    expect(verifyTrailFile(path).ok).toBe(true);
   });
 });

@@ -32,12 +32,17 @@ hashes whatever a line holds, and simply does not know to report a gap.
   off the end, because a shorter chain is still a consistent one. `audit
   verify` and `audit report` take one or more anchored heads and fail unless a
   record that verifies carries each, and say where it was found and how many
-  records have been appended since.
+  records have been appended since. The hash a chain starts from — 64 zeros,
+  or the one given to `--continues-from` — is found `at the start of the
+  chain`, so the head of a trail that was still empty when it was taken
+  verifies too.
 
 - **`serve` prints where each chain stands when it starts and when it stops.**
   The banner has one line per trail — `continuing chain from …`, `starting a
   new trail`, or `last record unreadable, starting a new chain` — and shutdown
-  prints each trail's head in full. A service log is somewhere hushgate cannot
+  prints each trail's head in full, followed by `(no records yet)` when it is
+  still genesis, and by how many records the writer lost and how many of those
+  no record in the trail counts. A service log is somewhere hushgate cannot
   rewrite, so the anchor the README has always recommended now costs nothing to
   keep, and a trail deleted or replaced while hushgate was stopped no longer
   starts again from genesis without a word.
@@ -56,16 +61,26 @@ hashes whatever a line holds, and simply does not know to report a gap.
   including one that cannot be read; with `--json` it prints `{ok, trails}`. A
   plain `audit verify` still checks the global trail, and now names the tenant
   trails it left out. A report on the global trail lists them under **Not
-  covered**, and in its JSON as `tenantsElsewhere`.
+  covered**, and in its JSON as `tenantsElsewhere`, however the global trail
+  was chosen: by default, by its file name, or with the `--tenant` of a tenant
+  recorded there.
 
 - **Lost records leave a mark where they were lost.** When the writer cannot
   write a record — a full disk, a failing volume — it counts it, says so on
   stderr at most once a minute, and the next record that reaches the file
-  carries `dropped: N`. The chain links across the gap, so it still verifies;
-  `audit verify` lists the gap, `doctor` warns about it, the report states the
-  loss in bold and every figure as a lower bound, and
-  `hushgate_audit_dropped_records_total{trail}` puts the count in front of
-  monitoring.
+  carries `dropped: N`, if hushgate writes one before it stops. If it does not
+  — stopped, restarted or killed while the disk is still full — the trail
+  never shows those records; the shutdown line and
+  `hushgate_audit_dropped_records_total{trail}`, which puts the count in front
+  of monitoring, are where they are counted. A count that does reach the trail
+  is a gap the chain links across, so it still verifies; `audit verify` lists
+  the gap, `doctor` warns about it, and the report places it between the
+  record before the loss and the one that counts it. A loss wholly inside the
+  period is stated in bold; one whose stretch reaches past the period's edge
+  is stated as **up to N audit records may be missing from this period**, with
+  the stretch, and counted in the JSON as `volumes.possiblyLostRecords`;
+  either makes every figure a lower bound. The **Audit chain** line names the
+  gaps of the whole trail.
 
 - **`residency.endpoint` records which allowlist entry admitted a request**, as
   configured, or `null` when no entry decided. Several entries can share a
@@ -91,13 +106,25 @@ hashes whatever a line holds, and simply does not know to report a gap.
   read, which used to be reported as "no trail yet". A gap is a warning, the
   head is printed in full, and tenants sharing a file are noted.
 
+- **`attachments.maxCount` limits the documents one request may carry**, 256
+  unless set, or `HUSHGATE_ATTACHMENT_MAX_COUNT`. A request with more is
+  refused with 422 before any of them is decoded, whatever
+  `attachments.onUnreadable` says, and its audit record holds a single entry
+  saying why. Every document is an entry in the request's record, and without
+  a limit one request of a hundred thousand tiny documents, well inside the
+  body limit, writes a record longer than the 16 MiB line `audit verify`
+  reads: a trail that fails verification for good, with an unreadable line and
+  a break after it that nobody made.
+
 - **Library exports** for the streaming reader, the verifier and the report
   builder: `readTrailEntries`, `parseTrailLine`, `printable`, `isHash`,
   `ChainVerifier`, `verifyTrail`, `verifyTrailFile`, `ReportBuilder`,
   `parsePeriod`, `configuredTrails`, `resolveTrailPath`, `trailFileKeys`,
   `trailWriteProblem` and `INVALID_VALUE`, with the constants and types that go
   with them. `ReportOptions` and `ProcessingReport` gain an optional
-  `tenantsElsewhere`.
+  `tenantsElsewhere`, `ProcessingReport.volumes` gains `possiblyLostRecords`
+  and `possiblyLostWindows`, and `JsonlAuditLog` gains
+  `droppedSinceLastRecord`.
 
 ### Changed
 
@@ -192,7 +219,10 @@ hashes whatever a line holds, and simply does not know to report a gap.
   and no longer say the trail holds no personal data "by construction": tenant
   ids are the operator's choice and are recorded as configured. A period with
   no records says the document makes no statement about it, rather than that
-  nothing happened.
+  nothing happened. Nor does it say any longer that no document reached a
+  provider unread: it says so of the documents the trail recorded, and that
+  documents sent while `attachments.enabled` was false leave no row and are
+  not covered.
 
 - **A trail that ends mid-line is sealed before it is appended to.** After a
   crash mid-write the next record was glued onto the fragment and lost with
@@ -203,7 +233,11 @@ hashes whatever a line holds, and simply does not know to report a gap.
 - **The head is found however long the last record is.** Only the last 64 KiB
   was read, so a last record longer than that — one request with a few hundred
   small attachments was enough — made hushgate start a new chain from genesis,
-  and the next verify reported a break nobody had made.
+  and the next verify reported a break nobody had made. Writer and reader now
+  also agree on the longest record there is: a record whose line would pass
+  the 16 MiB `audit verify` reads is counted as lost rather than written, and a
+  restart walks back past such a line, left by an older version, rather than
+  continuing the chain from a record no verifier will see.
 
 - **Tenants that write to the same file share one chain.** Each writer kept its
   own head, so two tenants, or a tenant and the global trail, naming one file
@@ -230,13 +264,17 @@ hashes whatever a line holds, and simply does not know to report a gap.
   code that assumed a string, and the error took down the whole `doctor` run.
   Such lines are now unreadable lines or breaks, and a `doctor` section that
   throws for any reason becomes a failure of its own while the other sections
-  still report.
+  still report. Likewise `audit report` no longer stops, printing nothing but a
+  `TypeError`, at a record whose `attachments` or `residency.controls` is not
+  a list or holds `null`: the document is printed, says BROKEN where the
+  record was edited, and reads a value of the wrong shape as `invalid`.
 
-- **verify prints nothing from the trail that a terminal would obey.** Ids,
-  timestamps, details and paths are printed with control and bidirectional
-  characters escaped as `\uXXXX`, since an id carrying escape sequences could
-  erase the line that says BROKEN, and the reasons given for unreadable lines
-  no longer quote fragments of the line.
+- **verify and the report print nothing from the trail that a terminal would
+  obey.** Ids, timestamps, details and paths in verify, and routes, tenant ids,
+  kinds, hosts, formats and every other field the report quotes, are printed
+  with control and bidirectional characters escaped as `\uXXXX`, since a field
+  carrying escape sequences could erase the line that says BROKEN, and the
+  reasons given for unreadable lines no longer quote fragments of the line.
 
 - **Fields with a fixed set of values are checked when the record is built.**
   An outcome, a residency mode, a policy or an attachment outcome outside its
@@ -260,7 +298,9 @@ hashes whatever a line holds, and simply does not know to report a gap.
 - **Configuration text cannot restructure the report.** A legal basis, the
   organisation's name or a purpose is escaped in the report's Markdown, so a
   `|` in a legal basis no longer drops a table cell, and a line break or a
-  leading `#` no longer starts a block of its own.
+  leading `#` no longer starts a block of its own. A leading number is escaped
+  only where Markdown would read it as a list, so an address such as
+  `127.0.0.1:9099` keeps its full stop.
 
 ## [0.4.0] — 2026-09-11
 

@@ -379,6 +379,22 @@ describe('hushgate audit', () => {
     expect(c.out()).toMatch(/\*\*BROKEN at record 2\*\* of 2 — record hash is [^\n]* \(line 3\)/u);
   });
 
+  it('still prints the document when an edited record holds a list of the wrong shape', async () => {
+    const dir = workspace();
+    const path = await writeTrail(dir, [
+      { at: '2026-03-02T08:00:00.000Z', event: event() },
+      { at: '2026-03-02T09:00:00.000Z', event: event() },
+    ]);
+    // Edited without re-hashing, as verify would report it: altered.
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"attachments":[]', '"attachments":[null]'));
+
+    const c = capture(['audit', 'report'], dir);
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.out()).toContain('# Record of processing activities');
+    expect(c.out()).toContain('**BROKEN at record 1** of 2');
+    expect(c.out()).toContain('- Requests: **2**');
+  });
+
   it('reports on the file it is given, and checks it against an anchored head', async () => {
     const dir = workspace();
     const path = await writeTrail(dir, [
@@ -462,5 +478,35 @@ describe('hushgate audit', () => {
     expect(await run(gamma.cli)).toBe(EXIT.ok);
     expect(gamma.out()).toContain(`- **Source**: ${join(dir, 'hushgate-audit.jsonl')}`);
     expect(gamma.err()).toContain('tenant gamma has no audit trail of its own');
+  });
+
+  it('names the same tenants when the global trail is reached through --tenant', async () => {
+    const dir = workspace({
+      'hushgate.config.json': JSON.stringify({
+        tenants: [
+          { id: 'acme', name: 'Acme', keyHash: '0'.repeat(64), audit: { path: 'acme.jsonl' } },
+          { id: 'beta', name: 'Beta', keyHash: '1'.repeat(64), audit: { path: 'hushgate-audit.jsonl' } },
+          { id: 'gamma', name: 'Gamma', keyHash: '2'.repeat(64) },
+        ],
+      }),
+    });
+    await writeTrail(dir, [{ at: '2026-03-02T08:00:00.000Z', event: event() }]);
+    const notCovered =
+      '- **Not covered**: tenant acme keeps an audit trail of its own, which this document does not include';
+
+    const reportFor = async (tenant: string): Promise<void> => {
+      const markdown = capture(['audit', 'report', '--tenant', tenant], dir);
+      expect(await run(markdown.cli)).toBe(EXIT.ok);
+      expect(markdown.out()).toContain(`- **Source**: ${join(dir, 'hushgate-audit.jsonl')}`);
+      expect(markdown.out()).toContain(notCovered);
+
+      const json = capture(['audit', 'report', '--tenant', tenant, '--json'], dir);
+      await run(json.cli);
+      expect(JSON.parse(json.out())).toHaveProperty('tenantsElsewhere', ['acme']);
+    };
+
+    // gamma has no trail of its own, and beta's names the global file: both
+    // reports read the global trail, and `> report.md` keeps only stdout.
+    await Promise.all([reportFor('gamma'), reportFor('beta')]);
   });
 });

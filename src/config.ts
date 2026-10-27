@@ -252,6 +252,14 @@ export interface AttachmentsConfig {
   readonly maxBytes: number;
   /** Largest total across one request, in bytes. */
   readonly maxTotalBytes: number;
+  /**
+   * Most attachments one request may carry. Each one becomes an entry in the
+   * request's audit record, so this is also what keeps that record shorter
+   * than the longest line `hushgate audit` will read back: without it, one
+   * request of a hundred thousand tiny documents writes a line no verifier
+   * accepts, and a trail nobody tampered with fails verification for good.
+   */
+  readonly maxCount: number;
   /** Characters of extracted text kept per attachment. */
   readonly maxTextChars: number;
   /** Wall-clock budget for extracting one attachment. */
@@ -382,6 +390,9 @@ export function defaultConfig(): HushgateConfig {
       enabled: true,
       maxBytes: 10 * 1024 * 1024,
       maxTotalBytes: 32 * 1024 * 1024,
+      // Far above any real conversation, and far below the count at which a
+      // request's audit record would outgrow the line a reader accepts.
+      maxCount: 256,
       maxTextChars: 200_000,
       timeoutMs: 20_000,
       onUnreadable: 'block',
@@ -1464,6 +1475,7 @@ export function applyEnv(
   const attachmentsEnabled = envValue(env, 'HUSHGATE_ATTACHMENTS');
   const onUnreadable = envValue(env, 'HUSHGATE_ATTACHMENTS_ON_UNREADABLE');
   const attachmentMaxBytes = envValue(env, 'HUSHGATE_ATTACHMENT_MAX_BYTES');
+  const attachmentMaxCount = envValue(env, 'HUSHGATE_ATTACHMENT_MAX_COUNT');
 
   return {
     ...config,
@@ -1493,6 +1505,10 @@ export function applyEnv(
         attachmentMaxBytes === undefined
           ? config.attachments.maxBytes
           : envPositiveInt(attachmentMaxBytes, 'HUSHGATE_ATTACHMENT_MAX_BYTES'),
+      maxCount:
+        attachmentMaxCount === undefined
+          ? config.attachments.maxCount
+          : envPositiveInt(attachmentMaxCount, 'HUSHGATE_ATTACHMENT_MAX_COUNT'),
     },
     redaction: {
       ...config.redaction,
@@ -1867,6 +1883,7 @@ function parseAttachments(
       'enabled',
       'maxBytes',
       'maxTotalBytes',
+      'maxCount',
       'maxTextChars',
       'timeoutMs',
       'onUnreadable',
@@ -1889,6 +1906,7 @@ function parseAttachments(
     enabled: optionalBoolean(node['enabled'], `${scope}.enabled`) ?? base.enabled,
     maxBytes,
     maxTotalBytes,
+    maxCount: optionalPositiveInt(node['maxCount'], `${scope}.maxCount`) ?? base.maxCount,
     maxTextChars:
       optionalPositiveInt(node['maxTextChars'], `${scope}.maxTextChars`) ?? base.maxTextChars,
     timeoutMs: optionalPositiveInt(node['timeoutMs'], `${scope}.timeoutMs`) ?? base.timeoutMs,

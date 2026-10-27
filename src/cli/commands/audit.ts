@@ -247,6 +247,10 @@ function select(cli: Cli, request: AuditRequest, loaded: LoadedConfig): Selectio
     );
   }
 
+  // However the global trail is reached — for a tenant without a trail of its
+  // own, or one whose own path names the global file — it leaves out the same
+  // tenants, and a report on it has to say so in the document, not only in a
+  // note on stderr that `> report.md` does not keep.
   if (tenant.auditPath === null) {
     return {
       path: global.path,
@@ -255,12 +259,18 @@ function select(cli: Cli, request: AuditRequest, loaded: LoadedConfig): Selectio
       notes: [
         `tenant ${tenant.id} has no audit trail of its own, so its records are in the global trail, which is what was ${request.subcommand === 'verify' ? 'verified' : 'reported on'}; it also holds every other request recorded there`,
       ],
-      elsewhere: [],
+      elsewhere: tenantsElsewhere(trails),
     };
   }
 
   const own = trails.find((trail) => trail.tenants.includes(tenant.id))!;
-  return { path: own.path, trail: own, labelled, notes: [], elsewhere: [] };
+  return {
+    path: own.path,
+    trail: own,
+    labelled,
+    notes: [],
+    elsewhere: own.global ? tenantsElsewhere(trails) : [],
+  };
 }
 
 /** A trail named on the command line: no label, since nothing says whose it is. */
@@ -435,11 +445,16 @@ function separated(blocks: readonly (readonly string[])[]): string[] {
   return out;
 }
 
+/**
+ * Where an anchor was found. Index 0 is the hash the chain starts from, which
+ * no record stores: a head taken while the trail was still empty.
+ */
 function describeAnchor(anchor: ChainVerification['anchors'][number]): string {
   if (!anchor.found) return `${anchor.hash} NOT FOUND`;
   const line = anchor.line === null ? '' : ` (line ${anchor.line})`;
+  const where = anchor.index === 0 ? 'the start of the chain' : `record ${anchor.index}${line}`;
   const following = anchor.following ?? 0;
-  return `${anchor.hash} found at record ${anchor.index}${line}, ${following} record${following === 1 ? '' : 's'} after it`;
+  return `${anchor.hash} found at ${where}, ${following} record${following === 1 ? '' : 's'} after it`;
 }
 
 /**

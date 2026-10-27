@@ -6,6 +6,7 @@ import { JsonlAuditLog } from '../src/audit/log.js';
 import {
   GENESIS_HASH,
   hashBody,
+  INVALID_VALUE,
   toRecord,
   type AuditEvent,
   type AuditRecord,
@@ -314,8 +315,37 @@ describe('handling: what actually happened to the data', () => {
 
     const markdown = renderMarkdown(report);
     expect(markdown).toContain('**1 document was read but forwarded unredacted**');
-    expect(markdown).not.toContain('Every document was either read');
+    expect(markdown).not.toContain('Every document recorded in the trail');
     expect(markdown).not.toContain('pseudonymised');
+  });
+
+  it('vouches only for the documents the trail recorded', () => {
+    const records = chain([
+      {
+        at: '2026-03-02T08:00:00.000Z',
+        event: event({
+          attachments: [
+            {
+              format: 'text',
+              mediaType: 'text/plain',
+              bytes: 78,
+              chars: 78,
+              pages: null,
+              extractor: 'utf8',
+              outcome: 'extracted',
+              reason: null,
+            },
+          ],
+        }),
+      },
+    ]);
+
+    // Generated with reading on, over a period in which it may have been off
+    // for a while: those documents left no row, so no sentence may cover them.
+    const markdown = renderMarkdown(buildReport(records, options()));
+    expect(markdown).toContain('Every document recorded in the trail for this period was either read');
+    expect(markdown).toContain('leave no row, and this statement does not cover them');
+    expect(markdown).not.toContain('None reached a provider unread.');
   });
 
   it('says when attachment reading is off in the configuration the report was generated with', () => {
@@ -559,6 +589,77 @@ describe('escaping free text', () => {
     expect(cellSeparators(lineStarting(markdown, '| evil\\|host.example |'))).toBe(7);
     expect(markdown).toContain('- Routes: custom\\|route 1');
   });
+
+  it('prints nothing from the trail that a terminal would obey rather than show', () => {
+    const ESC = String.fromCharCode(0x1b);
+    const records = chain([
+      {
+        at: '2026-03-02T08:00:00.000Z',
+        event: event({
+          // What a tamperer would write to erase the BROKEN line on screen.
+          route: `openai.chat.completions${ESC}[1A${ESC}[2K- **Audit chain**: intact`,
+          tenant: 'acme‮evil',
+          findings: { 'EMAIL\u0007': 1 },
+          policies: { 'EMAIL\u0007': 'pseudonymize' },
+          attachments: [
+            {
+              format: 'text',
+              mediaType: 'text/plain',
+              bytes: 1,
+              chars: 1,
+              pages: null,
+              extractor: 'utf8\u009B',
+              outcome: 'extracted',
+              reason: null,
+            },
+          ],
+        }),
+      },
+    ]);
+    const markdown = renderMarkdown(buildReport(records, options()));
+
+    // oxlint-disable-next-line no-control-regex -- finding them is the point
+    expect(markdown).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]/u);
+    // Shown instead, and shown as text: the backslash escaped for Markdown.
+    expect(markdown).toContain('- Routes: openai.chat.completions\\\\u001b[1A\\\\u001b[2K- **Audit chain**: intact 1');
+    expect(markdown).toContain('| acme\\\\u202eevil |');
+  });
+
+  it('leaves an address in a table cell as it is, where a number cannot start a list', () => {
+    const records = chain([{ at: '2026-03-02T08:00:00.000Z', event: event({ upstream: '127.0.0.1:9099' }) }]);
+    const markdown = renderMarkdown(buildReport(records, options()));
+
+    expect(markdown).toContain('| 127.0.0.1:9099 |');
+    // Nor at the start of a list item, where it is no list marker either.
+    expect(markdown).toContain('- 127.0.0.1:9099 (FR):');
+    expect(markdown).not.toContain('127\\.');
+  });
+});
+
+describe('a record of the wrong shape', () => {
+  /** A verified-looking record whose lists and maps are not what the writer writes. */
+  const misshapen = (fields: Record<string, unknown>): AuditRecord =>
+    ({ ...chain([{ at: '2026-03-02T08:00:00.000Z', event: event() }])[0]!, ...fields }) as unknown as AuditRecord;
+
+  it('does not stop the document from being written', () => {
+    const records = [
+      misshapen({ attachments: [null, 5, 'pdf', { format: 7, outcome: ['x'], bytes: '9', extractor: {} }] }),
+      misshapen({ attachments: 0 }),
+      misshapen({ residency: { mode: 3, rule: 'r', jurisdiction: 'FR', controls: 5 } }),
+      misshapen({ residency: 'sanitize', findings: 'EMAIL', policies: 7 }),
+      misshapen({ outcome: { forwarded: true }, tenant: 42, findings: { EMAIL: 1 }, policies: { EMAIL: [] } }),
+    ];
+
+    const report = buildReport(records, options());
+    expect(() => renderMarkdown(report)).not.toThrow();
+    expect(report.volumes.requests).toBe(5);
+    expect(report.attachments).toEqual([
+      { format: INVALID_VALUE, count: 1, bytes: 0, outcomes: { [INVALID_VALUE]: 1 }, extractors: [INVALID_VALUE], unredacted: 0 },
+    ]);
+    expect(report.volumes.byEnforcement).toMatchObject({ [INVALID_VALUE]: 1, 'n/a': 1 });
+    expect(report.volumes.byOutcome).toMatchObject({ [INVALID_VALUE]: 1 });
+    expect(report.tenants.map((row) => row.id)).toEqual([INVALID_VALUE]);
+  });
 });
 
 describe('parsePeriod', () => {
@@ -711,12 +812,88 @@ describe('lost records', () => {
   it('counts only the losses recorded inside the period', () => {
     const records = chain([
       { at: '2026-02-27T08:00:00.000Z', event: event(), dropped: 5 },
-      { at: '2026-03-02T09:00:00.000Z', event: event(), dropped: 1 },
+      { at: '2026-03-02T09:00:00.000Z', event: event() },
+      { at: '2026-03-03T09:00:00.000Z', event: event(), dropped: 1 },
     ]);
 
     const report = buildReport(records, options({ period: { from: '2026-03-01', to: '2026-03-31' } }));
     expect(report.volumes.lostRecords).toBe(1);
+    // Lost before 27 February, and nowhere near March.
+    expect(report.volumes.possiblyLostRecords).toBe(0);
     expect(renderMarkdown(report)).toContain('**1 audit record was lost**: the log could not write it');
+    expect(renderMarkdown(report)).not.toContain('may be missing');
+  });
+
+  describe('in a stretch of the trail that reaches past the edge of the period', () => {
+    // The disk fills after the record of 28 September; the next record that
+    // reaches it, on 2 October, says three went missing in between.
+    const records = chain([
+      { at: '2026-09-28T10:00:00.000Z', event: event() },
+      { at: '2026-10-02T10:00:00.000Z', event: event(), dropped: 3 },
+    ]);
+    const september = { from: '2026-09-01', to: '2026-09-30' };
+    const october = { from: '2026-10-01', to: '2026-10-31' };
+
+    it('says in the period the loss began in that records may be missing from it', () => {
+      const report = buildReport(records, options({ period: september }));
+      expect(report.volumes.lostRecords).toBe(0);
+      expect(report.volumes.possiblyLostRecords).toBe(3);
+      expect(report.volumes.possiblyLostWindows).toEqual([
+        { after: '2026-09-28T10:00:00.000Z', before: '2026-10-02T10:00:00.000Z', records: 3 },
+      ]);
+
+      const markdown = renderMarkdown(report);
+      expect(markdown).toContain(
+        '- **up to 3 audit records may be missing from this period**: the log could not write them somewhere between 2026-09-28T10:00:00.000Z and 2026-10-02T10:00:00.000Z, a stretch that reaches outside this period, so every figure in this document is a lower bound',
+      );
+    });
+
+    it('does not pin the whole loss on the period of the record that reports it', () => {
+      const markdown = renderMarkdown(buildReport(records, options({ period: october })));
+      expect(markdown).toContain('**up to 3 audit records may be missing from this period**');
+      expect(markdown).toContain('between 2026-09-28T10:00:00.000Z and 2026-10-02T10:00:00.000Z');
+      expect(markdown).not.toContain('in this period went unrecorded');
+    });
+
+    it('says nothing of it in a period the stretch does not reach', () => {
+      const report = buildReport(records, options({ period: { from: '2026-08-01', to: '2026-08-31' } }));
+      expect(report.volumes.lostRecords).toBe(0);
+      expect(report.volumes.possiblyLostRecords).toBe(0);
+      expect(renderMarkdown(report)).not.toContain('may be missing');
+    });
+
+    it('places it on the boundary day, not on the day the next record was written', () => {
+      // 23:00 on the last day of March, then 02:00 on the first of April.
+      const straddle = chain([
+        { at: '2026-03-31T23:00:00.000Z', event: event() },
+        { at: '2026-04-01T02:00:00.000Z', event: event(), dropped: 7 },
+      ]);
+      const march = buildReport(straddle, options({ period: { from: null, to: '2026-03-31' } }));
+      expect(march.volumes.possiblyLostRecords).toBe(7);
+      expect(renderMarkdown(march)).toContain('**up to 7 audit records may be missing from this period**');
+    });
+
+    it('counts a loss before the first record as possible for any period it may reach', () => {
+      const first = chain([{ at: '2026-03-02T09:00:00.000Z', event: event(), dropped: 2 }]);
+
+      const bounded = buildReport(first, options({ period: { from: '2026-03-01', to: null } }));
+      expect(bounded.volumes.possiblyLostRecords).toBe(2);
+      expect(renderMarkdown(bounded)).toContain(
+        "somewhere before 2026-03-02T09:00:00.000Z, the trail's first record",
+      );
+
+      // Open at the beginning, the period holds wherever the loss was.
+      expect(buildReport(first, options()).volumes.lostRecords).toBe(2);
+    });
+
+    it('names the gaps of the whole trail on the Audit chain line', () => {
+      const line = lineStarting(
+        renderMarkdown(buildReport(records, options({ period: { from: '2026-08-01', to: '2026-08-31' } }))),
+        '- **Audit chain**:',
+      );
+      expect(line).toContain('intact over 2 records');
+      expect(line).toContain('across **1 gap** where the log could not write 3 records, the first before record 2');
+    });
   });
 
   it('says nothing about losses when there were none', () => {

@@ -17,9 +17,10 @@
  * The writer never fakes a tamper signal and never hides a gap. A record that
  * did not reach the file does not become the head of the chain, so the next one
  * links to what is actually on disk and says how many went missing before it.
- * A file that ends mid-line is sealed before anything is appended to it, and a
- * file moved or deleted under the running writer is reopened at its path rather
- * than written into the void.
+ * A file that ends mid-line is sealed before anything is appended to it, a file
+ * moved or deleted under the running writer is reopened at its path rather
+ * than written into the void, and a record too long for a reader to take as
+ * one line is never written at all.
  */
 import {
   closeSync,
@@ -35,6 +36,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { GENESIS_HASH, toRecord, type AuditEvent } from './record.js';
+import { MAX_LINE_BYTES } from './trail.js';
 
 export interface AuditSink {
   /** Record one request. Never throws: auditing must not take the proxy down. */
@@ -188,6 +190,15 @@ export class JsonlAuditLog implements AuditSink {
   }
 
   /**
+   * Records lost since the last one that reached the file: lost, and not yet
+   * counted in any record's `dropped`. Once the trail is closed nothing will
+   * count them, so this is the part of the loss the trail itself never shows.
+   */
+  get droppedSinceLastRecord(): number {
+    return this.missing;
+  }
+
+  /**
    * Hash of the most recent record on disk. Anchor it externally to detect
    * truncation. A record that failed to write never becomes the head.
    */
@@ -209,7 +220,9 @@ export class JsonlAuditLog implements AuditSink {
     try {
       const fd = this.descriptor();
       const record = toRecord(event, this.now().toISOString(), this.nextId(), this.head, this.missing);
-      this.append(fd, JSON.stringify(record), record.hash);
+      const json = JSON.stringify(record);
+      assertReadable(json);
+      this.append(fd, json, record.hash);
     } catch (error) {
       this.lose('write', asError(error));
     }
@@ -393,7 +406,14 @@ export class JsonlAuditLog implements AuditSink {
     this.missing = 0;
   }
 
-  /** Count a record that did not reach the file, and say so. */
+  /**
+   * Count a record that did not reach the file, and say so.
+   *
+   * The count lives in memory until a record reaches the file and carries it,
+   * so the message says what happens if none does: a writer stopped, or
+   * killed, while its disk is still full takes the count with it, and only the
+   * shutdown line and the metric are left to show it.
+   */
   private lose(kind: 'write' | 'closed', error: Error): void {
     this.dropped += 1;
     this.missing += 1;
@@ -401,8 +421,9 @@ export class JsonlAuditLog implements AuditSink {
     const message =
       kind === 'closed'
         ? `${error.message}; it was not written (${this.dropped} record(s) lost so far)`
-        : `could not write an audit record: ${error.message} (${this.dropped} record(s) lost so far; ` +
-          'the next record that is written will say how many went missing before it)';
+        : `could not write an audit record: ${error.message} (${this.dropped} record(s) lost so far). ` +
+          'The next record written will carry the count as dropped, if hushgate writes one before it stops; ' +
+          'if it does not, the count is only in the shutdown line and in hushgate_audit_dropped_records_total';
     this.periodically(kind, new Error(message, { cause: error }));
   }
 
@@ -488,15 +509,22 @@ export function readHead(path: string): string {
  * Walk back from the end of a trail to the last line that is a record.
  *
  * Reads backwards in chunks that start at 64 KiB and double, so a final record
- * of any length is found whole: a request with a few hundred attachments writes
- * a line longer than any fixed window, and a writer that read only a window
- * would take the fragment for junk, restart at genesis, and plant a false
- * tamper signal in the trail. Lines that are not records — a torn write, a
- * comment someone appended, a run of NUL bytes left by a crash — are skipped
- * and counted; `audit verify` reports them as malformed. Genesis is the answer
- * only when no line at all is a record.
+ * of any length a reader accepts is found whole: a request with a few hundred
+ * attachments writes a line longer than any fixed window, and a writer that
+ * read only a window would take the fragment for junk, restart at genesis, and
+ * plant a false tamper signal in the trail. Lines that are not records — a
+ * torn write, a comment someone appended, a run of NUL bytes left by a crash —
+ * are skipped and counted; `audit verify` reports them as malformed. Genesis
+ * is the answer only when no line at all is a record.
  *
- * Memory is bounded by the read chunk plus the longest line, not by the file.
+ * A line longer than {@link MAX_LINE_BYTES} counts as junk however well it
+ * parses, because that is what `audit verify` makes of it. Continuing the
+ * chain from a record no reader will take would leave the next record linked
+ * to a hash the verifier never sees: a break nobody made. This writer never
+ * writes such a line, but an older one could have.
+ *
+ * Memory is bounded by the read chunk plus the longest line a reader accepts,
+ * not by the file.
  */
 function findHead(
   fs: Pick<AuditFileSystem, 'readSync'>,
@@ -508,15 +536,28 @@ function findHead(
   let chunk = FIRST_CHUNK;
   // The bytes from `position` up to the end of the earliest line not yet
   // examined, whose start is not known until a newline before it is read.
-  let unfinished = Buffer.alloc(0);
+  let unfinished: Buffer = Buffer.alloc(0);
+  // Whether that line is already too long to be a record. Its bytes are then
+  // let go rather than kept, and only where it starts is still looked for.
+  let overlong = false;
 
   while (position > 0) {
     const length = Math.min(chunk, position);
     position -= length;
-    const data = Buffer.concat([readAt(fs, fd, position, length), unfinished]);
+    chunk = Math.min(chunk * 2, LARGEST_CHUNK);
+    const read = readAt(fs, fd, position, length);
+    const data: Buffer = overlong ? read : Buffer.concat([read, unfinished]);
 
     let end = data.length;
     let newline = lastNewline(data, end);
+    if (overlong) {
+      if (newline === -1) continue;
+      skipped += 1;
+      overlong = false;
+      end = newline;
+      newline = lastNewline(data, end);
+    }
+
     while (newline !== -1) {
       const verdict = lineVerdict(data.subarray(newline + 1, end));
       if (typeof verdict === 'object') return { head: verdict.hash, skipped };
@@ -525,11 +566,12 @@ function findHead(
       newline = lastNewline(data, end);
     }
 
-    unfinished = data.subarray(0, end);
-    chunk = Math.min(chunk * 2, LARGEST_CHUNK);
+    overlong = end > MAX_LINE_BYTES;
+    unfinished = overlong ? Buffer.alloc(0) : data.subarray(0, end);
   }
 
   // What is left is the first line of the file.
+  if (overlong) return { head: GENESIS_HASH, skipped: skipped + 1 };
   const verdict = lineVerdict(unfinished);
   if (typeof verdict === 'object') return { head: verdict.hash, skipped };
   if (verdict === 'junk') skipped += 1;
@@ -544,6 +586,8 @@ function lastNewline(data: Buffer, end: number): number {
 
 /** A line that is a record, a blank line, or anything else. */
 function lineVerdict(bytes: Buffer): { readonly hash: string } | 'blank' | 'junk' {
+  // Too long for any reader to take as a record, so not one to chain onto.
+  if (bytes.length > MAX_LINE_BYTES) return 'junk';
   const text = bytes.toString('utf8');
   if (text.trim().length === 0) return 'blank';
   try {
@@ -573,6 +617,28 @@ function readAt(
     filled += count;
   }
   return buffer;
+}
+
+/**
+ * Refuse a record whose line no reader would take.
+ *
+ * `audit verify` reports a line longer than {@link MAX_LINE_BYTES} as
+ * unreadable, and the record after it as linked to a hash the chain never
+ * showed. Written anyway, one such record would leave a trail nobody tampered
+ * with failing verification for good. Not written, it is a lost record like
+ * any other: counted, reported, and carried as `dropped` by the next one.
+ * `attachments.maxCount` keeps the proxy's records far below the limit; this
+ * is the check that holds whatever a library caller puts in an event.
+ */
+function assertReadable(json: string): void {
+  // UTF-8 spends at most three bytes per UTF-16 unit, so a short line needs no count.
+  if (json.length * 3 <= MAX_LINE_BYTES) return;
+  const bytes = Buffer.byteLength(json, 'utf8');
+  if (bytes <= MAX_LINE_BYTES) return;
+  throw new Error(
+    `the record would be a ${bytes}-byte line, longer than the ${MAX_LINE_BYTES} bytes a reader takes ` +
+      'as one record, so it was not written',
+  );
 }
 
 function endsWithNewline(fs: Pick<AuditFileSystem, 'readSync'>, fd: number, size: number): boolean {

@@ -33,6 +33,8 @@ export interface RewriteLimits {
   readonly enabled: boolean;
   readonly maxBytes: number;
   readonly maxTotalBytes: number;
+  /** Most attachments one request may carry; more refuses the request. */
+  readonly maxCount: number;
   readonly maxTextChars: number;
   readonly timeoutMs: number;
   readonly onUnreadable: UnreadableAction;
@@ -76,8 +78,9 @@ export interface RewriteResult {
  * Replace every attachment in `body` with the text it contains.
  *
  * Throws {@link AttachmentBlockedError} when an attachment cannot be read and
- * `onUnreadable` is `block`. Nothing has left the machine at that point, which
- * is the entire purpose of doing this before the upstream request is built.
+ * `onUnreadable` is `block`, and when the request carries more attachments
+ * than `maxCount`. Nothing has left the machine at that point, which is the
+ * entire purpose of doing this before the upstream request is built.
  */
 export async function rewriteAttachments(
   body: JsonValue,
@@ -87,6 +90,7 @@ export async function rewriteAttachments(
 
   const sites = findAttachmentSites(body);
   if (sites.length === 0) return { body, reports: [] };
+  if (sites.length > options.limits.maxCount) throw tooMany(sites.length, options.limits.maxCount);
 
   const reports: AttachmentReport[] = [];
   const replacements = new Map<string, JsonValue>();
@@ -107,6 +111,31 @@ export async function rewriteAttachments(
   }
 
   return { body: substitute(body, replacements), reports };
+}
+
+/**
+ * Refuse a request that carries more attachments than `maxCount`.
+ *
+ * Counted before anything is decoded, and refused whatever `onUnreadable`
+ * says: the limit is not about whether a document could be read but about how
+ * many there are, and withholding or forwarding the surplus would still leave
+ * one audit entry per document. Every attachment becomes an entry in the
+ * request's record, and a record longer than the line `hushgate audit` reads
+ * back would leave a trail nobody tampered with failing verification for good.
+ * So the record says what happened in a single entry, with a reason built
+ * from two numbers, and nothing from the request.
+ */
+function tooMany(count: number, limit: number): AttachmentBlockedError {
+  const mediaType = mediaTypeForFormat('unknown');
+  const reason = `the request carries ${count} attachments, more than the attachments.maxCount limit of ${limit}`;
+  return new AttachmentBlockedError(
+    mediaType,
+    0,
+    reason,
+    'unknown',
+    [{ format: 'unknown', mediaType, bytes: 0, chars: 0, pages: null, extractor: null, outcome: 'blocked', reason }],
+    'attachments.maxCount',
+  );
 }
 
 /**
