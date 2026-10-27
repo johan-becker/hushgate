@@ -3,10 +3,10 @@
  * exposition format is a page long.
  *
  * Every label here is bounded: routes and outcomes are enumerations, kinds come
- * from the detector set, and tenants come from the config file. Nothing that a
- * caller controls is ever used as a label — that is how a metrics endpoint turns
- * into an out-of-memory error, and in this case it would also turn counts of
- * personal data into a cardinality side channel.
+ * from the detector set, and tenants and audit trails come from the config
+ * file. Nothing that a caller controls is ever used as a label — that is how a
+ * metrics endpoint turns into an out-of-memory error, and in this case it would
+ * also turn counts of personal data into a cardinality side channel.
  */
 import { VERSION } from '../version.js';
 
@@ -23,6 +23,11 @@ interface Histogram {
   count: number;
 }
 
+/** What the registry reads from an audit trail: the records it failed to write. */
+export interface AuditTrailCounts {
+  readonly droppedRecords: number;
+}
+
 export class Metrics {
   private readonly requests = new Map<string, number>();
   private readonly findings = new Map<string, number>();
@@ -31,6 +36,7 @@ export class Metrics {
   private readonly durations = new Map<string, Histogram>();
   private readonly attachments = new Map<string, number>();
   private readonly attachmentBytes = new Map<string, number>();
+  private readonly auditTrails: { readonly trail: string; readonly counts: AuditTrailCounts }[] = [];
 
   constructor(private readonly buckets: readonly number[] = DEFAULT_BUCKETS) {}
 
@@ -94,6 +100,25 @@ export class Metrics {
     }
   }
 
+  /**
+   * Report an audit trail's dropped records under the label `trail`.
+   *
+   * A trail that cannot be written is the one failure the proxy keeps serving
+   * through, by design, so it has to be visible from outside: otherwise the
+   * only evidence is a line on stderr, and a monitoring stack sees a healthy
+   * proxy forwarding personal data with no record of it. The count is read
+   * from the trail when /metrics is scraped rather than copied here on each
+   * failure, so it can never fall out of step with the trail's own, and the
+   * series is rendered from zero as soon as the trail is registered, so an
+   * alert on its increase fires on the first drop rather than the second.
+   *
+   * `trail` is `global` or the ids of the tenants writing to that file — both
+   * from the config file, so the label stays bounded like every other here.
+   */
+  watchAuditTrail(trail: string, counts: AuditTrailCounts): void {
+    this.auditTrails.push({ trail, counts });
+  }
+
   private observeDuration(labels: Labels, seconds: number): void {
     const key = serialise(labels);
     let histogram = this.durations.get(key);
@@ -108,6 +133,15 @@ export class Metrics {
     for (const [index, bound] of this.buckets.entries()) {
       if (seconds <= bound) histogram.counts[index] = (histogram.counts[index] ?? 0) + 1;
     }
+  }
+
+  /** Dropped records per trail label, read now. Two trails on one label add up. */
+  private auditDrops(): Map<string, number> {
+    const drops = new Map<string, number>();
+    for (const { trail, counts } of this.auditTrails) {
+      this.bump(drops, { trail }, counts.droppedRecords);
+    }
+    return drops;
   }
 
   private bump(target: Map<string, number>, labels: Labels, by = 1): void {
@@ -153,6 +187,12 @@ export class Metrics {
       '# HELP hushgate_blocked_total Requests refused, by what refused them.',
       '# TYPE hushgate_blocked_total counter',
       ...series('hushgate_blocked_total', this.blocked),
+    );
+
+    lines.push(
+      '# HELP hushgate_audit_dropped_records_total Audit records that could not be written, by trail.',
+      '# TYPE hushgate_audit_dropped_records_total counter',
+      ...series('hushgate_audit_dropped_records_total', this.auditDrops()),
     );
 
     lines.push(

@@ -88,6 +88,14 @@ export interface ResidencyVerdict {
   readonly jurisdiction: Jurisdiction;
   readonly registry: EndpointMatch | null;
   readonly legalBasis: string | null;
+  /**
+   * The `residency.allow` endpoint that decided, as configured, or `null` when
+   * no allowlist entry did. Carried into each audit record because the host
+   * alone cannot say which agreement a transfer was made under: one gateway
+   * host can front several providers, each on an allowlist entry — and a legal
+   * basis — of its own.
+   */
+  readonly endpoint: string | null;
   readonly dataControls: readonly DataControl[];
 }
 
@@ -116,6 +124,7 @@ export function evaluateUpstream(upstream: string, residency: ResidencyConfig): 
       jurisdiction: registry?.jurisdiction ?? jurisdiction('UNKNOWN'),
       registry,
       legalBasis: null,
+      endpoint: null,
       dataControls: registry?.entry.dataControls ?? [],
     };
   }
@@ -135,6 +144,7 @@ export function evaluateUpstream(upstream: string, residency: ResidencyConfig): 
       jurisdiction: where,
       registry,
       legalBasis: null,
+      endpoint: null,
       dataControls: controls,
     };
   }
@@ -156,6 +166,7 @@ export function evaluateUpstream(upstream: string, residency: ResidencyConfig): 
       jurisdiction: where,
       registry,
       legalBasis: entry.legalBasis,
+      endpoint: entry.endpoint,
       dataControls: controls,
     };
   }
@@ -169,6 +180,7 @@ export function evaluateUpstream(upstream: string, residency: ResidencyConfig): 
     jurisdiction: where,
     registry,
     legalBasis: entry.legalBasis,
+    endpoint: entry.endpoint,
     dataControls: controls,
   };
 }

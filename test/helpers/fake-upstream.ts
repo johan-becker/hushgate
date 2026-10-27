@@ -31,6 +31,11 @@ export interface FakeReply {
   readonly chunkDelayMs?: number;
   /** Never answer at all — used to exercise the upstream timeout. */
   readonly hang?: boolean;
+  /**
+   * Send the headers and every chunk, then go quiet without ending the
+   * response: a provider that stops in the middle of a stream.
+   */
+  readonly stall?: boolean;
 }
 
 export type FakeHandler = (request: RecordedRequest) => FakeReply | Promise<FakeReply>;
@@ -97,6 +102,7 @@ export async function startFakeUpstream(initial?: FakeHandler): Promise<FakeUpst
         await new Promise((resolve) => setTimeout(resolve, reply.chunkDelayMs));
       }
     }
+    if (reply.stall === true) return;
     response.end();
   }
 
