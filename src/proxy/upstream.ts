@@ -2,7 +2,7 @@
  * The upstream client, behind an interface so tests can substitute a fake — and
  * so the residency layer has one place to decorate every outbound call.
  */
-import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
+import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { Readable } from 'node:stream';
 import { UpstreamError } from '../errors.js';
@@ -14,6 +14,17 @@ export interface UpstreamRequest {
   readonly body: string;
   /** Abort the attempt after this many milliseconds of silence. */
   readonly timeoutMs: number;
+  /**
+   * Abandon the call when this aborts, whether it is still waiting for the
+   * headers or already streaming the body.
+   *
+   * The proxy aborts it when it shuts down and the grace period is over. A
+   * handler writes its audit record only once the upstream has answered or
+   * failed, so a call left to run on would hold that record back until after
+   * the trail had been closed — and a record written into a closed trail is a
+   * request the trail never mentions.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface UpstreamResponse {
@@ -43,8 +54,19 @@ export const nodeUpstreamClient: UpstreamClient = (request) =>
       return;
     }
 
+    // Already abandoned: not one byte goes out on behalf of a caller who has
+    // stopped waiting.
+    const { signal } = request;
+    if (signal?.aborted === true) {
+      reject(abandoned(url));
+      return;
+    }
+
     const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
     const payload = Buffer.from(request.body, 'utf8');
+
+    // The response, once its headers are in; an abort has to reach it too.
+    let received: IncomingMessage | undefined;
 
     const outbound = send(
       url,
@@ -57,9 +79,28 @@ export const nodeUpstreamClient: UpstreamClient = (request) =>
         },
       },
       (response) => {
+        received = response;
+        response.once('close', release);
         resolve({ status: response.statusCode ?? 502, headers: response.headers, body: response });
       },
     );
+
+    // The body is the caller's to read, but an abort still has to reach it:
+    // a caller blocked on a provider that has gone quiet mid-stream would
+    // otherwise never learn the call was abandoned. Destroying the body with
+    // an UpstreamError is what turns that into an ordinary upstream failure.
+    const onAbort = (): void => {
+      const error = abandoned(url);
+      received?.destroy(error);
+      outbound.destroy(error);
+    };
+    // Every call on a long-lived signal adds a listener; leaving them behind
+    // would grow it by one per request for the life of the process.
+    function release(): void {
+      signal?.removeEventListener('abort', onAbort);
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    outbound.once('close', release);
 
     outbound.setTimeout(request.timeoutMs, () => {
       outbound.destroy(
@@ -82,6 +123,11 @@ export const nodeUpstreamClient: UpstreamClient = (request) =>
 
     outbound.end(payload);
   });
+
+/** The error an abandoned call fails with: a network failure, as far as the caller can tell. */
+function abandoned(url: URL): UpstreamError {
+  return new UpstreamError(`request to upstream ${url.host} was abandoned`, 'network');
+}
 
 /**
  * Collect a response body into a string, refusing anything over `maxBytes`.
