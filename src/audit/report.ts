@@ -23,8 +23,9 @@ import type { HushgateConfig } from '../config.js';
 import { UsageError } from '../errors.js';
 import { jurisdiction, type TransferStatus } from '../residency/jurisdictions.js';
 import { VERSION } from '../version.js';
-import { GENESIS_HASH, type AuditRecord } from './record.js';
-import { verifyChain, type ChainVerification } from './verify.js';
+import { GENESIS_HASH, INVALID_VALUE, type AuditRecord } from './record.js';
+import { printable } from './trail.js';
+import { REPORTED_LIMIT, verifyChain, type ChainVerification } from './verify.js';
 
 export interface ReportPeriod {
   /** Inclusive `YYYY-MM-DD` UTC day, or `null` for "from the beginning". */
@@ -126,11 +127,21 @@ export interface ProcessingReport {
      */
     readonly unredactedRequests: number;
     /**
-     * Records the log reported it failed to write, totalled from the `dropped`
-     * field of the records in the period. Each one is a request that went
-     * unrecorded.
+     * Records the log reported it failed to write, where the whole stretch of
+     * the trail they were lost in lies inside the period: from the record
+     * before the loss to the one whose `dropped` field counts it. Each one is
+     * a request of this period that went unrecorded.
      */
     readonly lostRecords: number;
+    /**
+     * Records lost in a stretch that reaches outside the period, so that some,
+     * all or none of them belong to it: the trail says only that they were
+     * lost between two records, not when. Counted here rather than in
+     * `lostRecords`, and listed in `possiblyLostWindows`.
+     */
+    readonly possiblyLostRecords: number;
+    /** The stretches behind `possiblyLostRecords`, in trail order, up to {@link REPORTED_LIMIT}. */
+    readonly possiblyLostWindows: readonly LossWindow[];
   };
   readonly categories: readonly CategoryRow[];
   readonly attachments: readonly AttachmentRow[];
@@ -149,6 +160,22 @@ export interface ProcessingReport {
    * row in the trail, so the document has to say it cannot account for them.
    */
   readonly attachmentsEnabled: boolean;
+}
+
+/**
+ * A stretch of the trail in which the log lost records.
+ *
+ * The writer counts what it could not write in the `dropped` field of the next
+ * record that reaches the file, so a loss is known to lie between that record
+ * and the one before it, and nowhere more precisely: a disk can fill at 23:00
+ * and be cleared at 02:00 the next day.
+ */
+export interface LossWindow {
+  /** `ts` of the record before the loss, or `null` when the loss came before the trail's first record. */
+  readonly after: string | null;
+  /** `ts` of the record whose `dropped` field counts the loss. */
+  readonly before: string;
+  readonly records: number;
 }
 
 /**
@@ -244,10 +271,40 @@ export function withinPeriod(records: readonly AuditRecord[], period: ReportPeri
 }
 
 function inPeriod(record: AuditRecord, period: ReportPeriod): boolean {
-  const day = record.ts.slice(0, 10);
+  const day = dayOf(record.ts);
   if (period.from !== null && day < period.from) return false;
   if (period.to !== null && day > period.to) return false;
   return true;
+}
+
+/** The UTC day of a timestamp, `YYYY-MM-DD`; empty, and so before any period, for one that is not text. */
+function dayOf(ts: unknown): string {
+  return typeof ts === 'string' ? ts.slice(0, 10) : '';
+}
+
+/**
+ * Where a loss lies against the period, by UTC day.
+ *
+ * `inside` when the whole stretch it may have happened in falls within the
+ * period, so its records certainly belong to it; `straddles` when the stretch
+ * reaches outside as well, so they may or may not; `outside` when the two do
+ * not meet. A loss before the trail's first record has no start, so it can
+ * be inside only a period that is open at the beginning. A clock set back can
+ * put the record before the loss later than the record after it; the stretch
+ * is the span between the two either way.
+ */
+function placeLoss(window: LossWindow, period: ReportPeriod): 'inside' | 'straddles' | 'outside' {
+  const end = dayOf(window.before);
+  const start = window.after === null ? null : dayOf(window.after);
+  const low = start === null ? null : start < end ? start : end;
+  const high = start !== null && start > end ? start : end;
+
+  const meets =
+    (period.to === null || low === null || low <= period.to) && (period.from === null || high >= period.from);
+  if (!meets) return 'outside';
+  const within =
+    (period.from === null || (low !== null && low >= period.from)) && (period.to === null || high <= period.to);
+  return within ? 'inside' : 'straddles';
 }
 
 /**
@@ -299,7 +356,16 @@ interface AttachmentTally {
  * as it goes, and hand the verification to {@link ReportBuilder.finish}.
  *
  * Feed it every record of the trail, in order; it keeps those inside the
- * period itself, so the selection is the same as {@link buildReport}'s.
+ * period itself, so the selection is the same as {@link buildReport}'s. The
+ * records outside the period still matter for one thing: a loss is placed
+ * between the record that reports it and the one before it, wherever either
+ * falls, so a disk that filled on the last evening of March is a possible
+ * loss in the March report, not only in April's.
+ *
+ * Nothing a record holds can make it throw. Records reach it whether or not
+ * they verified, and a document that cannot be printed because one line was
+ * edited would leave the auditor with nothing, so a field of the wrong shape
+ * is read as absent, or as `invalid` where a value of a fixed set belongs.
  */
 export class ReportBuilder {
   private readonly options: ReportBuilderOptions;
@@ -310,6 +376,10 @@ export class ReportBuilder {
   private tokens = 0;
   private unredactedRequests = 0;
   private lostRecords = 0;
+  private possiblyLostRecords = 0;
+  private readonly possiblyLostWindows: LossWindow[] = [];
+  /** `ts` of the record added last, in or out of the period; `null` before the first. */
+  private previousTs: string | null = null;
   private readonly byOutcome: Record<string, number> = {};
   private readonly byRoute: Record<string, number> = {};
   private readonly byEnforcement: Record<string, number> = {};
@@ -324,6 +394,10 @@ export class ReportBuilder {
   }
 
   add(record: AuditRecord): void {
+    const previous = this.previousTs;
+    this.previousTs = typeof record.ts === 'string' ? record.ts : null;
+    this.placeLoss(previous, record);
+
     if (!inPeriod(record, this.period)) return;
 
     this.first ??= record.ts;
@@ -332,22 +406,23 @@ export class ReportBuilder {
 
     const tokens = amount(record.tokens);
     this.tokens += tokens;
-    this.lostRecords += amount(record.dropped);
-    tally(this.byOutcome, record.outcome);
-    tally(this.byRoute, record.route);
+    tally(this.byOutcome, word(record.outcome));
+    tally(this.byRoute, word(record.route));
 
-    const mode = record.residency?.mode ?? 'n/a';
+    const residency = objectOrNull(record.residency);
+    const mode = residency === null ? 'n/a' : word(residency['mode']);
     tally(this.byEnforcement, mode);
 
     // A blocked request reached no recipient, which is the point of recording
     // it; whatever its policies say, nothing in it left the machine.
     const reached = record.upstream !== null && record.upstream !== undefined;
     const asWritten = reached && forwardsAsWritten(mode);
-    const found = Object.entries(record.findings ?? {}).map(
+    const found = Object.entries(objectOrNull(record.findings) ?? {}).map(
       ([kind, count]) => [kind, amount(count)] as const,
     );
     if (asWritten && found.some(([, count]) => count > 0)) this.unredactedRequests += 1;
 
+    const policies = objectOrNull(record.policies) ?? {};
     for (const [kind, count] of found) {
       const row = this.categories.get(kind) ?? {
         findings: 0,
@@ -357,15 +432,19 @@ export class ReportBuilder {
       };
       row.findings += count;
       row.requests += 1;
-      const policy = record.policies?.[kind];
+      const policy = Object.hasOwn(policies, kind) ? word(policies[kind]) : undefined;
       const handling = asWritten ? `sent unredacted (residency ${mode})` : policy;
       if (handling !== undefined) row.policies.add(handling);
       if (asWritten || (reached && policy === 'allow')) row.unredacted += count;
       this.categories.set(kind, row);
     }
 
-    for (const item of record.attachments ?? []) {
-      const row = this.attachments.get(item.format) ?? {
+    for (const item of listOf(record.attachments)) {
+      const attachment = objectOrNull(item);
+      if (attachment === null) continue;
+      const format = word(attachment['format']);
+      const outcome = word(attachment['outcome']);
+      const row = this.attachments.get(format) ?? {
         count: 0,
         bytes: 0,
         unredacted: 0,
@@ -373,19 +452,20 @@ export class ReportBuilder {
         extractors: new Set<string>(),
       };
       row.count += 1;
-      row.bytes += amount(item.bytes);
-      tally(row.outcomes, item.outcome);
-      if (item.extractor !== null && item.extractor !== undefined) row.extractors.add(item.extractor);
-      if (asWritten && (item.outcome === 'extracted' || item.outcome === 'truncated')) {
+      row.bytes += amount(attachment['bytes']);
+      tally(row.outcomes, outcome);
+      const extractor = attachment['extractor'];
+      if (extractor !== null && extractor !== undefined) row.extractors.add(word(extractor));
+      if (asWritten && (outcome === 'extracted' || outcome === 'truncated')) {
         row.unredacted += 1;
       }
-      this.attachments.set(item.format, row);
+      this.attachments.set(format, row);
     }
 
     if (reached) {
       const host = String(record.upstream);
-      const endpoint = admittedBy(record);
-      const where = jurisdiction(String(record.residency?.jurisdiction ?? 'UNKNOWN')).code;
+      const endpoint = admittedBy(residency);
+      const where = jurisdiction(String(residency?.['jurisdiction'] ?? 'UNKNOWN')).code;
       const key = JSON.stringify([host, endpoint === undefined ? 0 : endpoint, where]);
       const row = this.recipients.get(key) ?? {
         host,
@@ -397,15 +477,37 @@ export class ReportBuilder {
       };
       row.requests += 1;
       row.tokens += tokens;
-      for (const control of record.residency?.controls ?? []) row.controls.add(control);
+      for (const control of listOf(residency?.['controls'])) row.controls.add(word(control));
       this.recipients.set(key, row);
     }
 
     if (record.tenant !== null && record.tenant !== undefined) {
-      const row = this.tenants.get(record.tenant) ?? { requests: 0, tokens: 0 };
+      const tenant = word(record.tenant);
+      const row = this.tenants.get(tenant) ?? { requests: 0, tokens: 0 };
       row.requests += 1;
       row.tokens += tokens;
-      this.tenants.set(record.tenant, row);
+      this.tenants.set(tenant, row);
+    }
+  }
+
+  /**
+   * Count a loss the record reports, by where it may have happened.
+   *
+   * Done for every record, in the period or not, because the stretch a loss
+   * lies in runs from the record before it, and either end can be outside.
+   * A stretch wholly outside the period is no concern of this document.
+   */
+  private placeLoss(after: string | null, record: AuditRecord): void {
+    const records = amount(record.dropped);
+    if (records <= 0) return;
+
+    const window: LossWindow = { after, before: String(record.ts), records };
+    const place = placeLoss(window, this.period);
+    if (place === 'inside') {
+      this.lostRecords += records;
+    } else if (place === 'straddles') {
+      this.possiblyLostRecords += records;
+      if (this.possiblyLostWindows.length < REPORTED_LIMIT) this.possiblyLostWindows.push(window);
     }
   }
 
@@ -431,6 +533,8 @@ export class ReportBuilder {
         byEnforcement: { ...this.byEnforcement },
         unredactedRequests: this.unredactedRequests,
         lostRecords: this.lostRecords,
+        possiblyLostRecords: this.possiblyLostRecords,
+        possiblyLostWindows: [...this.possiblyLostWindows],
       },
       categories: [...this.categories.entries()]
         .map(([kind, row]) => ({
@@ -479,8 +583,8 @@ function forwardsAsWritten(mode: string): boolean {
 }
 
 /** The recorded admitting endpoint: a string, `null`, or absent on older records. */
-function admittedBy(record: AuditRecord): string | null | undefined {
-  const endpoint = record.residency?.endpoint;
+function admittedBy(residency: Readonly<Record<string, unknown>> | null): string | null | undefined {
+  const endpoint = residency?.['endpoint'];
   if (endpoint === null) return null;
   return typeof endpoint === 'string' ? endpoint : undefined;
 }
@@ -594,6 +698,7 @@ export function renderMarkdown(report: ProcessingReport): string {
     `- Residency enforcement: ${describeCounts(report.volumes.byEnforcement)}`,
     `- Requests forwarded unredacted under residency warn or allow: **${report.volumes.unredactedRequests}**`,
     ...describeLoss(report.volumes.lostRecords),
+    ...describePossibleLoss(report.volumes.possiblyLostRecords, report.volumes.possiblyLostWindows),
     '',
     '## Categories of personal data',
     '',
@@ -609,7 +714,7 @@ export function renderMarkdown(report: ProcessingReport): string {
       '| --- | ---: | ---: | --- |',
       ...report.categories.map(
         (row) =>
-          `| ${plain(row.kind)} | ${row.findings} | ${row.requests} | ${row.policies.map(plain).join(', ') || 'n/a'} |`,
+          `| ${cell(row.kind)} | ${row.findings} | ${row.requests} | ${row.policies.map(cell).join(', ') || 'n/a'} |`,
       ),
       '',
     );
@@ -623,7 +728,7 @@ export function renderMarkdown(report: ProcessingReport): string {
       '| --- | ---: | ---: | --- | --- |',
       ...report.attachments.map(
         (row) =>
-          `| ${plain(row.format)} | ${row.count} | ${row.bytes} | ${describeCounts(row.outcomes)} | ${row.extractors.map(plain).join(', ') || 'n/a'} |`,
+          `| ${cell(row.format)} | ${row.count} | ${row.bytes} | ${describeCounts(row.outcomes)} | ${row.extractors.map(cell).join(', ') || 'n/a'} |`,
       ),
       '',
       ...describeDocuments(report.attachments),
@@ -642,7 +747,7 @@ export function renderMarkdown(report: ProcessingReport): string {
       '| --- | --- | --- | ---: | ---: | --- |',
       ...report.recipients.map(
         (row) =>
-          `| ${describeRecipient(row)} | ${plain(row.jurisdictionName)} (${plain(row.jurisdiction)}) | ${describeTransfer(row.status)} | ${row.requests} | ${row.tokens} | ${describeSafeguard(row)} |`,
+          `| ${describeRecipient(row, cell)} | ${cell(row.jurisdictionName)} (${cell(row.jurisdiction)}) | ${describeTransfer(row.status)} | ${row.requests} | ${row.tokens} | ${describeSafeguard(row)} |`,
       ),
       '',
       '_Safeguards are read from the configuration in force when this report was generated, not from the time of each request: an allowlist entry added, changed or removed since then changes this column._',
@@ -663,7 +768,7 @@ export function renderMarkdown(report: ProcessingReport): string {
       '',
       '| Tenant | Requests | Tokens |',
       '| --- | ---: | ---: |',
-      ...report.tenants.map((row) => `| ${plain(row.id)} | ${row.requests} | ${row.tokens} |`),
+      ...report.tenants.map((row) => `| ${cell(row.id)} | ${row.requests} | ${row.tokens} |`),
       '',
     );
   }
@@ -705,16 +810,41 @@ const NOTHING_RECORDED =
  * and kinds, routes, hosts and tenant ids come from a file anyone with write
  * access could have edited. A `|` adds a table cell that renderers drop
  * silently, a line break ends a list item or starts a heading, and a leading
- * marker turns a purpose into a nested list or a quote. One helper, applied to
- * every interpolated string, keeps each value inside the place it was put.
+ * marker turns a purpose into a nested list or a quote. This helper, or
+ * {@link cell} inside a table, is applied to every interpolated string and
+ * keeps each value inside the place it was put.
+ *
+ * What a terminal would obey rather than show is escaped first, as `\uXXXX`,
+ * before the Markdown escaping turns the backslash into a visible one. The
+ * document is printed to a terminal as often as it is rendered, and a route
+ * holding `ESC[1A ESC[2K` would otherwise move the cursor up and erase the line
+ * that says BROKEN — the same attack `audit verify` is already closed to.
  */
 function plain(text: string): string {
-  return String(text)
-    .replaceAll(/\s*[\r\n\p{Zl}\p{Zp}]+\s*/gu, ' ')
-    .trim()
+  return orderedListMarker(cell(text));
+}
+
+/**
+ * {@link plain} for a table cell.
+ *
+ * A cell holds inline text only, so a number followed by a full stop — an
+ * address such as `127.0.0.1:9099` — cannot start a list there, and escaping
+ * it only puts a backslash into the raw document for nothing.
+ */
+function cell(text: string): string {
+  return printable(String(text).replaceAll(/\s*[\r\n\p{Zl}\p{Zp}]+\s*/gu, ' ').trim())
     .replaceAll(/[\\|<]/gu, '\\$&')
-    .replace(/^[#>+*`~_[-]/u, '\\$&')
-    .replace(/^(\d+)([.)])/u, '$1\\$2');
+    .replace(/^[#>+*`~_[-]/u, '\\$&');
+}
+
+/**
+ * Escape a leading ordered-list marker: one to nine digits, then `.` or `)`,
+ * then a space or the end of the text, which is what CommonMark reads as one.
+ * `1. numbered` at the start of a list item would nest a list inside it;
+ * `127.0.0.1` would not, and is left alone.
+ */
+function orderedListMarker(text: string): string {
+  return text.replace(/^(\d{1,9})([.)])(?=[ \t]|$)/u, '$1\\$2');
 }
 
 function optional(value: string | null, missing: string): string {
@@ -763,6 +893,11 @@ function describePeriod(report: ProcessingReport): string {
  * the file line as well as the record, because the line is what somebody
  * opens the file at, and an anchored head that is missing is said to be,
  * because a shortened trail links up as cleanly as a whole one.
+ *
+ * Gaps the writer left are named beside whichever verdict it is, for the
+ * whole trail: they do not break the chain, but a chain called intact should
+ * not read as a chain with nothing missing. Whether a gap touches this period
+ * is for the Volumes section to say.
  */
 function describeChain(report: ProcessingReport): string {
   const { chain, unreadable } = report;
@@ -771,27 +906,41 @@ function describeChain(report: ProcessingReport): string {
       ? ''
       : `**${unreadable.count} unreadable line${unreadable.count === 1 ? '' : 's'}**${unreadable.firstLine === null ? '' : `, first at line ${unreadable.firstLine}`}`;
   const missing = describeMissingAnchors(chain);
+  const gaps = describeGaps(chain);
 
   if (chain.breakCount > 0) {
     const first = chain.firstBreak;
     const line = first?.line === undefined ? '' : ` (line ${first.line})`;
     const more = chain.breakCount === 1 ? '' : `; ${chain.breakCount} breaks in all`;
     const broken = `**BROKEN at record ${first?.index ?? 0}** of ${chain.records} — ${plain(first?.detail ?? 'unknown')}${line}${more}`;
-    return [broken, missing, unread].filter((part) => part !== '').join('; also ');
+    return [broken, missing, unread, gaps].filter((part) => part !== '').join('; also ');
   }
+
+  const alsoGaps = gaps === '' ? '' : `; also ${gaps}`;
 
   if (missing !== '') {
     const also = unread === '' ? '' : `; also ${unread}`;
     const present = chain.records === 1 ? 'the 1 record present links' : `the ${chain.records} records present link`;
-    return `${missing}: ${present} up to head ${chain.head}, but records were removed from the end or the trail was rewritten${also}`;
+    return `${missing}: ${present} up to head ${chain.head}, but records were removed from the end or the trail was rewritten${also}${alsoGaps}`;
   }
 
   if (unreadable.count > 0) {
-    return `${unread}: a line that cannot be read cannot be checked, so the figures in this document cannot be relied on (the ${chain.records} records that could be read link up to head ${chain.head})`;
+    return `${unread}: a line that cannot be read cannot be checked, so the figures in this document cannot be relied on (the ${chain.records} records that could be read link up to head ${chain.head})${alsoGaps}`;
   }
 
   const from = chain.from === GENESIS_HASH ? '' : `continuing from ${chain.from}; `;
-  return `intact over ${chain.records} records (${from}head ${chain.head})`;
+  const intact = `intact over ${chain.records} records (${from}head ${chain.head})`;
+  return gaps === '' ? intact : `${intact}, across ${gaps}`;
+}
+
+/** The gaps the writer left anywhere in the trail, or nothing when there are none. */
+function describeGaps(chain: ChainVerification): string {
+  if (chain.gapCount === 0) return '';
+  const first = chain.gaps[0];
+  const line = first?.line === undefined ? '' : `, line ${first.line}`;
+  const where = first === undefined ? '' : `, the first before record ${first.index}${line}`;
+  const gaps = `${chain.gapCount} gap${chain.gapCount === 1 ? '' : 's'}`;
+  return `**${gaps}** where the log could not write ${chain.dropped} record${chain.dropped === 1 ? '' : 's'}${where}`;
 }
 
 /** The anchored heads that no verified record carries, or nothing when every one was found. */
@@ -811,6 +960,32 @@ function describeLoss(lost: number): string[] {
   ];
 }
 
+/**
+ * The line for records lost in a stretch of the trail that reaches outside
+ * the period.
+ *
+ * The trail cannot say on which side of the period's edge they were lost, so
+ * the document says "up to" and "may", gives the stretch so a reader can judge
+ * it, and treats every figure as a lower bound — a loss that may belong to
+ * this period is not one it may leave out.
+ */
+function describePossibleLoss(records: number, windows: readonly LossWindow[]): string[] {
+  if (records === 0) return [];
+  const stretches = windows.map(describeWindow);
+  const listed = windows.reduce((sum, window) => sum + window.records, 0);
+  const unlisted = listed < records ? ', and in further stretches' : '';
+  const reach = windows.length === 1 ? 'a stretch that reaches' : 'stretches that reach';
+  return [
+    `- **up to ${records} audit record${records === 1 ? '' : 's'} may be missing from this period**: the log could not write ${records === 1 ? 'it' : 'them'} somewhere ${stretches.join(', or ')}${unlisted}, ${reach} outside this period, so every figure in this document is a lower bound`,
+  ];
+}
+
+function describeWindow(window: LossWindow): string {
+  return window.after === null
+    ? `before ${plain(window.before)}, the trail's first record`
+    : `between ${plain(window.after)} and ${plain(window.before)}`;
+}
+
 function describeDocuments(rows: readonly AttachmentRow[]): string[] {
   const unread = rows.reduce((sum, row) => sum + (row.outcomes['forwarded'] ?? 0), 0);
   const unredacted = rows.reduce((sum, row) => sum + row.unredacted, 0);
@@ -828,24 +1003,29 @@ function describeDocuments(rows: readonly AttachmentRow[]): string[] {
       '',
     );
   }
+  // Said of the rows, because the rows are all the trail has: a document sent
+  // while attachments.enabled was false — for a day, or a week, of a period
+  // the current configuration has it on for — leaves no row at all.
   if (lines.length === 0) {
     lines.push(
-      'Every document was either read, so that its text was handled like the rest of the request, or refused. None reached a provider unread.',
+      'Every document recorded in the trail for this period was either read, so that its text was handled like the rest of the request, or refused; none of those reached a provider unread. Documents sent while `attachments.enabled` was false leave no row, and this statement does not cover them.',
       '',
     );
   }
   return lines;
 }
 
-function describeRecipient(row: RecipientRow): string {
-  if (row.endpoint === undefined || row.endpoint === null) return plain(row.host);
-  return `${plain(row.host)} via ${plain(row.endpoint)}`;
+/** A recipient's host and admitting endpoint, escaped for where it goes: a table cell or a list item. */
+function describeRecipient(row: RecipientRow, escape: (text: string) => string = plain): string {
+  if (row.endpoint === undefined || row.endpoint === null) return escape(row.host);
+  return `${escape(row.host)} via ${cell(row.endpoint)}`;
 }
 
+/** The Safeguard recorded cell. */
 function describeSafeguard(row: RecipientRow): string {
-  if (row.legalBasis !== null) return plain(row.legalBasis);
+  if (row.legalBasis !== null) return cell(row.legalBasis);
   if (row.legalBasisAmbiguous) {
-    return `**ambiguous**: ${row.legalBasisCandidates.length} allowlist entries share this host with different legal bases (${row.legalBasisCandidates.map(plain).join('; ')}), and these records do not say which admitted them`;
+    return `**ambiguous**: ${row.legalBasisCandidates.length} allowlist entries share this host with different legal bases (${row.legalBasisCandidates.map(cell).join('; ')}), and these records do not say which admitted them`;
   }
   if (typeof row.endpoint === 'string') return '**none in the current configuration** for this endpoint';
   if (row.endpoint === null) return '**none recorded**; no allowlist entry admitted these requests';
@@ -945,11 +1125,12 @@ function describeTransfer(status: TransferStatus): string {
   }
 }
 
+/** Counts by key, for a table cell or after a label: never at the start of a line. */
 function describeCounts(counts: Readonly<Record<string, number>>): string {
   const entries = Object.entries(counts).toSorted(([a], [b]) => (a < b ? -1 : 1));
   return entries.length === 0
     ? 'none'
-    : entries.map(([key, count]) => `${plain(key)} ${count}`).join(', ');
+    : entries.map(([key, count]) => `${cell(key)} ${count}`).join(', ');
 }
 
 function tally(counts: Record<string, number>, key: string): void {
@@ -965,6 +1146,29 @@ function tally(counts: Record<string, number>, key: string): void {
  */
 function amount(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * A value read back as one of a field's words — an outcome, a mode, a format,
+ * a policy, a control — or `invalid` for anything that is not text, which is
+ * what the writer itself puts in a field it cannot make sense of. A number or
+ * an object would otherwise become a table row of its own, spelt however
+ * JavaScript happens to turn it into a key.
+ */
+function word(value: unknown): string {
+  return typeof value === 'string' ? value : INVALID_VALUE;
+}
+
+/** A map read back from the trail, or `null` for anything that is not one. */
+function objectOrNull(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** A list read back from the trail, or none for anything that is not one. */
+function listOf(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function compare(a: string, b: string): number {

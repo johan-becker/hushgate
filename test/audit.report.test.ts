@@ -379,6 +379,22 @@ describe('hushgate audit', () => {
     expect(c.out()).toMatch(/\*\*BROKEN at record 2\*\* of 2 — record hash is [^\n]* \(line 3\)/u);
   });
 
+  it('still prints the document when an edited record holds a list of the wrong shape', async () => {
+    const dir = workspace();
+    const path = await writeTrail(dir, [
+      { at: '2026-03-02T08:00:00.000Z', event: event() },
+      { at: '2026-03-02T09:00:00.000Z', event: event() },
+    ]);
+    // Edited without re-hashing, as verify would report it: altered.
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"attachments":[]', '"attachments":[null]'));
+
+    const c = capture(['audit', 'report'], dir);
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.out()).toContain('# Record of processing activities');
+    expect(c.out()).toContain('**BROKEN at record 1** of 2');
+    expect(c.out()).toContain('- Requests: **2**');
+  });
+
   it('reports on the file it is given, and checks it against an anchored head', async () => {
     const dir = workspace();
     const path = await writeTrail(dir, [

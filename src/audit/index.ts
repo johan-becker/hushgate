@@ -49,6 +49,7 @@ export {
 export type {
   AttachmentRow,
   CategoryRow,
+  LossWindow,
   MalformedLines,
   ProcessingReport,
   RecipientRow,
