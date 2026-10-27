@@ -27,8 +27,8 @@ import {
   type AuditEvent,
   type AuditRecord,
 } from '../src/audit/record.js';
-import { parseAuditLines } from '../src/audit/trail.js';
-import { verifyChain } from '../src/audit/verify.js';
+import { MAX_LINE_BYTES, parseAuditLines } from '../src/audit/trail.js';
+import { verifyChain, verifyTrailFile } from '../src/audit/verify.js';
 
 const dirs: string[] = [];
 
@@ -266,6 +266,71 @@ describe('writing through failures', () => {
 
     expect(() => log.write(event())).not.toThrow();
     expect(log.droppedRecords).toBe(1);
+  });
+
+  it('says where the count goes if no record ever carries it', () => {
+    const path = join(workspace(), 'audit.jsonl');
+    const { log, messages } = writer(path, { writeSync: scriptedWrites(() => 'fail') });
+
+    log.write(event());
+    expect(log.droppedSinceLastRecord).toBe(1);
+    // A full disk and then a restart is the usual sequence: the message must
+    // not promise that the trail will show the loss whatever happens.
+    expect(messages[0]).toContain('if hushgate writes one before it stops');
+    expect(messages[0]).toContain('the shutdown line');
+    expect(messages[0]).toContain('hushgate_audit_dropped_records_total');
+  });
+});
+
+describe('a record too long to read back', () => {
+  /** A route long enough that the record's line passes the reader's cap. */
+  const oversized = (): AuditEvent => event({ route: 'r'.repeat(MAX_LINE_BYTES) });
+
+  it('is not written, and the next record carries it as dropped', async () => {
+    const path = join(workspace(), 'audit.jsonl');
+    const { log, messages } = writer(path);
+
+    log.write(event({ status: 200 }));
+    log.write(oversized());
+    expect(log.droppedRecords).toBe(1);
+    expect(messages.join('\n')).toContain(`longer than the ${MAX_LINE_BYTES} bytes a reader takes`);
+    log.write(event({ status: 202 }));
+    await log.close();
+
+    const { records, malformed } = parse(path);
+    expect(malformed).toEqual([]);
+    expect(records.map((record) => record.status)).toEqual([200, 202]);
+    expect(records[1]!.dropped).toBe(1);
+    const verdict = verifyTrailFile(path);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.verification.gapCount).toBe(1);
+  });
+
+  it('is skipped when a restart looks for the head, as verify skips it', async () => {
+    const path = await trail(2);
+    const head = parse(path).records[1]!.hash;
+    // What an older writer could have left: a record that hashes and links
+    // correctly, on a line no reader takes as one.
+    const long = toRecord(oversized(), '2026-03-02T08:00:00.000Z', 'long', head);
+    appendFileSync(path, `${JSON.stringify(long)}\n`);
+    expect(readHead(path)).toBe(head);
+
+    const { log, messages } = writer(path);
+    expect(log.headHash).toBe(head);
+    expect(messages.join('\n')).toContain('last 1 line(s)');
+    log.write(event({ status: 300 }));
+    await log.close();
+
+    const verdict = verifyTrailFile(path);
+    expect(verdict.malformedCount).toBe(1);
+    expect(verdict.verification.breakCount).toBe(0);
+    expect(verdict.verification.records).toBe(3);
+  });
+
+  it('is skipped as the only line of a trail, which then starts from genesis', () => {
+    const path = join(workspace(), 'audit.jsonl');
+    writeFileSync(path, `${JSON.stringify(toRecord(oversized(), 't', 'long'))}\n`);
+    expect(readHead(path)).toBe(GENESIS_HASH);
   });
 });
 
