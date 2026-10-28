@@ -300,16 +300,17 @@ describe('scanning a folder that is not all text', () => {
   });
 });
 
-describe('hushgate scan over a folder', () => {
-  const tree = (): string => {
-    const dir = workspace();
-    mkdirSync(join(dir, 'docs', 'sub'), { recursive: true });
-    writeFileSync(join(dir, 'docs', 'b.txt'), 'nichts weiter\n');
-    writeFileSync(join(dir, 'docs', 'a.txt'), 'Mail an anna.schmidt@nordlicht.example\n');
-    writeFileSync(join(dir, 'docs', 'sub', 'c.txt'), 'IBAN DE89370400440532013000\n');
-    return dir;
-  };
+/** A folder holding a file with personal data, a clean one beside it, and one more in a subfolder. */
+const tree = (): string => {
+  const dir = workspace();
+  mkdirSync(join(dir, 'docs', 'sub'), { recursive: true });
+  writeFileSync(join(dir, 'docs', 'b.txt'), 'nichts weiter\n');
+  writeFileSync(join(dir, 'docs', 'a.txt'), 'Mail an anna.schmidt@nordlicht.example\n');
+  writeFileSync(join(dir, 'docs', 'sub', 'c.txt'), 'IBAN DE89370400440532013000\n');
+  return dir;
+};
 
+describe('hushgate scan over a folder', () => {
   it('walks it in name order, and reports each path as it would be typed', async () => {
     const dir = tree();
     const c = capture(['scan', 'docs'], { cwd: dir });
