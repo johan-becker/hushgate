@@ -9,7 +9,9 @@
 services:
   hushgate:
     build: .
-    image: hushgate:0.1.0
+    # Built from this checkout, so the tag names no release. Retag it for your
+    # registry before deploying it anywhere else.
+    image: hushgate:local
     restart: unless-stopped
 
     ports:

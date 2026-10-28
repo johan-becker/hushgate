@@ -1909,7 +1909,7 @@ Markdown file here resolves — including the heading it points at.
 `npm run verify:package` checks what npm would publish: that the tarball carries
 the compiled output and not the sources, and that the `bin` entry actually runs.
 
-1000 tests across 36 files, and **none of them touch the network**. Every proxy
+3174 tests across 87 files, and **none of them touch the network**. Every proxy
 test runs against a fake upstream bound to `127.0.0.1` that records exactly what
 hushgate sent — which is the only way to assert the actual claim. CI proves the
 suite is offline by running it a second time with `HTTP_PROXY` and `HTTPS_PROXY`
