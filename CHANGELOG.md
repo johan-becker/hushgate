@@ -12,6 +12,8 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-28
+
 ### Added
 
 - **`hushgate setup` starts what it wrote.** After writing and checking the
@@ -839,7 +841,8 @@ version under different terms.
   second test run behind a closed proxy that proves the suite needs no network,
   and a workflow that verifies the publishable artefact.
 
-[Unreleased]: https://github.com/johan-becker/hushgate/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/johan-becker/hushgate/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/johan-becker/hushgate/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/johan-becker/hushgate/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/johan-becker/hushgate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/johan-becker/hushgate/compare/v0.2.0...v0.3.0

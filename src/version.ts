@@ -1,2 +1,2 @@
 /** Package version, kept in one place so /healthz and the CLI cannot disagree. */
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
