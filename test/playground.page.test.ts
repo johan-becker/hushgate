@@ -51,9 +51,9 @@ describe('the trial page', () => {
 
       const body = await response.text();
       expect(body).toContain('Your text');
-      expect(body).toContain('What the provider sees');
-      expect(body).toContain('Reply, as it arrives');
-      expect(body).toContain('Reply, rehydrated');
+      expect(body).toContain('What OpenAI API receives');
+      expect(body).toContain('Reply as OpenAI API wrote it');
+      expect(body).toContain('Reply as you read it');
     });
   });
 
@@ -104,7 +104,7 @@ describe('the trial page', () => {
   it('says where names come from while the dictionary is empty', async () => {
     await withHarness(mounted(), async (harness) => {
       expect(await (await harness.get('/__playground')).text()).toContain(
-        'Personal names come only from your dictionary',
+        'redaction.dictionary.names',
       );
     });
   });
@@ -112,8 +112,38 @@ describe('the trial page', () => {
   it('drops that line when a dictionary is configured', async () => {
     await withHarness(mounted({ dictionaryIsEmpty: false }), async (harness) => {
       expect(await (await harness.get('/__playground')).text()).not.toContain(
-        'Personal names come only from your dictionary',
+        'redaction.dictionary.names',
       );
+    });
+  });
+
+  it('lets a tester list names to replace, and offers a file picker beside the drop', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = await (await harness.get('/__playground')).text();
+      expect(body).toMatch(/<label for="names">Names to replace<\/label>/u);
+      expect(body).toMatch(/<input[^>]*id="file"[^>]*type="file"/u);
+    });
+  });
+
+  it('carries no inline style, which the policy would refuse', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = await (await harness.get('/__playground')).text();
+      const js = await (await harness.get('/__playground/app.js')).text();
+      expect(body).not.toMatch(/\sstyle=/u);
+      expect(js).not.toMatch(
+        /\.style\b|\bstyle\s*:|setAttribute\('style'|cssText|innerHTML|outerHTML|insertAdjacentHTML/u,
+      );
+    });
+  });
+
+  it('says in each pane what will appear there, and hides the hint until it applies', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = await (await harness.get('/__playground')).text();
+      for (const id of ['sanitised', 'raw', 'hydrated', 'findings']) {
+        expect(body).toMatch(new RegExp(`id="${id}"[^>]*><span class="empty">[^<]+</span>`, 'u'));
+      }
+      expect(body).toMatch(/<span id="summary-hint"[^>]*\shidden>/u);
+      expect(body).toMatch(/<h1 class="wordmark">hushgate<\/h1>/u);
     });
   });
 

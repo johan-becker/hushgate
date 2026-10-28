@@ -43,12 +43,22 @@ async function withHarness(
 const extractsText = (): Promise<string> => Promise.resolve(`Rechnung an ${LETTER}`);
 const failsToExtract = (): Promise<string> => Promise.reject(new Error('no text layer'));
 
+interface Mark {
+  readonly start: number;
+  readonly end: number;
+  readonly kind: string;
+  readonly placeholder: string;
+}
+
 interface PreviewBody {
   readonly sessionId: string;
   readonly sanitised: string;
   readonly findings: Record<string, number>;
+  readonly marks: readonly Mark[];
   readonly extracted?: string;
 }
+
+const NAMED = 'Bitte an Katrin Vogelsang, k.vogelsang@nordwerk-gmbh.de. Gruß, Katrin Vogelsang';
 
 describe('POST /__playground/preview', () => {
   it('returns the sanitised text and the findings by kind', async () => {
@@ -72,6 +82,162 @@ describe('POST /__playground/preview', () => {
       expect(body).not.toContain('vogelsang');
       expect(body).not.toContain('8823119');
       expect(body).not.toContain('0532 0130 00');
+    });
+  });
+
+  it('marks where each replaced value sat in the text it checked', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = (await (
+        await harness.post('/__playground/preview', { text: LETTER })
+      ).json()) as PreviewBody;
+
+      expect(body.marks.map((mark) => mark.kind).toSorted()).toEqual(['EMAIL', 'IBAN', 'PHONE']);
+      expect(LETTER.slice(body.marks[0]!.start, body.marks[0]!.end)).toBe(
+        'k.vogelsang@nordwerk-gmbh.de',
+      );
+      for (const mark of body.marks) {
+        expect(mark.end).toBeGreaterThan(mark.start);
+        expect(body.sanitised).toContain(mark.placeholder);
+        expect(Object.keys(mark).toSorted()).toEqual(['end', 'kind', 'placeholder', 'start']);
+      }
+      // In document order, so the page can walk them once.
+      const starts = body.marks.map((mark) => mark.start);
+      expect(starts).toEqual(starts.toSorted((a, b) => a - b));
+    });
+  });
+
+  it('marks offsets into the extracted text when a document was dropped', async () => {
+    await withHarness(
+      { proxy: { playground: playground({ extract: extractsText }) } },
+      async (harness) => {
+        const body = (await (
+          await harness.post('/__playground/preview', {
+            file: { name: 'rechnung.pdf', data: Buffer.from('x').toString('base64') },
+          })
+        ).json()) as PreviewBody;
+
+        const email = body.marks.find((mark) => mark.kind === 'EMAIL')!;
+        expect(body.extracted!.slice(email.start, email.end)).toBe('k.vogelsang@nordwerk-gmbh.de');
+      },
+    );
+  });
+
+  it('replaces the names it is given, as a dictionary would', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = (await (
+        await harness.post('/__playground/preview', {
+          text: NAMED,
+          names: ['  Katrin Vogelsang ', 'Katrin Vogelsang', ''],
+        })
+      ).json()) as PreviewBody;
+
+      expect(body.findings['NAME']).toBe(2);
+      expect(body.sanitised).toContain('[NAME_1]');
+      expect(body.sanitised).not.toContain('Katrin');
+      const names = body.marks.filter((mark) => mark.kind === 'NAME');
+      expect(names).toHaveLength(2);
+      for (const mark of names) {
+        expect(NAMED.slice(mark.start, mark.end)).toBe('Katrin Vogelsang');
+        expect(mark.placeholder).toBe('[NAME_1]');
+      }
+    });
+  });
+
+  it('leaves names alone when none are given', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = (await (
+        await harness.post('/__playground/preview', { text: NAMED })
+      ).json()) as PreviewBody;
+
+      expect(body.findings['NAME']).toBeUndefined();
+      expect(body.sanitised).toContain('Katrin Vogelsang');
+    });
+  });
+
+  it('ignores a malformed names field rather than refusing the check', async () => {
+    await withHarness(mounted(), async (harness) => {
+      for (const names of [
+        'Katrin Vogelsang',
+        { 0: 'Katrin Vogelsang' },
+        [42, null, { name: 'Katrin Vogelsang' }, '   '],
+        ['Katrin Vogelsang'.padEnd(101, 'x')],
+      ]) {
+        // oxlint-disable-next-line no-await-in-loop
+        const response = await harness.post('/__playground/preview', { text: NAMED, names });
+        expect(response.status).toBe(200);
+        // oxlint-disable-next-line no-await-in-loop
+        const body = (await response.json()) as PreviewBody;
+        expect(body.findings['NAME']).toBeUndefined();
+      }
+    });
+  });
+
+  it('takes a name of exactly a hundred characters, and not one more', async () => {
+    const longest = 'Katrin Vogelsang-'.padEnd(100, 'x');
+    const text = `Bitte an ${longest} und ${longest}y weiterleiten.`;
+    await withHarness(mounted(), async (harness) => {
+      const taken = (await (
+        await harness.post('/__playground/preview', { text, names: [longest] })
+      ).json()) as PreviewBody;
+      expect(taken.findings['NAME']).toBeGreaterThanOrEqual(1);
+      expect(text.slice(taken.marks[0]!.start, taken.marks[0]!.end)).toBe(longest);
+
+      const dropped = (await (
+        await harness.post('/__playground/preview', { text, names: [`${longest}y`] })
+      ).json()) as PreviewBody;
+      expect(dropped.findings['NAME']).toBeUndefined();
+    });
+  });
+
+  it('replaces the names it is given in a dropped document too', async () => {
+    await withHarness(
+      { proxy: { playground: playground({ extract: () => Promise.resolve(NAMED) }) } },
+      async (harness) => {
+        const body = (await (
+          await harness.post('/__playground/preview', {
+            file: { name: 'brief.pdf', data: Buffer.from('x').toString('base64') },
+            names: ['Katrin Vogelsang'],
+          })
+        ).json()) as PreviewBody;
+
+        expect(body.findings['NAME']).toBe(2);
+        expect(body.sanitised).not.toContain('Katrin');
+        for (const mark of body.marks.filter((each) => each.kind === 'NAME')) {
+          expect(body.extracted!.slice(mark.start, mark.end)).toBe('Katrin Vogelsang');
+        }
+      },
+    );
+  });
+
+  it('caps the names it takes at a hundred', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const filler = Array.from({ length: 100 }, (_, i) => `Filler Person ${i}`);
+      const body = (await (
+        await harness.post('/__playground/preview', {
+          text: NAMED,
+          names: [...filler, 'Katrin Vogelsang'],
+        })
+      ).json()) as PreviewBody;
+
+      expect(body.findings['NAME']).toBeUndefined();
+    });
+  });
+
+  it('carries no value in its marks, names included', async () => {
+    await withHarness(mounted(), async (harness) => {
+      const body = await (
+        await harness.post('/__playground/preview', {
+          text: `${NAMED}\n${LETTER}`,
+          names: ['Katrin Vogelsang'],
+        })
+      ).text();
+
+      expect(body).toContain('"marks"');
+      expect(body).not.toContain('Katrin');
+      expect(body).not.toContain('vogelsang');
+      expect(body).not.toContain('8823119');
+      expect(body).not.toContain('0532 0130 00');
+      expect(body).not.toContain('"value"');
     });
   });
 

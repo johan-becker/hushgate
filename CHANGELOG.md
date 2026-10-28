@@ -14,6 +14,26 @@ and the re-hydration mappings that already exist.
 
 ### Changed
 
+- **The trial page shows the round trip instead of describing it.** `hushgate
+  setup`'s page at `/__playground` now sets the four panes side by side in the
+  order the data travels. Your text is on the left, what the provider receives
+  is on the right, and the reply comes back the same way below. Real values
+  are marked in your text and placeholders in the provider's. Pointing at
+  either one lights up the same token in all four panes, so you can see which
+  value became which placeholder and what it was turned back into. A strip
+  along the top follows the request out to the provider and back. The reply
+  shows what hushgate is holding back while a placeholder arrives in pieces,
+  and the send line reports time to the first token, the total time and how
+  many values were restored. Sample documents fill the page in one click, a
+  file can be opened as well as dropped, Ctrl/⌘+Enter runs the check, and an
+  edit after a check holds Send back until the text is checked again.
+- **Names can be tried in the trial.** The trial has no dictionary, so it never
+  replaced a personal name. Names listed in the page's "Names to replace"
+  field are now sent with the check and replaced as `NAME`, as
+  `redaction.dictionary.names` would replace them in production. The preview
+  response also carries the offset, kind and placeholder of each replaced
+  value, but not the value itself.
+
 - **The image is tagged `hushgate:local`.** `docker-compose.yml` builds it from
   the checkout and `deploy/kubernetes.yaml` runs it, and both called it
   `hushgate:0.1.0` whatever version was checked out. Retag it for your registry
