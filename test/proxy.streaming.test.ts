@@ -107,26 +107,52 @@ describe('streaming responses', () => {
   });
 
   it('delivers events as they arrive instead of buffering the stream', async () => {
+    // Decided by order, not by the clock: the upstream sends the first event
+    // and then holds the rest back until the client has read that event. A
+    // proxy that streams delivers it while the upstream is still waiting; one
+    // that buffers delivers nothing until the fallback below lets the upstream
+    // finish. A threshold in milliseconds said the same thing until a busy
+    // machine took 167 ms over a limit of 150.
+    let releasedBy: 'client' | 'fallback' | undefined;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fallback = setTimeout(() => {
+      releasedBy ??= 'fallback';
+      release();
+    }, 5_000);
+
     harness = await startHarness({
       handler: (): FakeReply => ({
         headers: SSE_HEADERS,
         body: '',
-        chunks: [openAiChunk('erste '), openAiChunk('zweite '), openAiChunk('dritte')],
-        chunkDelayMs: 60,
+        chunks: [openAiChunk('erste '), openAiChunk('zweite '), openAiChunk('dritte'), 'data: [DONE]\n\n'],
+        beforeChunk: (index) => (index === 1 ? released : Promise.resolve()),
       }),
     });
 
-    const started = Date.now();
-    const response = await harness.post('/v1/chat/completions', streamRequest('hallo'));
-    const reader = response.body!.getReader();
+    try {
+      const response = await harness.post('/v1/chat/completions', streamRequest('hallo'));
+      const reader = response.body!.getReader();
 
-    const first = await reader.read();
-    const firstByteAfterMs = Date.now() - started;
-    expect(new TextDecoder().decode(first.value)).toContain('erste');
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain('erste');
+      expect(releasedBy).toBeUndefined();
 
-    // The upstream needs ~180 ms to finish; the first event must not wait for it.
-    expect(firstByteAfterMs).toBeLessThan(150);
-    await reader.cancel();
+      releasedBy = 'client';
+      release();
+      let rest = '';
+      // Sequential on purpose: a stream is read in order.
+      // oxlint-disable-next-line no-await-in-loop
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        rest += new TextDecoder().decode(chunk.value);
+      }
+      expect(rest).toContain('dritte');
+    } finally {
+      clearTimeout(fallback);
+      release();
+    }
   });
 
   it('does not lose text when the stream ends mid-token', async () => {

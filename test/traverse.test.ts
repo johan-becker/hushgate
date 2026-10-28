@@ -261,7 +261,10 @@ const dense = (count: number): JsonValue =>
     messages: [{ role: 'user', content: '1.1.1.1 '.repeat(count) }],
   }) as JsonValue;
 
-describe('a body with very many findings', () => {
+// 126,000 findings is the point, and it is CPU-bound: 7 s on an idle machine,
+// 15 s on a busy one, so the suite's 20 s default would be the next thing to
+// fail. What these assert is correctness, not speed.
+describe('a body with very many findings', { timeout: 60_000 }, () => {
   it('redacts it instead of blowing the call stack', () => {
     const s = new Session();
     const result = redactJson(dense(126_000), s, ['messages.*.content']);
