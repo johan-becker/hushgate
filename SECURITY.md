@@ -9,8 +9,8 @@ has consequences beyond the process.
 
 | Version | Security support |
 | --- | --- |
-| `0.1.x` | Supported. |
-| Older commits and branches | Not supported. |
+| The latest minor release, `0.7.x` | Supported. |
+| Earlier releases, older commits and branches | Not supported. |
 
 Fixes are developed against the latest `main` and released as a patch version.
 

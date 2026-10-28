@@ -12,6 +12,19 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+### Changed
+
+- **The image is tagged `hushgate:local`.** `docker-compose.yml` builds it from
+  the checkout and `deploy/kubernetes.yaml` runs it, and both called it
+  `hushgate:0.1.0` whatever version was checked out. Retag it for your registry
+  as before.
+
+### Fixed
+
+- **SECURITY.md names the supported release** as the latest minor, `0.7.x`; it
+  still said `0.1.x`. The README's test count is the suite's current one, 3174
+  tests across 87 files.
+
 ## [0.7.0] — 2026-10-28
 
 ### Added
