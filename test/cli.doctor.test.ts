@@ -411,3 +411,12 @@ describe('reporting the briefing', () => {
     expect(has(findings, 'note', '1 tenant(s) override the briefing: support')).toBe(true);
   });
 });
+
+describe('hushgate doctor, counting', () => {
+  it('speaks of one warning in the singular', async () => {
+    const dir = workspace({ [CONFIG_FILENAME]: '{}' });
+    const c = capture(['doctor'], dir);
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.out()).toContain('1 warning. Fix it, or re-run with --allow-warnings to accept it.');
+  });
+});

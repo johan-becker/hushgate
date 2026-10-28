@@ -21,11 +21,12 @@ import {
 } from '../../audit/verify.js';
 import { loadConfig, type LoadedConfig } from '../../config.js';
 import { HushgateError, UsageError } from '../../errors.js';
-import { boolFlag, listFlag, parseFlags, stringFlag, type FlagSpecs, type ParsedFlags } from '../args.js';
+import { CONFIG_FLAG, boolFlag, listFlag, parseFlags, stringFlag, type FlagSpecs, type ParsedFlags } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
+import { noSuchSubcommand } from '../suggest.js';
 
 export const AUDIT_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   file: {
     type: 'string',
     alias: 'f',
@@ -88,10 +89,12 @@ export function audit(cli: Cli, argv: readonly string[]): Promise<number> {
   const parsed = parseFlags(argv, AUDIT_FLAGS);
   const [subcommand, ...operands] = parsed.positionals;
 
+  const explained = '"verify" to check the hash chain, or "report" for an Article 30 summary';
+  if (subcommand === undefined) {
+    throw new UsageError(`hushgate audit needs a subcommand: ${explained}`);
+  }
   if (subcommand !== 'verify' && subcommand !== 'report') {
-    throw new UsageError(
-      'hushgate audit needs a subcommand: "verify" to check the hash chain, or "report" for an Article 30 summary',
-    );
+    throw new UsageError(noSuchSubcommand('audit', subcommand, ['verify', 'report'], explained));
   }
 
   const request = readRequest(parsed, subcommand, operands);

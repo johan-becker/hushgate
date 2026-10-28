@@ -4,22 +4,22 @@
  * Built for CI: it exits 3 when it finds anything, so a pipeline step can fail
  * a build that is about to ship a fixture full of real customer records.
  */
-import { readFileSync } from 'node:fs';
-import { isAbsolute, relative, resolve as joinPath } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve as joinPath } from 'node:path';
 import { assessText, hidesIdentifiers } from '../../attach/quality.js';
 import { buildExtractors } from '../../attach/registry.js';
 import { mediaTypeForFormat, sniffFormat } from '../../attach/sniff.js';
 import type { Extractor } from '../../attach/types.js';
 import { loadConfig, redactionOptions, type HushgateConfig } from '../../config.js';
 import { createDetectors, detect } from '../../detectors/index.js';
-import { HushgateError, UsageError } from '../../errors.js';
+import { describeSystemError, HushgateError, UsageError } from '../../errors.js';
 import { Session } from '../../redact/session.js';
 import type { Policy, Span } from '../../types.js';
-import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, readAll, type Cli } from '../cli.js';
 
 export const SCAN_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   json: { type: 'boolean', description: 'machine-readable output' },
   'show-values': {
     type: 'boolean',
@@ -28,7 +28,7 @@ export const SCAN_FLAGS: FlagSpecs = {
   quiet: { type: 'boolean', alias: 'q', description: 'only report the summary' },
 };
 
-export const SCAN_SUMMARY = 'find personal data in files; exits 3 when it finds any';
+export const SCAN_SUMMARY = 'find personal data in files and folders; exits 3 when it finds any';
 
 interface Hit {
   readonly kind: string;
@@ -68,7 +68,7 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   const showValues = boolFlag(parsed, 'show-values');
 
   const reports: FileReport[] = [];
-  for (const target of targets) {
+  for (const target of targets.flatMap((named) => expand(cli, named))) {
     // Sequential on purpose: the report has to follow the order of the
     // arguments, and a scan is bounded by the files the user named.
     //
@@ -112,6 +112,62 @@ export async function scan(cli: Cli, argv: readonly string[]): Promise<number> {
   return unreadable > 0 ? EXIT.failure : EXIT.ok;
 }
 
+/**
+ * The files a target names: itself, or every file under it when it is a
+ * folder, in name order, so the report reads the way the folder lists. Entries
+ * whose name starts with a dot — `.git`, `.env`, `.DS_Store` — and
+ * `node_modules` are left alone: a sweep is for documents, and a repository's
+ * own plumbing would bury them. Each file keeps the spelling the folder was
+ * given, so `docs` yields `docs/a.txt`. A target that cannot be looked at is
+ * passed on as it is, and reading it reports the reason.
+ */
+function expand(cli: Cli, target: string): string[] {
+  if (target === '-') return [target];
+  const path = isAbsolute(target) ? target : joinPath(cli.cwd, target);
+
+  let folder: boolean;
+  try {
+    folder = statSync(path).isDirectory();
+  } catch {
+    return [target];
+  }
+  if (!folder) return [target];
+
+  const files = walk(path).map((file) => join(target, relative(path, file)));
+  // Said out loud: "no personal data found in 0 files" is true of an empty
+  // folder and of a mistyped one alike, and only the first should look fine.
+  if (files.length === 0) cli.stderr(`hushgate: ${target} holds no files to scan\n`);
+  return files;
+}
+
+function walk(dir: string): string[] {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (cause) {
+    throw new HushgateError(`cannot read ${dir}: ${describeSystemError(cause)}`, { cause });
+  }
+
+  const files: string[] = [];
+  for (const entry of entries
+    .filter((candidate) => !candidate.name.startsWith('.') && candidate.name !== 'node_modules')
+    .toSorted((a, b) => (a.name < b.name ? -1 : 1))) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...walk(path));
+    else if (entry.isFile() || (entry.isSymbolicLink() && isFile(path))) files.push(path);
+  }
+  return files;
+}
+
+/** Whether a symbolic link leads to a file; a linked folder is not followed. */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /** The message an operator can act on, with the path they typed left in it. */
 function reasonOf(error: HushgateError, target: string): string {
   const prefix = `cannot read ${target}: `;
@@ -143,7 +199,7 @@ async function readTarget(
   try {
     bytes = readFileSync(path);
   } catch (cause) {
-    throw new HushgateError(`cannot read ${target}: ${(cause as Error).message}`, { cause });
+    throw new HushgateError(`cannot read ${target}: ${describeSystemError(cause)}`, { cause });
   }
 
   const format = sniffFormat(bytes, null, target);

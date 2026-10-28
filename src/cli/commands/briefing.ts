@@ -15,16 +15,11 @@ import { loadConfig, type HushgateConfig } from '../../config.js';
 import { UsageError } from '../../errors.js';
 import { normaliseKindName } from '../../detectors/custom.js';
 import type { Finding, Policy } from '../../types.js';
-import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 
 export const BRIEFING_FLAGS: FlagSpecs = {
-  config: {
-    type: 'string',
-    alias: 'c',
-    description: 'path to hushgate.config.json',
-    placeholder: '<path>',
-  },
+  config: CONFIG_FLAG,
   tenant: {
     type: 'string',
     description: 'render the briefing this tenant would get',

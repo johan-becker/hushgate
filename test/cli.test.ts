@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -164,11 +165,69 @@ describe('run', () => {
     expect(c.err()).toContain('unknown option');
   });
 
+  it('names the option a typo is closest to', async () => {
+    const c = capture(['serve', '--porrt', '80']);
+    expect(await run(c.cli)).toBe(EXIT.usage);
+    expect(c.err()).toContain('unknown option "--porrt"; did you mean "--port"?');
+  });
+
+  it('names the command a typo is closest to, instead of printing the whole help', async () => {
+    const c = capture(['scann', 'a.txt']);
+    expect(await run(c.cli)).toBe(EXIT.usage);
+    expect(c.err()).toContain('unknown command "scann"; did you mean "scan"?');
+    expect(c.err()).toContain('hushgate help');
+    expect(c.err()).not.toContain('commands:');
+  });
+
+  it('takes options before the command too', async () => {
+    // `hushgate --json residency` is what someone types who has just read the
+    // flag table; sending them to "unknown command "--json"" teaches nothing.
+    const c = capture(['--json', 'residency']);
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(() => JSON.parse(c.out())).not.toThrow();
+  });
+
+  it('says so when it was given options but no command', async () => {
+    const c = capture(['--config', 'x.json']);
+    expect(await run(c.cli)).toBe(EXIT.usage);
+    expect(c.err()).toContain('no command');
+    expect(c.err()).toContain('hushgate help');
+  });
+
+  it("prints a command's help for --help <command>", async () => {
+    const spellings = [['--help', 'scan'], ['-h', 'scan'], ['help', 'scan']];
+    const results = await Promise.all(
+      spellings.map(async (argv) => {
+        const c = capture(argv);
+        return { code: await run(c.cli), out: c.out() };
+      }),
+    );
+    for (const { code, out } of results) {
+      expect(code).toBe(EXIT.ok);
+      expect(out).toContain('usage: hushgate scan');
+    }
+  });
+
+  it('refuses help on a command it does not have', async () => {
+    const c = capture(['help', 'flush']);
+    expect(await run(c.cli)).toBe(EXIT.usage);
+    expect(c.err()).toContain('unknown command "flush"');
+  });
+
+  it('says where the configuration comes from by default', async () => {
+    const c = capture(['scan', '--help']);
+    await run(c.cli);
+    expect(c.out()).toContain('hushgate.config.json in the working directory');
+    expect(c.out()).toContain('<file or folder...>');
+  });
+
   it('exits 1 with a readable message on a configuration error', async () => {
     const dir = workspace();
     const c = capture(['serve', '--config', 'missing.json'], { cwd: dir });
     expect(await run(c.cli)).toBe(EXIT.failure);
     expect(c.err()).toContain('configuration error');
+    expect(c.err()).toContain(`cannot read config file ${join(dir, 'missing.json')}: no such file or directory`);
+    expect(c.err()).not.toContain('ENOENT');
   });
 
   it('reports the offending key when the config file is invalid', async () => {
@@ -245,6 +304,30 @@ describe('hushgate serve', () => {
     const c = capture(['serve', '--port', '70000'], { cwd: dir });
     expect(await run(c.cli)).toBe(EXIT.usage);
   });
+
+  it('says when the port is taken, and what to do about it', async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const port = (blocker.address() as AddressInfo).port;
+    try {
+      const dir = workspace();
+      const c = capture(['serve', '--port', String(port)], { cwd: dir });
+      expect(await run(c.cli)).toBe(EXIT.failure);
+      expect(c.err()).toContain(`cannot listen on 127.0.0.1:${port}: that port is already in use`);
+      expect(c.err()).toContain('--port');
+      expect(c.err()).not.toContain('EADDRINUSE');
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+
+  it('says plainly why an audit trail cannot be opened', async () => {
+    const dir = workspace();
+    const c = capture(['serve', '--audit', dir], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.err()).toContain(`cannot open the audit trail ${dir}: is a directory`);
+    expect(c.err()).not.toContain('EISDIR');
+  });
 });
 
 describe('usage errors exit 2, failures exit 1', () => {
@@ -253,9 +336,11 @@ describe('usage errors exit 2, failures exit 1', () => {
   it.each([
     [['scan'], /at least one file/u],
     [['audit'], /needs a subcommand/u],
-    [['audit', 'sink'], /needs a subcommand/u],
+    [['audit', 'sink'], /has no subcommand "sink"/u],
+    [['audit', 'verfiy'], /has no subcommand "verfiy"; did you mean "verify"\?/u],
     [['keys'], /needs a subcommand/u],
-    [['keys', 'sink'], /needs a subcommand/u],
+    [['keys', 'sink'], /has no subcommand "sink"/u],
+    [['keys', 'neww', 'support'], /did you mean "new"\?/u],
     [['keys', 'new'], /needs a tenant id/u],
     [['keys', 'new', 'not a tenant id'], /not a usable tenant id/u],
   ])('exits 2 for %j', async (argv, message) => {

@@ -8,11 +8,11 @@
 import { loadConfig, redactionOptions } from '../../config.js';
 import { BlockedContentError, HushgateError } from '../../errors.js';
 import { countByKind, Session } from '../../redact/session.js';
-import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, readAll, type Cli } from '../cli.js';
 
 export const CHECK_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   quiet: { type: 'boolean', alias: 'q', description: 'do not write the summary to stderr' },
 };
 

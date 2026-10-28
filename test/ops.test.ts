@@ -431,9 +431,13 @@ describe('the hot path stays linear', () => {
     expect(large / small).toBeLessThan(40);
   });
 
-  it('resolves a body at the default size limit in a sane time', () => {
+  it('resolves a body at the default size limit in a sane time', { timeout: 45_000 }, () => {
     // 4 MiB is limits.maxBodyBytes, so this is a request readBody accepts. The
     // proxy is single-threaded: whatever this costs, every other tenant waits.
+    //
+    // The budget is the 30 s asserted below, so the test's own timeout has to
+    // sit above it: a CI runner takes 16 to 20 s here, and under the suite's
+    // 20 s default the test was failing on the clock, not on the assertion.
     const text = dense(512_000);
     const started = performance.now();
     const { findings } = new Session().redact(text);

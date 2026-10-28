@@ -35,7 +35,7 @@ import {
   isBriefingMode,
   type BriefingConfig,
 } from './briefing/policy.js';
-import { ConfigError } from './errors.js';
+import { ConfigError, describeSystemError } from './errors.js';
 // Importing from proxy/ is safe in this direction: routes.ts reaches only the
 // shape tables, none of which import this file, so nothing here closes a cycle.
 // The alternative — a second hand-written copy of the labels — is what let a
@@ -1607,7 +1607,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   } catch (cause) {
     const code = (cause as NodeJS.ErrnoException).code;
     if (explicit !== undefined || code !== 'ENOENT') {
-      throw new ConfigError(`cannot read config file ${path}: ${(cause as Error).message}`, {
+      throw new ConfigError(`cannot read config file ${path}: ${describeSystemError(cause)}`, {
         cause,
       });
     }
