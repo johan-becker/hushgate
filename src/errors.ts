@@ -143,3 +143,19 @@ export class QuotaExceededError extends HushgateError {
     super(message);
   }
 }
+
+/**
+ * A system error as a person reads it: `no such file or directory`, not
+ * `ENOENT: no such file or directory, open '/srv/x'`. The path is left to the
+ * caller to name, since the caller knows how the operator spelt it.
+ */
+export function describeSystemError(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 'EISDIR') return 'is a directory';
+  if (code === 'EACCES' || code === 'EPERM') return 'permission denied';
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (typeof code !== 'string') return message;
+  // Node spells these "CODE: description, syscall 'path'".
+  return message.replace(new RegExp(`^${code}: `, 'u'), '').replace(/, \w+ '[^']*'$/u, '');
+}

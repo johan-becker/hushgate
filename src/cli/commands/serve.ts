@@ -3,13 +3,13 @@ import { JsonlAuditLog, nullAuditLog } from '../../audit/log.js';
 import { resolveTrailPath, trailFileKeys } from '../../audit/paths.js';
 import { GENESIS_HASH } from '../../audit/record.js';
 import { loadConfig, type ConfigOverrides, type HushgateConfig } from '../../config.js';
-import { HushgateError } from '../../errors.js';
+import { describeSystemError, HushgateError } from '../../errors.js';
 import { Metrics } from '../../metrics/registry.js';
 import { createProxyServer, type ProxyServer } from '../../proxy/server.js';
 import { ROUTES } from '../../proxy/routes.js';
 import { VERSION } from '../../version.js';
 import { statSync } from 'node:fs';
-import { boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, intFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 import { untilStopped } from '../stop.js';
 
@@ -22,7 +22,7 @@ function describeTenants(config: HushgateConfig): string {
 }
 
 export const SERVE_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   host: { type: 'string', alias: 'H', description: 'address to bind (default 127.0.0.1)', placeholder: '<host>' },
   port: { type: 'number', alias: 'p', description: 'port to bind (default 8787)', placeholder: '<port>' },
   'upstream-openai': { type: 'string', description: 'base URL for /v1/chat/completions', placeholder: '<url>' },
@@ -75,7 +75,7 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
     // releasing before the error is reported.
     await proxy?.close({ graceMs: 0 });
     await closeTrails(trails?.all ?? []);
-    throw error;
+    throw explainListenError(error, config.host, config.port);
   }
 
   cli.stdout(
@@ -91,6 +91,33 @@ export async function serve(cli: Cli, argv: readonly string[]): Promise<number> 
   cli.stdout(describeHeads(trails));
 
   return EXIT.ok;
+}
+
+/**
+ * `listen EADDRINUSE: address already in use 127.0.0.1:8787` is a fact; what
+ * the operator needs is the next thing to type.
+ */
+function explainListenError(error: unknown, host: string, port: number): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  const where = `cannot listen on ${host}:${port}`;
+  switch (code) {
+    case 'EADDRINUSE':
+      return new HushgateError(
+        `${where}: that port is already in use — is another hushgate running? Pick another with --port or HUSHGATE_PORT`,
+        { cause: error },
+      );
+    case 'EACCES':
+      return new HushgateError(
+        `${where}: permission denied; ports below 1024 need privileges, so pick one above with --port`,
+        { cause: error },
+      );
+    case 'EADDRNOTAVAIL':
+      return new HushgateError(`${where}: this machine has no interface with that address; check --host`, {
+        cause: error,
+      });
+    default:
+      return error;
+  }
 }
 
 function auditOverride(parsed: ReturnType<typeof parseFlags>): { enabled?: boolean; path?: string } {
@@ -201,7 +228,7 @@ function openTrail(path: string, tenant: string | null): Trail {
   try {
     sink = new JsonlAuditLog({ path });
   } catch (cause) {
-    throw new HushgateError(`cannot open the audit trail ${path}: ${(cause as Error).message}`, {
+    throw new HushgateError(`cannot open the audit trail ${path}: ${describeSystemError(cause)}`, {
       cause,
     });
   }

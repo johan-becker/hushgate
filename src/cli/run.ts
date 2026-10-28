@@ -18,6 +18,7 @@ import { extract, EXTRACT_FLAGS, EXTRACT_SUMMARY } from './commands/extract.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
 import { setup, SETUP_FLAGS, SETUP_SUMMARY } from './commands/setup.js';
+import { didYouMean } from './suggest.js';
 
 interface Command {
   readonly summary: string;
@@ -47,7 +48,14 @@ const COMMANDS: Readonly<Record<string, Command>> = {
   },
   scan: {
     summary: SCAN_SUMMARY,
-    usage: 'hushgate scan [options] <file...>',
+    usage: [
+      'hushgate scan [options] <file or folder...>',
+      '',
+      'A folder is walked, every file in it and below in name order; entries whose',
+      'name starts with a dot, and node_modules, are left alone. - reads standard',
+      'input. A file that cannot be read is named as unreadable, never counted as',
+      'scanned.',
+    ].join('\n'),
     flags: SCAN_FLAGS,
     run: scan,
   },
@@ -105,36 +113,77 @@ const COMMANDS: Readonly<Record<string, Command>> = {
   },
 };
 
-export async function run(cli: Cli): Promise<number> {
-  const [first, ...rest] = cli.argv;
+const HELP_WORDS = new Set(['help', '--help', '-h']);
+const VERSION_WORDS = new Set(['version', '--version', '-v']);
+const LIST_HINT = 'Run "hushgate help" for the list of commands.\n';
 
-  if (first === undefined || first === '--help' || first === '-h' || first === 'help') {
-    const topic = first === 'help' ? rest[0] : undefined;
-    cli.stdout(topic === undefined ? overallHelp() : commandHelp(topic));
+const isCommand = (token: string): boolean => Object.hasOwn(COMMANDS, token);
+
+export async function run(cli: Cli): Promise<number> {
+  const { argv } = cli;
+  const first = argv[0];
+
+  if (first === undefined) {
+    cli.stdout(overallHelp());
     return EXIT.ok;
   }
-
-  if (first === '--version' || first === '-v' || first === 'version') {
+  if (VERSION_WORDS.has(first)) {
     cli.stdout(`${VERSION}\n`);
     return EXIT.ok;
   }
+  if (HELP_WORDS.has(first)) return help(cli, argv[1]);
 
-  const command = COMMANDS[first];
-  if (command === undefined) {
-    cli.stderr(`hushgate: unknown command "${first}"\n\n${overallHelp()}`);
-    return EXIT.usage;
+  // The command is the first word that names one. Whatever stands before it is
+  // handed to it along with the rest, so `hushgate --json residency` works as
+  // well as `hushgate residency --json`: someone who has just read the flag
+  // table should not be told that "--json" is an unknown command.
+  const at = argv.findIndex(isCommand);
+  if (at === -1) {
+    if (argv.some((token) => HELP_WORDS.has(token))) {
+      cli.stdout(overallHelp());
+      return EXIT.ok;
+    }
+    if (first.startsWith('-')) {
+      cli.stderr(`hushgate: no command given, only options\n${LIST_HINT}`);
+      return EXIT.usage;
+    }
+    return unknownCommand(cli, first);
   }
 
-  if (rest.includes('--help') || rest.includes('-h')) {
-    cli.stdout(commandHelp(first));
+  const name = argv[at]!;
+  const rest = argv.filter((_, index) => index !== at);
+  const options = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest;
+  if (options.some((token) => token === '--help' || token === '-h')) {
+    cli.stdout(commandHelp(name));
     return EXIT.ok;
   }
 
   try {
-    return await command.run(cli, rest);
+    return await COMMANDS[name]!.run(cli, rest);
   } catch (error) {
     return report(cli, error);
   }
+}
+
+/** `hushgate help`, or `hushgate help <command>`. */
+function help(cli: Cli, topic: string | undefined): number {
+  if (topic === undefined || HELP_WORDS.has(topic) || VERSION_WORDS.has(topic)) {
+    cli.stdout(overallHelp());
+    return EXIT.ok;
+  }
+  if (!isCommand(topic)) return unknownCommand(cli, topic);
+  cli.stdout(commandHelp(topic));
+  return EXIT.ok;
+}
+
+/**
+ * Short, and on stderr: the whole command list is what `hushgate help` is
+ * for, and a slip of the fingers is better answered with the word meant.
+ */
+function unknownCommand(cli: Cli, word: string): number {
+  const hint = didYouMean(word, [...Object.keys(COMMANDS), 'help', 'version']);
+  cli.stderr(`hushgate: unknown command "${word}"${hint === undefined ? '' : `; ${hint}`}\n${LIST_HINT}`);
+  return EXIT.usage;
 }
 
 function report(cli: Cli, error: unknown): number {

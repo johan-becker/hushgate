@@ -10,6 +10,7 @@
  * be sure about where data goes.
  */
 import { UsageError } from '../errors.js';
+import { didYouMean } from './suggest.js';
 
 export type FlagType = 'string' | 'number' | 'boolean';
 
@@ -29,6 +30,14 @@ export interface FlagSpec {
 }
 
 export type FlagSpecs = Readonly<Record<string, FlagSpec>>;
+
+/** `-c/--config`, spelt the same way by every command that reads a configuration. */
+export const CONFIG_FLAG: FlagSpec = {
+  type: 'string',
+  alias: 'c',
+  description: 'the configuration to read (default: hushgate.config.json in the working directory)',
+  placeholder: '<path>',
+};
 
 export interface ParsedFlags {
   readonly values: Readonly<Record<string, string | readonly string[] | number | boolean | undefined>>;
@@ -77,7 +86,12 @@ export function parseFlags(argv: readonly string[], specs: FlagSpecs): ParsedFla
 
     const spec = specs[name];
     if (spec === undefined) {
-      throw new UsageError(`unknown option "${argument}"; try --help`);
+      const hint = didYouMean(rawName, Object.keys(specs), (option) => `--${option}`);
+      throw new UsageError(
+        hint === undefined
+          ? `unknown option "${argument}"; try --help`
+          : `unknown option "${argument}"; ${hint} (--help lists them)`,
+      );
     }
 
     if (spec.type === 'boolean') {

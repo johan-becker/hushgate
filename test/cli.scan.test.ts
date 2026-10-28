@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -161,7 +161,15 @@ describe('hushgate scan', () => {
     const dir = workspace();
     const c = capture(['scan', 'nope.txt'], { cwd: dir });
     expect(await run(c.cli)).toBe(EXIT.failure);
-    expect(c.err()).toContain('cannot read nope.txt');
+    expect(c.err()).toContain('cannot read nope.txt: no such file or directory');
+    expect(c.err()).not.toContain('ENOENT');
+  });
+
+  it('says the same of extract', async () => {
+    const dir = workspace();
+    const c = capture(['extract', 'nope.pdf'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.failure);
+    expect(c.err()).toContain('cannot read nope.pdf: no such file or directory');
   });
 
   it('needs at least one file', async () => {
@@ -280,6 +288,72 @@ describe('scanning a folder that is not all text', () => {
     expect(report.unreadable).toBe(1);
     expect(report.files.find((file) => file.path === 'b.png')?.unreadable).toBeTruthy();
     expect(report.files.find((file) => file.path === 'a.txt')?.unreadable).toBeUndefined();
+  });
+
+  it('reads the folder itself, and names what it could not read within it', async () => {
+    const dir = folder();
+    const c = capture(['scan', '.'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.findings);
+    expect(c.out()).toContain('b.png');
+    expect(c.out()).toContain('unreadable');
+    expect(c.out()).toContain('2 findings in 2 files');
+  });
+});
+
+describe('hushgate scan over a folder', () => {
+  const tree = (): string => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'docs', 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'b.txt'), 'nichts weiter\n');
+    writeFileSync(join(dir, 'docs', 'a.txt'), 'Mail an anna.schmidt@nordlicht.example\n');
+    writeFileSync(join(dir, 'docs', 'sub', 'c.txt'), 'IBAN DE89370400440532013000\n');
+    return dir;
+  };
+
+  it('walks it in name order, and reports each path as it would be typed', async () => {
+    const dir = tree();
+    const c = capture(['scan', 'docs'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.findings);
+
+    const a = c.out().indexOf(join('docs', 'a.txt'));
+    const c2 = c.out().indexOf(join('docs', 'sub', 'c.txt'));
+    expect(a).toBeGreaterThan(-1);
+    expect(c2).toBeGreaterThan(a);
+    expect(c.out()).toContain('2 findings in 3 files: EMAIL 1, IBAN 1');
+  });
+
+  it('leaves dot-entries and node_modules alone', async () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'docs', '.git'), { recursive: true });
+    mkdirSync(join(dir, 'docs', 'node_modules'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'clean.txt'), 'nichts weiter\n');
+    writeFileSync(join(dir, 'docs', '.env'), 'Mail an anna.schmidt@nordlicht.example\n');
+    writeFileSync(join(dir, 'docs', '.git', 'x.txt'), 'Mail an anna.schmidt@nordlicht.example\n');
+    writeFileSync(join(dir, 'docs', 'node_modules', 'y.txt'), 'IBAN DE89370400440532013000\n');
+
+    const c = capture(['scan', 'docs'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(c.out()).toContain('no personal data found in 1 file');
+  });
+
+  it('says so when the folder holds nothing to scan', async () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'empty'));
+    const c = capture(['scan', 'empty'], { cwd: dir });
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(c.err()).toContain('empty holds no files to scan');
+  });
+
+  it('puts the walked paths in the JSON report', async () => {
+    const dir = tree();
+    const c = capture(['scan', '--json', 'docs'], { cwd: dir });
+    await run(c.cli);
+    const report = JSON.parse(c.out()) as { files: { path: string }[] };
+    expect(report.files.map((file) => file.path)).toEqual([
+      join('docs', 'a.txt'),
+      join('docs', 'b.txt'),
+      join('docs', 'sub', 'c.txt'),
+    ]);
   });
 });
 

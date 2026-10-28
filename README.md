@@ -596,9 +596,11 @@ It refuses what the proxy would refuse, so the two never disagree about a
 document.
 
 `hushgate scan` reads documents too, so a folder of contracts can be checked for
-what it holds before any of it goes near a model. A file it cannot read is named
-as unreadable and is never counted as scanned — reporting "no personal data
-found" about a file nothing ever read is the one answer a sweep must not give.
+what it holds before any of it goes near a model: name the folder, and every
+file in it and below is read in name order, with entries whose name starts with
+a dot and `node_modules` left alone. A file it cannot read is named as
+unreadable and is never counted as scanned — reporting "no personal data found"
+about a file nothing ever read is the one answer a sweep must not give.
 
 ### Limits
 
@@ -1338,7 +1340,7 @@ measured in hundreds of milliseconds.
 | --- | --- |
 | `hushgate init [--path <p>] [--force]` | Write a commented starter `hushgate.config.json`. |
 | `hushgate serve [options]` | Run the redacting proxy in the foreground. |
-| `hushgate scan [--json] [--show-values] [-q] <file...>` | Find personal data in files, including PDFs and Office documents. Exits 3 when it finds any. |
+| `hushgate scan [--json] [--show-values] [-q] <file or folder...>` | Find personal data in files and folders, including PDFs and Office documents. Exits 3 when it finds any. |
 | `hushgate extract [--raw] [--json] <file>` | Show the text a document would be sent as. |
 | `hushgate check [-q]` | Redact standard input to standard output, for piping. |
 | `hushgate residency [--json] [--registry]` | Where each route sends data, and on whose authority. |
@@ -1352,6 +1354,12 @@ measured in hundreds of milliseconds.
 `serve` additionally takes `-H/--host`, `-p/--port`, `--upstream-openai`,
 `--upstream-anthropic`, `--audit <path>` and `--no-audit`. Every command except
 `init` and `keys` takes `-c/--config`.
+
+Options may stand before the command as well as after it, so `hushgate --json
+residency` works; `hushgate help <command>` and `hushgate <command> --help`
+print the same thing. A mistyped command, subcommand or option is answered with
+the nearest one that exists — `unknown command "scann"; did you mean "scan"?` —
+and exits 2 like any other usage error.
 
 | Exit code | Meaning |
 | ---: | --- |
