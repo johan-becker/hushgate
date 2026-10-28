@@ -1353,7 +1353,7 @@ measured in hundreds of milliseconds.
 
 `serve` additionally takes `-H/--host`, `-p/--port`, `--upstream-openai`,
 `--upstream-anthropic`, `--audit <path>` and `--no-audit`. Every command except
-`init` and `keys` takes `-c/--config`.
+`setup`, `init` and `keys` takes `-c/--config`.
 
 Options may stand before the command as well as after it, so `hushgate --json
 residency` works; `hushgate help <command>` and `hushgate <command> --help`
