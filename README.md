@@ -1275,7 +1275,7 @@ collide with one that arrived from outside:
 ```console
 $ node examples/redact.mjs
 upstream sees : [NAME_1] <[EMAIL_2]> — the template still says [LITERAL_1]. Steuer-ID [GERMAN_TAX_ID:a86f2fa599f1], host 10.14.2.7.
-findings      : NAME=pseudonymize EMAIL=pseudonymize LITERAL=pseudonymize GERMAN_TAX_ID=hash
+findings      : NAME=pseudonymize EMAIL=pseudonymize LITERAL=pseudonymize GERMAN_TAX_ID=hash IPV4=allow
 restored      : Anna Schmidt <anna.schmidt@nordlicht.example> — the template still says [EMAIL_1]. Steuer-ID [GERMAN_TAX_ID:a86f2fa599f1], host 10.14.2.7.
 ```
 
@@ -1613,9 +1613,8 @@ examples/ticket.txt
   7:24  MAC            00••••••2a  → pseudonymize
   8:8   EMPLOYEE_ID    EM•••••19  → pseudonymize
   8:44  TERM           Pr••••••ht  → pseudonymize
-  9:23  PHONE          00••••••01  → pseudonymize
 
-12 findings in 1 file: CREDIT_CARD 1, DATE_OF_BIRTH 1, EMAIL 1, EMPLOYEE_ID 1, GERMAN_TAX_ID 1, IBAN 1, IPV4 1, MAC 1, NAME 1, PHONE 2, TERM 1
+11 findings in 1 file: CREDIT_CARD 1, DATE_OF_BIRTH 1, EMAIL 1, EMPLOYEE_ID 1, GERMAN_TAX_ID 1, IBAN 1, IPV4 1, MAC 1, NAME 1, PHONE 1, TERM 1
 ```
 
 Nothing in that file belongs to anybody. The identifiers are the published
@@ -1633,19 +1632,21 @@ what the checksums did:
 
 ```console
 $ sed -n 9p examples/ticket.txt | hushgate check -c examples/demo.config.json
-Nicht echt: DE89 3704 [PHONE_1], 4111 1111 1111 1112, 86095742718
-hushgate: redacted 1 finding (PHONE 1)
+Nicht echt: DE89 3704 0044 0532 0130 01, 4111 1111 1111 1112, 86095742718
+hushgate: nothing to redact
 ```
 
 All three failed their check and were rejected, so all three passed through as
-written — but part of the IBAN's digits were then claimed by a different
-detector. `0044 0532 0130 01` really is a well-formed international number in
-the `00` form: twelve digits after the `00` prefix, inside the subscriber-length
-bounds the detector enforces. That is a false
-positive, and it is the honest illustration of hushgate's bias: **it prefers a
-false positive to a leak.** A pseudonymised phone number that was never a phone
-number costs the model a little context; the opposite mistake costs you a
-transfer.
+written. Nor does another detector claim their digits. `0044 0532 0130 01` on
+its own is a well-formed international number in the `00` form, and early
+versions pseudonymised it here as `PHONE`; but its groups carry on in both
+directions, and a phone number is no longer cut out of the middle of a longer
+run of digits.
+
+Where a check is genuinely ambiguous, hushgate's bias is the other way: **it
+prefers a false positive to a leak.** A pseudonymised phone number that was
+never a phone number costs the model a little context; the opposite mistake
+costs you a transfer.
 
 What it does **not** do:
 
@@ -1797,7 +1798,7 @@ attachments
 audit
   note  no trail at /home/you/hushgate/hushgate-audit.jsonl yet; it is written on the first request
 
-1 warning. Fix them, or re-run with --allow-warnings to accept the warnings.
+1 warning. Fix it, or re-run with --allow-warnings to accept it.
 
 $ echo $?
 1
