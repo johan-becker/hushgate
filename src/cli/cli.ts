@@ -4,6 +4,7 @@
  */
 import { npmInstaller, type Installer } from './install.js';
 import { createPrompter, type Prompter } from './prompt.js';
+import type { Updater } from './commands/update.js';
 
 export type Writer = (text: string) => void;
 
@@ -30,6 +31,12 @@ export interface Cli {
    * the same way {@link prompt} is: no installer, no offer.
    */
   readonly install?: Installer;
+  /**
+   * What `hushgate update` asks npm and where it installs. Absent in normal
+   * use, where the command builds the real one; a test passes its own so that
+   * no registry is asked and nothing is installed.
+   */
+  readonly updater?: Updater;
   /** Aborting stops long-running commands such as `serve`. */
   readonly signal?: AbortSignal;
 }

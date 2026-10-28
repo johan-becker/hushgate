@@ -18,6 +18,7 @@ import { extract, EXTRACT_FLAGS, EXTRACT_SUMMARY } from './commands/extract.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
 import { setup, SETUP_FLAGS, SETUP_SUMMARY } from './commands/setup.js';
+import { update, UPDATE_FLAGS, UPDATE_SUMMARY } from './commands/update.js';
 import { invokedAs } from './invocation.js';
 import { didYouMean } from './suggest.js';
 
@@ -111,6 +112,20 @@ const COMMANDS: Readonly<Record<string, Command>> = {
     usage: 'cat file | hushgate check [options]',
     flags: CHECK_FLAGS,
     run: check,
+  },
+  update: {
+    summary: UPDATE_SUMMARY,
+    usage: [
+      'hushgate update [--check [--json]] [--to <version>] [--yes]',
+      '',
+      'Asks npm, through whatever registry npm is configured to use, for the newest',
+      'hushgate, and installs it where this one is: globally, or into the project.',
+      'The only command that contacts anything but the configured upstream, and',
+      'only when run. A running "hushgate serve" keeps the old version until it is',
+      'restarted.',
+    ].join('\n'),
+    flags: UPDATE_FLAGS,
+    run: update,
   },
 };
 

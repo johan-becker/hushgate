@@ -21,17 +21,18 @@ export interface InstallOutcome {
   readonly reason?: string;
 }
 
-export type Installer = (scope: InstallScope, cwd: string) => Promise<InstallOutcome>;
+export type Installer = (scope: InstallScope, cwd: string, version?: string) => Promise<InstallOutcome>;
 
 /**
- * Install the *running* version rather than the latest.
+ * Install the *running* version unless another is named.
  *
- * The operator answered the questions in this version and the doctor report
- * they just read came out of it; fetching a newer one behind their back would
- * make that report a description of something else.
+ * setup installs the running one: the operator answered the questions in this
+ * version and the doctor report they just read came out of it, so fetching a
+ * newer one behind their back would make that report a description of
+ * something else. `hushgate update` names the version it was asked for.
  */
-export function installArgs(scope: InstallScope): string[] {
-  return ['install', ...(scope === 'global' ? ['--global'] : []), `hushgate@${VERSION}`];
+export function installArgs(scope: InstallScope, version: string = VERSION): string[] {
+  return ['install', ...(scope === 'global' ? ['--global'] : []), `hushgate@${version}`];
 }
 
 /**
@@ -49,9 +50,9 @@ const spawnNpm: SpawnNpm = (args, cwd) =>
   spawn('npm', args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
 
 export function npmInstaller(start: SpawnNpm = spawnNpm): Installer {
-  return (scope, cwd) =>
+  return (scope, cwd, version) =>
     new Promise<InstallOutcome>((resolve) => {
-      const child = start(installArgs(scope), cwd);
+      const child = start(installArgs(scope, version), cwd);
 
       child.on('error', (error) => {
         resolve({ ok: false, reason: error.message });

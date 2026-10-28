@@ -12,6 +12,21 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+### Added
+
+- **`hushgate update`.** `update --check` says whether a newer release exists
+  and installs nothing; `update` installs it after asking, `--yes` without
+  asking, which a script needs, and `--to <version>` installs a particular one,
+  older ones included. It asks npm, through whichever registry npm is configured
+  to use, and updates hushgate where npm put it: globally, or in the project
+  whose `package.json` names it. A copy npm did not install, run by npx, a
+  clone or the Docker image, is not touched; `update` says what updates it
+  instead. It is the only command that contacts anything but the configured
+  upstream, and only when run. Afterwards it says that a running `serve` keeps
+  the old version until restarted, and to run `doctor`. `--check --json`
+  prints `installed`, `latest`, `updateAvailable`, `installedBy` and
+  `location`, for monitoring.
+
 ## [0.6.0] — 2026-10-28
 
 ### Added
