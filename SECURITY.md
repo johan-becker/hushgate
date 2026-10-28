@@ -9,7 +9,7 @@ has consequences beyond the process.
 
 | Version | Security support |
 | --- | --- |
-| The latest minor release, `0.7.x` | Supported. |
+| The latest minor release, `0.8.x` | Supported. |
 | Earlier releases, older commits and branches | Not supported. |
 
 Fixes are developed against the latest `main` and released as a patch version.

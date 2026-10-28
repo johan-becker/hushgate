@@ -12,6 +12,8 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-28
+
 ### Changed
 
 - **The trial page shows the round trip instead of describing it.** `hushgate
@@ -41,9 +43,8 @@ and the re-hydration mappings that already exist.
 
 ### Fixed
 
-- **SECURITY.md names the supported release** as the latest minor, `0.7.x`; it
-  still said `0.1.x`. The README's test count is the suite's current one, 3174
-  tests across 87 files.
+- **SECURITY.md names the supported release** as the latest minor; it still
+  said `0.1.x`. The README's test count is the suite's current one again.
 
 ## [0.7.0] — 2026-10-28
 
@@ -891,7 +892,8 @@ version under different terms.
   second test run behind a closed proxy that proves the suite needs no network,
   and a workflow that verifies the publishable artefact.
 
-[Unreleased]: https://github.com/johan-becker/hushgate/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/johan-becker/hushgate/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/johan-becker/hushgate/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/johan-becker/hushgate/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/johan-becker/hushgate/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/johan-becker/hushgate/compare/v0.4.0...v0.5.0
