@@ -140,6 +140,17 @@ describe('run', () => {
     expect(c.out()).toContain('serve');
   });
 
+  it('leads the help with the one command to start with', async () => {
+    const c = capture([]);
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(c.out()).toContain('Start here:  hushgate setup');
+
+    // Under npx there is no hushgate on PATH, so the line says what does work.
+    const viaNpx = capture([], { env: { npm_command: 'exec' } });
+    await run(viaNpx.cli);
+    expect(viaNpx.out()).toContain('Start here:  npx hushgate setup');
+  });
+
   it('prints the version', async () => {
     const c = capture(['--version']);
     expect(await run(c.cli)).toBe(EXIT.ok);

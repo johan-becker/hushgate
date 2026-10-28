@@ -18,6 +18,7 @@ import { extract, EXTRACT_FLAGS, EXTRACT_SUMMARY } from './commands/extract.js';
 import { scan, SCAN_FLAGS, SCAN_SUMMARY } from './commands/scan.js';
 import { serve, SERVE_FLAGS, SERVE_SUMMARY } from './commands/serve.js';
 import { setup, SETUP_FLAGS, SETUP_SUMMARY } from './commands/setup.js';
+import { invokedAs } from './invocation.js';
 import { didYouMean } from './suggest.js';
 
 interface Command {
@@ -124,7 +125,7 @@ export async function run(cli: Cli): Promise<number> {
   const first = argv[0];
 
   if (first === undefined) {
-    cli.stdout(overallHelp());
+    cli.stdout(overallHelp(cli));
     return EXIT.ok;
   }
   if (VERSION_WORDS.has(first)) {
@@ -140,7 +141,7 @@ export async function run(cli: Cli): Promise<number> {
   const at = argv.findIndex(isCommand);
   if (at === -1) {
     if (argv.some((token) => HELP_WORDS.has(token))) {
-      cli.stdout(overallHelp());
+      cli.stdout(overallHelp(cli));
       return EXIT.ok;
     }
     if (first.startsWith('-')) {
@@ -168,7 +169,7 @@ export async function run(cli: Cli): Promise<number> {
 /** `hushgate help`, or `hushgate help <command>`. */
 function help(cli: Cli, topic: string | undefined): number {
   if (topic === undefined || HELP_WORDS.has(topic) || VERSION_WORDS.has(topic)) {
-    cli.stdout(overallHelp());
+    cli.stdout(overallHelp(cli));
     return EXIT.ok;
   }
   if (!isCommand(topic)) return unknownCommand(cli, topic);
@@ -206,13 +207,21 @@ function report(cli: Cli, error: unknown): number {
   return EXIT.failure;
 }
 
-function overallHelp(): string {
+/**
+ * The general help, led by the one command a newcomer needs. Someone who has
+ * just typed `npx hushgate` to see what it is should not have to read eleven
+ * commands to find out where to begin. Spelt the way this process was invoked,
+ * since under npx there is no `hushgate` on PATH.
+ */
+function overallHelp(cli: Cli): string {
   const width = Math.max(...Object.keys(COMMANDS).map((name) => name.length));
   const commands = Object.entries(COMMANDS)
     .map(([name, command]) => `  ${name.padEnd(width)}  ${command.summary}`)
     .join('\n');
 
   return `hushgate ${VERSION} — a local-first PII firewall for cloud LLM APIs
+
+Start here:  ${invokedAs(cli.env)} setup
 
 usage: hushgate <command> [options]
 
@@ -230,7 +239,7 @@ Nothing personal leaves the machine.
 
 function commandHelp(name: string): string {
   const command = COMMANDS[name];
-  if (command === undefined) return overallHelp();
+  if (command === undefined) throw new Error(`no help for an unknown command: ${name}`);
 
   return `${command.summary}
 
