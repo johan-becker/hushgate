@@ -30,6 +30,7 @@ import type { InstallScope } from '../install.js';
 import type { Choice, Prompter } from '../prompt.js';
 import { untilStopped } from '../stop.js';
 import { renderConfig, type SetupAnswers } from '../template.js';
+import { serve } from './serve.js';
 
 export const SETUP_FLAGS: FlagSpecs = {
   path: {
@@ -71,6 +72,7 @@ export async function setup(cli: Cli, argv: readonly string[]): Promise<number> 
   }
 
   const prompter = open();
+  let written: Written;
   try {
     cli.stdout('\n  hushgate setup. Nothing personal leaves this machine.\n\n');
 
@@ -89,10 +91,28 @@ export async function setup(cli: Cli, argv: readonly string[]): Promise<number> 
       return await runTrial(cli, prompter, parsed, endpoint);
     }
 
-    return await writeConfiguration(cli, prompter, parsed, endpoint);
+    written = await writeConfiguration(cli, prompter, parsed, endpoint);
   } finally {
     prompter.close();
   }
+
+  if (!written.start) return EXIT.ok;
+
+  // Started here rather than left as a fourth command to type. The prompter is
+  // closed first: readline holds standard input, and serve waits for Ctrl-C.
+  cli.stdout('\n');
+  const code = await serve(cli, ['--config', written.path]);
+  cli.stdout(`\n  Next time, start it with:  ${written.serveCommand}\n\n`);
+  return code;
+}
+
+/** What the configuration branch leaves behind, and whether to start it now. */
+interface Written {
+  /** The configuration file, absolute. */
+  readonly path: string;
+  /** The command that starts hushgate on it, as the operator can type it. */
+  readonly serveCommand: string;
+  readonly start: boolean;
 }
 
 /** The provider question. Endpoints inside the EEA come first. */
@@ -237,7 +257,7 @@ async function writeConfiguration(
   prompter: Prompter,
   parsed: ReturnType<typeof parseFlags>,
   endpoint: EndpointEntry,
-): Promise<number> {
+): Promise<Written> {
   const target = stringFlag(parsed, 'path') ?? CONFIG_FILENAME;
   const path = isAbsolute(target) ? target : joinPath(cli.cwd, target);
 
@@ -282,8 +302,21 @@ async function writeConfiguration(
       `  residency.allow with its own legal basis when you have one.\n\n`,
   );
 
-  reportOnIt(cli, path, await leaveItRunnable(cli, prompter));
-  return EXIT.ok;
+  const command = await leaveItRunnable(cli, prompter);
+  // `serve` alone looks for hushgate.config.json in the working directory, so a
+  // file written anywhere else has to be named, or the hint does not work.
+  const serveCommand = target === CONFIG_FILENAME ? `${command} serve` : `${command} serve -c ${target}`;
+  const failed = reportOnIt(cli, path, command);
+
+  if (failed) {
+    // serve would refuse it, or run it unsafely: nothing to offer until it is fixed.
+    cli.stdout(`  Fix what failed, then start it with:  ${serveCommand}\n\n`);
+    return { path, serveCommand, start: false };
+  }
+
+  const start = await prompter.confirm('Start hushgate now?', true);
+  if (!start) cli.stdout(`\n  Start it with:  ${serveCommand}\n\n`);
+  return { path, serveCommand, start };
 }
 
 /**
@@ -362,7 +395,7 @@ export function upstreamsFor(entry: EndpointEntry): { openai?: string; anthropic
  * questions does not need eight lines confirming that the defaults are the
  * defaults. `hushgate doctor` remains the whole report.
  */
-function reportOnIt(cli: Cli, configPath: string, command: string): void {
+function reportOnIt(cli: Cli, configPath: string, command: string): boolean {
   const { config, source } = loadConfig({ path: configPath, cwd: cli.cwd, env: cli.env });
   const findings = runChecks({ config, configPath: source.path, cwd: cli.cwd });
 
@@ -385,9 +418,8 @@ function reportOnIt(cli: Cli, configPath: string, command: string): void {
       ? '    nothing unsafe found'
       : `    "${command} doctor" prints the whole report`,
     '',
-    `  Start it with:  ${command} serve`,
-    '',
   );
 
   cli.stdout(`${lines.join('\n')}\n`);
+  return counts.fail > 0;
 }

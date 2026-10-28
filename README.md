@@ -1,6 +1,6 @@
-![hushgate banner](docs/assets/banner.svg)
+![hushgate banner](https://raw.githubusercontent.com/johan-becker/hushgate/main/docs/assets/banner.svg)
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7-3178c6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A5%2020-339933?style=flat&logo=node.js&logoColor=white)](https://nodejs.org/en/about/previous-releases)
 [![CI](https://github.com/johan-becker/hushgate/actions/workflows/ci.yml/badge.svg)](https://github.com/johan-becker/hushgate/actions/workflows/ci.yml)
 [![runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-0-1f6feb?style=flat)](package.json)
@@ -14,12 +14,26 @@ request, and puts the real values back into the response — so your code still
 sees `anna.schmidt@nordlicht.example` while the provider only ever saw
 `[EMAIL_1]`.
 
+```sh
+npx hushgate setup
+```
+
+That is the whole start, with nothing to install first. It asks whether to try
+hushgate or set it up. Trying shows, on a page on `127.0.0.1`, exactly what the
+provider would receive. Setting up writes `hushgate.config.json`, checks it and
+starts the proxy.
+
+npm's own install box says `npm i hushgate`. That adds hushgate to the project
+in the current folder, where it runs as `npx hushgate` and can be imported as a
+[library](#library); it does not put a `hushgate` command on your PATH. For
+that, use `npm i -g hushgate`.
+
 I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its 1000 tests
-pass with the cable pulled out.
+network calls of its own beyond the upstream you configure, and its whole test
+suite passes with the cable pulled out.
 
 Attachments go through the same door: a PDF or a Word file in a request is
 turned into text, the text is pseudonymised, and the document itself never
@@ -66,10 +80,11 @@ same reply with your data put back. Nothing is written to disk, and the key
 stays inside that one process.
 
 The same command sets hushgate up for real. Only the provider has to be
-answered; the rest is optional and can be filled in later:
+answered; the rest is optional and can be filled in later. It writes
+`hushgate.config.json`, checks it, and asks whether to start the proxy there and
+then; Enter says yes. Next time, start it on its own:
 
 ```sh
-npx hushgate setup     # writes hushgate.config.json, then checks it
 npx hushgate serve
 ```
 
@@ -92,10 +107,11 @@ this README use:
 
 ```sh
 npm install -g hushgate
-hushgate init
-hushgate doctor
-hushgate serve
+hushgate setup
 ```
+
+`npm i hushgate` without `-g` installs it into the current project instead,
+where it runs as `npx hushgate`.
 
 From a clone — the path for working on hushgate itself — `npm install && npm
 run build` first, and every `hushgate` below is `node dist/cli/main.js`.

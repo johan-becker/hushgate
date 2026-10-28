@@ -74,9 +74,12 @@ function capture(
   };
 }
 
-/** Set it up, pick OpenAI, answer everything else with the given lines. */
+/**
+ * Set it up, pick OpenAI, answer everything else with the given lines, and
+ * decline to start it: most tests are about what the wizard writes and says.
+ */
 function configure(rest: readonly string[]): ReturnType<typeof scripted> {
-  return scripted(['2', '2', ...rest]);
+  return scripted(['2', '2', ...rest, 'n']);
 }
 
 const NOTHING = ['', '', '', '', ''];
@@ -105,7 +108,7 @@ describe('hushgate setup — the configuration branch', () => {
 
   it('points both routes at the chosen provider', async () => {
     const dir = workspace();
-    const script = scripted(['2', '1', ...NOTHING]); // Mistral
+    const script = scripted(['2', '1', ...NOTHING, 'n']); // Mistral
     const c = capture(['setup'], dir, script.prompt);
     await run(c.cli);
 
@@ -120,7 +123,7 @@ describe('hushgate setup — the configuration branch', () => {
 
   it('writes a configuration the proxy would actually start on', async () => {
     const dir = workspace();
-    const script = scripted(['2', '1', '', '', '', '', 'Art. 28 DPA of 2026-01-12']);
+    const script = scripted(['2', '1', '', '', '', '', 'Art. 28 DPA of 2026-01-12', 'n']);
     const c = capture(['setup'], dir, script.prompt);
     await run(c.cli);
 
@@ -134,8 +137,12 @@ describe('hushgate setup — the configuration branch', () => {
     const script = configure(NOTHING);
     await run(capture(['setup'], dir, script.prompt).cli);
 
-    // The first two are the mode and the provider; everything after is optional.
-    for (const question of script.asked.slice(2)) expect(question).toMatch(/optional/iu);
+    // The first two are the mode and the provider; every question after them
+    // that asks for information is optional. The last one asks no information:
+    // it offers to start what was written, and Enter says yes.
+    const information = script.asked.slice(2).filter((question) => question !== 'Start hushgate now?');
+    expect(information).toHaveLength(5);
+    for (const question of information) expect(question).toMatch(/optional/iu);
   });
 
   it('offers the provider question before anything else', async () => {
@@ -158,7 +165,7 @@ describe('hushgate setup — the configuration branch', () => {
 
   it('records a legal basis when one is given, and then says nothing is missing', async () => {
     const dir = workspace();
-    const script = scripted(['2', '1', '', '', '', '', 'Art. 28 DPA of 2026-01-12']);
+    const script = scripted(['2', '1', '', '', '', '', 'Art. 28 DPA of 2026-01-12', 'n']);
     const c = capture(['setup'], dir, script.prompt);
     await run(c.cli);
 
@@ -235,6 +242,59 @@ async function runTrial(
   await running;
   return c;
 }
+
+describe('hushgate setup — starting it there and then', () => {
+  /** A free port, so the proxy the wizard starts cannot collide with anything. */
+  const ANY_PORT: NodeJS.ProcessEnv = { HUSHGATE_PORT: '0' };
+
+  it('offers to start the proxy, and serves the configuration it just wrote', async () => {
+    const dir = workspace();
+    const script = scripted(['2', '2', ...NOTHING, 'y']);
+    const controller = new AbortController();
+    const c = capture(['setup'], dir, script.prompt, { env: ANY_PORT, signal: controller.signal });
+    const finished = run(c.cli);
+
+    await waitFor(() => c.out().includes('listening on'), { what: 'the serve banner' });
+    expect(script.asked).toContain('Start hushgate now?');
+    expect(c.out()).toContain(join(dir, 'hushgate.config.json'));
+    const origin = /listening on (\S+)/u.exec(c.out())![1]!;
+    expect((await fetch(`${origin}/healthz`)).status).toBe(200);
+
+    controller.abort();
+    expect(await finished).toBe(EXIT.ok);
+    expect(c.out()).toContain('Next time, start it with:  hushgate serve');
+  });
+
+  it('leaves it stopped when declined, and says how to start it', async () => {
+    const dir = workspace();
+    const c = capture(['setup'], dir, configure(NOTHING).prompt, { env: ANY_PORT });
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(c.out()).not.toContain('listening on');
+    expect(c.out()).toContain('Start it with:  hushgate serve');
+  });
+
+  it('names the configuration it wrote when that is not the default', async () => {
+    const dir = workspace();
+    const c = capture(['setup', '--path', 'config/hg.json'], dir, configure(NOTHING).prompt);
+    await run(c.cli);
+    // `hushgate serve` alone looks for hushgate.config.json and would not find it.
+    expect(c.out()).toContain('Start it with:  hushgate serve -c config/hg.json');
+  });
+
+  it('does not offer to start a configuration doctor fails', async () => {
+    const dir = workspace();
+    mkdirSync(join(dir, 'a-directory'));
+    const script = scripted(['2', '2', ...NOTHING]); // nothing scripted for a start question
+    const c = capture(['setup'], dir, script.prompt, {
+      env: { HUSHGATE_AUDIT_PATH: join(dir, 'a-directory') },
+    });
+
+    expect(await run(c.cli)).toBe(EXIT.ok);
+    expect(script.asked).not.toContain('Start hushgate now?');
+    expect(c.out()).toContain('FAIL');
+    expect(c.out()).toContain('Fix what failed, then start it with:  hushgate serve');
+  });
+});
 
 describe('hushgate setup — the trial branch', () => {
   it('asks only for the provider and the key, then serves the page', async () => {

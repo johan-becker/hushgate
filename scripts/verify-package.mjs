@@ -73,6 +73,23 @@ if (version !== '' && version !== pkg.version) {
   problems.push(`the CLI reports ${version}, package.json says ${pkg.version}`);
 }
 
+// The npm page is built from these. Without them it links nowhere: no
+// Repository or Homepage in the sidebar, and every relative link in the README
+// resolves against npmjs.com, where none of those files exist.
+for (const field of ['repository', 'homepage', 'bugs']) {
+  if (pkg[field] === undefined) problems.push(`package.json has no "${field}", so the npm page cannot link to it`);
+}
+
+// npm renders the README from the tarball, and docs/ is not in it: an image
+// given by a relative path is a broken image at the top of the npm page.
+const readme = readFileSync(join(root, 'README.md'), 'utf8');
+for (const match of readme.matchAll(/!\[[^\]]*\]\(([^)\s]+)/gu)) {
+  const target = match[1];
+  if (!/^https?:\/\//u.test(target)) {
+    problems.push(`README image ${target} is relative; npm cannot show it, so give its absolute URL`);
+  }
+}
+
 if (problems.length > 0) {
   console.error('verify-package: the artefact is not publishable');
   for (const problem of problems) console.error(`  - ${problem}`);

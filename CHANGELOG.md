@@ -12,6 +12,37 @@ and the re-hydration mappings that already exist.
 
 ## [Unreleased]
 
+### Added
+
+- **`hushgate setup` starts what it wrote.** After writing and checking the
+  configuration it asks `Start hushgate now? [Y/n]`, and Enter starts the proxy
+  there and then: from nothing to a running hushgate is one command. When
+  Ctrl-C stops it, it says how to start it next time. A configuration that
+  `doctor` fails is not offered; the wizard says to fix what failed first.
+
+### Changed
+
+- **The help leads with where to start.** `hushgate` with no arguments, and
+  `hushgate help`, print `Start here:  npx hushgate setup` above the command
+  list, or `hushgate setup` when hushgate is on PATH.
+
+- **The npm page links back, and shows its banner.** `package.json` names the
+  repository, the homepage and the issue tracker, so npm's sidebar links to
+  them and the README's relative links have somewhere to resolve; the banner is
+  given by its absolute URL, since `docs/` is not in the package and npm showed
+  a broken image at the top of the page. `verify:package` refuses a release
+  missing either. The top of the README now says how to start, and what npm's
+  own install box does: `npm i hushgate` installs into the current project,
+  where hushgate runs as `npx hushgate`, and puts no `hushgate` on PATH.
+
+### Fixed
+
+- **`setup --path` names the file it wrote** in the command it prints.
+  `hushgate serve` alone looks for `hushgate.config.json` in the working
+  directory, so the hint after `setup --path config/hg.json` started hushgate
+  on the built-in defaults instead; it now says
+  `hushgate serve -c config/hg.json`.
+
 ## [0.5.0] — 2026-10-28
 
 The audit trail was reviewed as what it is for — evidence that a DPO or an

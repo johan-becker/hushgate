@@ -15,6 +15,14 @@
   ],
   "license": "BUSL-1.1",
   "author": "Johan Becker",
+  "homepage": "https://hushgate.johanbecker.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johan-becker/hushgate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/johan-becker/hushgate/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
