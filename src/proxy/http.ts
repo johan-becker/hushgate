@@ -4,6 +4,7 @@
  */
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import { RequestError } from '../errors.js';
+import { jsonErrorPosition } from '../json-error.js';
 
 /**
  * Headers that describe one hop and must never be forwarded to the next one.
@@ -118,35 +119,6 @@ export function readBody(request: IncomingMessage, maxBytes: number): Promise<Bu
       );
     });
   });
-}
-
-/**
- * The offset a JSON syntax error reports, or `null` when it does not report one
- * in a shape we recognise.
- *
- * The parser's own message must never be repeated. V8 quotes the source it
- * choked on — `Unexpected token 'A', ..."essages": Anna Schmi"... is not valid
- * JSON` — so the message is a verbatim slice of the request body: the name, the
- * IBAN, whatever the client failed to template. Redaction has not run yet at
- * this point, and the message does not only go back to the caller who sent it,
- * it goes to stderr, which an ops team ships to a log aggregator that the GDPR
- * treats as a processing system of its own. A buggy client leaks a person into
- * that pipeline by accident; anyone who wants to plant PII fragments in someone
- * else's logs does it on purpose.
- *
- * The offset is the one part of the message that helps whoever has to fix the
- * client and the one part that cannot spell a person's name, so it is the only
- * part kept. Its wording is V8's, not a contract, so a message that does not
- * match is dropped whole rather than guessed at.
- */
-function jsonErrorPosition(cause: unknown): number | null {
-  if (!(cause instanceof Error)) return null;
-
-  const match = /\bat position (\d+)/u.exec(cause.message);
-  if (match === null) return null;
-
-  const position = Number(match[1]);
-  return Number.isSafeInteger(position) ? position : null;
 }
 
 /** Parse a JSON request body, or fail with a 400 the SDKs can display. */

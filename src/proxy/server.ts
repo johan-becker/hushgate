@@ -4,6 +4,7 @@
  *
  * Point your SDK's base URL at it and nothing else in your application changes.
  */
+import { setMaxListeners } from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { nullAuditLog, type AuditSink } from '../audit/log.js';
@@ -102,7 +103,17 @@ export interface ProxyServer {
   readonly metrics: Metrics;
   /** Start listening on the configured host and port. */
   listen(): Promise<AddressInfo>;
-  /** Stop accepting connections and wait for in-flight requests to finish. */
+  /**
+   * Stop accepting connections and wait for every request handler to finish,
+   * its audit record included.
+   *
+   * In-flight requests get `graceMs` (5 s by default) to finish on their own.
+   * After that their connections are closed and their upstream calls are
+   * abandoned, so each one ends promptly and is recorded as `failed`. This
+   * resolves only once those records have been handed to the sink, which is
+   * what lets the caller close the sinks straight afterwards. Calling it again
+   * returns the same promise.
+   */
   close(options?: { readonly graceMs?: number }): Promise<void>;
   /** `http://host:port` once listening, otherwise `null`. */
   readonly origin: string | null;
@@ -159,11 +170,23 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   const metrics = options.metrics ?? new Metrics();
   const onInternalError = options.onInternalError ?? ((error: unknown): void => reportFailure(error));
 
+  // Handlers still running, so close() can wait for the audit record each one
+  // writes on its way out, and the signal that abandons their upstream calls
+  // once the grace period is over.
+  const inflight = new Set<Promise<void>>();
+  const abandon = new AbortController();
+  // One listener per outstanding upstream call, by design. The default cap of
+  // ten would only turn a busy afternoon into a spurious leak warning.
+  setMaxListeners(0, abandon.signal);
+
   const server = createServer((request, response) => {
-    void handle(request, response).catch((error: unknown) => {
-      onInternalError(error);
-      respondWithError(response, error);
-    });
+    const handling = handle(request, response)
+      .catch((error: unknown) => {
+        onInternalError(error);
+        respondWithError(response, error);
+      })
+      .finally(() => inflight.delete(handling));
+    inflight.add(handling);
   });
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -319,6 +342,9 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         // The same detectors that will run over the text a moment later, so the
         // rewrite can ask whether the extraction hid anything from them.
         countFindings: (text) => session.countFindings(text),
+        // The media types the operator's extractors claim are known ones, so
+        // the trail records them as declared rather than as what was sniffed.
+        externalExtractors: config.attachments.extractors,
       });
       const parsed = rewritten.body;
       attachments = rewritten.reports;
@@ -344,6 +370,10 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         rule: decision.rule,
         jurisdiction: verdict.jurisdiction.code,
         controls: [],
+        // Which allowlist entry admitted this upstream, as the operator wrote
+        // it: the record has to say under which agreement the data went, and
+        // the host alone cannot when one gateway fronts several providers.
+        endpoint: verdict.endpoint,
       };
 
       // Refuses before serialisation: in `block` mode nothing leaves at all.
@@ -388,6 +418,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         },
         body: JSON.stringify(controlled.body),
         timeoutMs: config.limits.upstreamTimeoutMs,
+        signal: abandon.signal,
       });
 
       outcome = 'forwarded';
@@ -440,7 +471,7 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
         // before the one that failed — those were decoded, and the trail has to
         // say so.
         attachments = error.reports as readonly AttachmentReport[];
-        metrics.observeBlocked('attachment', 'attachments.onUnreadable');
+        metrics.observeBlocked('attachment', error.rule);
         for (const report of attachments) {
           metrics.observeAttachment({
             format: report.format,
@@ -584,6 +615,51 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
   // cannot be the reason a CLI run refuses to exit.
   sweeper.unref();
 
+  let closing: Promise<void> | null = null;
+
+  /**
+   * Stop serving, then wait for every handler to unwind.
+   *
+   * Closed sockets alone are not the end of a request. A handler writes its
+   * audit record in a `finally`, after the upstream has answered or failed,
+   * and a caller whose client has hung up — or whose provider is still
+   * thinking — keeps going after its socket is gone. The caller closes the
+   * audit sinks the moment this resolves, so resolving any earlier would hand
+   * those records to a closed trail, which is where records go to disappear.
+   *
+   * Abandoning the upstream calls is what keeps the wait bounded: past the
+   * grace period each one fails promptly, and its handler records `failed`.
+   */
+  async function shutdown(graceMs: number): Promise<void> {
+    // Idle keep-alive sockets would otherwise hold the server open for as
+    // long as the client felt like it.
+    server.closeIdleConnections();
+    // Not unref'd: while this is pending it is the one thing guaranteed to
+    // end the wait, and it is cleared as soon as nothing is left to wait for.
+    const forced = setTimeout(() => {
+      server.closeAllConnections();
+      abandon.abort();
+    }, graceMs);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error !== undefined && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      // Every connection is gone, so no new handler can start: the set only
+      // shrinks from here, and one pass over it is enough.
+      await Promise.allSettled(inflight);
+    } finally {
+      clearTimeout(forced);
+      clearInterval(sweeper);
+    }
+  }
+
   return {
     server,
     metrics,
@@ -600,23 +676,11 @@ export function createProxyServer(options: ProxyOptions): ProxyServer {
     },
 
     close({ graceMs = 5_000 }: { readonly graceMs?: number } = {}): Promise<void> {
-      return new Promise((resolve, reject) => {
-        // Idle keep-alive sockets would otherwise hold the server open for as
-        // long as the client felt like it.
-        server.closeIdleConnections();
-        const forced = setTimeout(() => server.closeAllConnections(), graceMs);
-        forced.unref();
-
-        server.close((error) => {
-          clearTimeout(forced);
-          clearInterval(sweeper);
-          if (error !== undefined && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      // A second call must not start a second shutdown: the server would
+      // report itself already closed, and the caller would stop waiting for
+      // the handlers the first call is still waiting for.
+      closing ??= shutdown(graceMs);
+      return closing;
     },
 
     get origin(): string | null {

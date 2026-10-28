@@ -5,10 +5,16 @@
  * terminal output. Each check answers one question an operator would otherwise
  * only discover in production, and each one says what to do about it.
  */
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { delimiter, isAbsolute as isAbsolutePath, join } from 'node:path';
-import { parseAuditLines } from '../audit/log.js';
-import { verifyChain } from '../audit/record.js';
+import {
+  configuredTrails,
+  trailWriteProblem,
+  type ConfiguredTrail,
+  type TrailWriteProblem,
+} from '../audit/paths.js';
+import { parseAuditLines, printable } from '../audit/trail.js';
+import { verifyTrail, verifyTrailFile, type TrailVerification } from '../audit/verify.js';
 import type { HushgateConfig } from '../config.js';
 import { leavesTheEea } from '../residency/jurisdictions.js';
 import { evaluateUpstream } from '../residency/policy.js';
@@ -28,24 +34,62 @@ export interface DoctorInput {
   readonly config: HushgateConfig;
   /** Absolute path of the config file that was read, or `null`. */
   readonly configPath: string | null;
-  /** Absolute path of the audit trail. */
-  readonly auditPath: string;
-  /** Injected so the tests do not need a file on disk. */
+  /**
+   * The directory relative audit paths resolve against, as `serve` resolves
+   * them. Defaults to the process's working directory.
+   */
+  readonly cwd?: string;
+  /**
+   * Absolute path of the global audit trail, when it is not `audit.path`
+   * resolved against {@link cwd}. Tenant trails are always taken from the config.
+   */
+  readonly auditPath?: string;
+  /**
+   * Injected so the tests do not need a file on disk: the trail's text, or
+   * `null` when there is none yet. It may throw, as reading the file would.
+   */
   readonly readTrail?: (path: string) => string | null;
+  /** Injected so the tests do not depend on the machine's file permissions. */
+  readonly writeProblem?: (path: string) => TrailWriteProblem | null;
   /** Injected so the tests do not depend on what is installed on the machine. */
   readonly onPath?: (command: string) => boolean;
 }
 
+/** The sections, in the order they are reported. */
+const SECTIONS: readonly (readonly [string, (input: DoctorInput) => Finding[]])[] = [
+  ['configuration', configuration],
+  ['briefing', briefing],
+  ['residency', residency],
+  ['enforcement', enforcement],
+  ['security', security],
+  ['attachments', attachments],
+  ['audit', audit],
+];
+
+/**
+ * Run every section, each on its own.
+ *
+ * A section that throws becomes a failure of that section rather than the end
+ * of the run. doctor is the CI gate, and one check tripping over something
+ * nobody anticipated — a trail in a shape no reader expected, a file system
+ * that answers strangely — must not hide what every other section had to say,
+ * nor turn the report into a stack trace.
+ */
 export function runChecks(input: DoctorInput): Finding[] {
-  return [
-    ...configuration(input),
-    ...briefing(input),
-    ...residency(input),
-    ...enforcement(input),
-    ...security(input),
-    ...attachments(input),
-    ...audit(input),
-  ];
+  return SECTIONS.flatMap(([section, check]) => {
+    try {
+      return check(input);
+    } catch (error) {
+      return [
+        {
+          section,
+          severity: 'fail' as const,
+          message: `the ${section} checks could not finish: ${printable(messageOf(error))}`,
+          remedy: 'fix what the message names and run doctor again; if it makes no sense, report it as a bug',
+        },
+      ];
+    }
+  });
 }
 
 /**
@@ -398,8 +442,18 @@ function security({ config }: DoctorInput): Finding[] {
   return out;
 }
 
+/**
+ * Every audit trail the config names, checked the way `serve` and an auditor
+ * will meet it.
+ *
+ * `serve` records a tenant with its own `audit.path` in that file only, so the
+ * global trail alone says nothing about those tenants: each distinct file is
+ * checked, and tenants that share one are named together. Of each, doctor asks
+ * whether `serve` could open it — a trail it cannot write stops the proxy from
+ * starting — and whether what is already in it verifies.
+ */
 function audit(input: DoctorInput): Finding[] {
-  const { config, auditPath } = input;
+  const { config } = input;
 
   if (!config.audit.enabled) {
     return [
@@ -412,57 +466,175 @@ function audit(input: DoctorInput): Finding[] {
     ];
   }
 
-  const read = input.readTrail ?? defaultReadTrail;
-  const text = read(auditPath);
-
-  if (text === null) {
-    return [
-      {
-        section: 'audit',
-        severity: 'note',
-        message: `no trail at ${auditPath} yet; it is written on the first request`,
-      },
-    ];
-  }
-
-  const { records, malformed } = parseAuditLines(text);
-  const chain = verifyChain(records);
+  const cwd = input.cwd ?? process.cwd();
+  const global = input.auditPath ?? config.audit.path;
+  const trails = configuredTrails({ ...config, audit: { ...config.audit, path: global } }, cwd);
+  // With one trail that nobody but the global traffic writes, there is
+  // nothing to tell apart, and "trail" says it all.
+  const named = trails.length > 1 || trails.some((trail) => trail.tenants.length > 0);
   const out: Finding[] = [];
 
-  if (malformed.length > 0) {
-    out.push({
-      section: 'audit',
-      severity: 'fail',
-      message: `${malformed.length} unreadable line(s) in ${auditPath}, first at line ${malformed[0]!.line}`,
-      remedy: 'the trail is append-only; investigate whatever rewrote it',
-    });
+  for (const trail of trails) {
+    const label = named ? labelOf(trail) : 'trail';
+    const shared = describeSharing(trail);
+    if (shared !== null) out.push({ section: 'audit', severity: 'note', message: shared });
+    out.push(...writable(trail, label, input), ...verified(trail, label, input));
   }
-
-  out.push(
-    chain.ok
-      ? {
-          section: 'audit',
-          severity: 'ok',
-          message: `${auditPath}: ${chain.records} record(s), chain intact, head ${chain.head.slice(0, 12)}…`,
-        }
-      : {
-          section: 'audit',
-          severity: 'fail',
-          message: `${auditPath}: chain broken at record ${chain.firstBreak!.index} (${chain.firstBreak!.reason}) — ${chain.firstBreak!.detail}`,
-          remedy: 'run "hushgate audit verify" and investigate; records from there on cannot be trusted',
-        },
-  );
 
   return out;
 }
 
-function defaultReadTrail(path: string): string | null {
-  if (!existsSync(path)) return null;
+/** Whether `serve` could open the trail, as a failure when it could not. */
+function writable(trail: ConfiguredTrail, label: string, input: DoctorInput): Finding[] {
+  const problem = (input.writeProblem ?? trailWriteProblem)(trail.path);
+  if (problem === null) return [];
+  const where = problem.path === trail.path ? '' : ` at ${printable(problem.path)}`;
+  return [
+    {
+      section: 'audit',
+      severity: 'fail',
+      message: `${label} ${printable(trail.path)} cannot be written (${problem.code}${where}), so "hushgate serve" would refuse to start`,
+      remedy: 'give the user hushgate runs as write access there, or point the audit path somewhere it has it',
+    },
+  ];
+}
+
+/** Whether what is in the trail verifies. */
+function verified(trail: ConfiguredTrail, label: string, input: DoctorInput): Finding[] {
+  const path = printable(trail.path);
+
+  let result: TrailVerification | null;
   try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    return null;
+    result = readAndVerify(trail.path, input.readTrail);
+  } catch (error) {
+    // Only a trail that does not exist yet is waiting for its first request.
+    // One that exists and cannot be read — a directory, a file this user may
+    // not open — cannot be verified, and that is a failure, not news.
+    if (codeOf(error) !== 'ENOENT') {
+      return [
+        {
+          section: 'audit',
+          severity: 'fail',
+          message: `${label} ${path} cannot be read (${codeOf(error) ?? printable(messageOf(error))}), so it cannot be verified`,
+          remedy: 'make it a file that the users running doctor and serve can read',
+        },
+      ];
+    }
+    result = null;
   }
+
+  if (result === null) {
+    return [
+      {
+        section: 'audit',
+        severity: 'note',
+        message: `no ${label} at ${path} yet; it is written on the first request`,
+      },
+    ];
+  }
+
+  return [...unreadable(result, label, path), chainFinding(result, label, path), ...gaps(result, label, path)];
+}
+
+function unreadable(result: TrailVerification, label: string, path: string): Finding[] {
+  if (result.malformedCount === 0) return [];
+  return [
+    {
+      section: 'audit',
+      severity: 'fail',
+      message: `${result.malformedCount} unreadable line(s) in ${label} ${path}, first at line ${result.malformed[0]!.line}`,
+      remedy: 'the trail is append-only; investigate whatever rewrote it',
+    },
+  ];
+}
+
+/** The chain's verdict. The head is given in full, because it is what gets anchored. */
+function chainFinding(result: TrailVerification, label: string, path: string): Finding {
+  const chain = result.verification;
+  const first = chain.firstBreak;
+  if (first === null) {
+    return {
+      section: 'audit',
+      severity: 'ok',
+      message: `${label} ${path}: ${chain.records} record(s), chain intact, head ${chain.head}`,
+    };
+  }
+
+  const line = first.line === undefined ? '' : `, line ${first.line}`;
+  const more = chain.breakCount === 1 ? '' : `; ${chain.breakCount} breaks in all`;
+  return {
+    section: 'audit',
+    severity: 'fail',
+    message: `${label} ${path}: chain broken at record ${first.index}${line} (${first.reason}) — ${printable(first.detail)}${more}`,
+    remedy: `run "hushgate audit verify ${path}" and investigate each point it lists`,
+  };
+}
+
+/**
+ * Records the writer could not write. Not a break — the chain links across
+ * each gap — but requests were served for which there is no evidence, so it
+ * is a warning rather than a note.
+ */
+function gaps(result: TrailVerification, label: string, path: string): Finding[] {
+  const chain = result.verification;
+  const first = chain.gaps[0];
+  if (first === undefined) return [];
+  const line = first.line === undefined ? '' : `, line ${first.line}`;
+  return [
+    {
+      section: 'audit',
+      severity: 'warn',
+      message: `${label} ${path}: ${chain.dropped} record${chain.dropped === 1 ? '' : 's'} could not be written (first gap before record ${first.index}${line}), so requests were served without evidence`,
+      remedy: 'look at the disk and the service log from that time; the chain links across the gap and still verifies',
+    },
+  ];
+}
+
+/**
+ * Verify one trail: from the injected text when a test supplies it, otherwise
+ * streamed from the file. Errors reading it are thrown unchanged.
+ */
+function readAndVerify(path: string, readTrail: DoctorInput['readTrail']): TrailVerification | null {
+  if (readTrail === undefined) return verifyTrailFile(path);
+  const text = readTrail(path);
+  return text === null ? null : verifyTrail(parseAuditLines(text).entries);
+}
+
+/** How a finding names a trail: by whose records it holds. */
+function labelOf(trail: ConfiguredTrail): string {
+  const tenants = trail.tenants.join(', ');
+  const plural = trail.tenants.length === 1 ? '' : 's';
+  if (trail.global) {
+    return trail.tenants.length === 0 ? 'global trail' : `global trail (also tenant${plural} ${tenants})`;
+  }
+  return `trail of tenant${plural} ${tenants}`;
+}
+
+/**
+ * A note when several tenants, or a tenant and the global trail, write one
+ * file. `serve` gives them one sink and one chain, and every record names its
+ * tenant, so nothing is wrong — but an operator who meant to keep them apart
+ * should hear that the config does not.
+ */
+function describeSharing(trail: ConfiguredTrail): string | null {
+  const tenants = trail.tenants.join(', ');
+  const one = trail.tenants.length === 1;
+  if (trail.global && trail.tenants.length > 0) {
+    return `tenant${one ? '' : 's'} ${tenants} ${one ? 'names' : 'name'} the global trail ${printable(trail.path)} as ${one ? 'its' : 'their'} own, so ${one ? 'its' : 'their'} records share that chain`;
+  }
+  if (trail.tenants.length > 1) {
+    return `tenants ${tenants} share one trail, ${printable(trail.path)}, and one chain`;
+  }
+  return null;
+}
+
+function codeOf(error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** How many findings of each severity. */

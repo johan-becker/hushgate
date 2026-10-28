@@ -219,24 +219,24 @@ describe('hushgate setup — the configuration branch', () => {
   });
 });
 
+/** Run the trial until it has printed its banner, then stop it. */
+async function runTrial(
+  dir: string,
+  argv: readonly string[],
+  answers: readonly string[],
+): Promise<Capture> {
+  const script = scripted(answers);
+  const c = capture([...argv], dir, script.prompt);
+  const controller = new AbortController();
+  const running = run({ ...c.cli, signal: controller.signal });
+
+  await waitFor(() => c.out().includes('__playground') || c.err() !== '');
+  controller.abort();
+  await running;
+  return c;
+}
+
 describe('hushgate setup — the trial branch', () => {
-  /** Run the trial until it has printed its banner, then stop it. */
-  async function runTrial(
-    dir: string,
-    argv: readonly string[],
-    answers: readonly string[],
-  ): Promise<Capture> {
-    const script = scripted(answers);
-    const c = capture([...argv], dir, script.prompt);
-    const controller = new AbortController();
-    const running = run({ ...c.cli, signal: controller.signal });
-
-    await waitFor(() => c.out().includes('__playground') || c.err() !== '');
-    controller.abort();
-    await running;
-    return c;
-  }
-
   it('asks only for the provider and the key, then serves the page', async () => {
     const dir = workspace();
     const c = await runTrial(dir, ['setup'], ['1', '2', 'sk-test']);

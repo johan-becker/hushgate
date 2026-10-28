@@ -20,7 +20,7 @@ import { decodeBase64, formatBytes } from './decode.js';
 import { probePdf } from './pdf.js';
 import { assessText, hidesIdentifiers } from './quality.js';
 import { findAttachmentSites, type AttachmentSite } from './shapes.js';
-import { mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
+import { isKnownMediaType, mediaTypeForFormat, normaliseMediaType, sniffFormat } from './sniff.js';
 import type {
   AttachmentFormat,
   AttachmentReport,
@@ -33,6 +33,8 @@ export interface RewriteLimits {
   readonly enabled: boolean;
   readonly maxBytes: number;
   readonly maxTotalBytes: number;
+  /** Most attachments one request may carry; more refuses the request. */
+  readonly maxCount: number;
   readonly maxTextChars: number;
   readonly timeoutMs: number;
   readonly onUnreadable: UnreadableAction;
@@ -58,6 +60,12 @@ export interface RewriteOptions {
    * that actually matters rather than a proxy for it.
    */
   readonly countFindings?: (text: string) => number;
+  /**
+   * The operator's external extractors, so that the media types they claim
+   * count as known when deciding what may be written to the audit trail.
+   * Taken from config; omitted, only hushgate's own media types are known.
+   */
+  readonly externalExtractors?: readonly { readonly mediaTypes: readonly string[] }[];
 }
 
 export interface RewriteResult {
@@ -70,8 +78,9 @@ export interface RewriteResult {
  * Replace every attachment in `body` with the text it contains.
  *
  * Throws {@link AttachmentBlockedError} when an attachment cannot be read and
- * `onUnreadable` is `block`. Nothing has left the machine at that point, which
- * is the entire purpose of doing this before the upstream request is built.
+ * `onUnreadable` is `block`, and when the request carries more attachments
+ * than `maxCount`. Nothing has left the machine at that point, which is the
+ * entire purpose of doing this before the upstream request is built.
  */
 export async function rewriteAttachments(
   body: JsonValue,
@@ -81,6 +90,7 @@ export async function rewriteAttachments(
 
   const sites = findAttachmentSites(body);
   if (sites.length === 0) return { body, reports: [] };
+  if (sites.length > options.limits.maxCount) throw tooMany(sites.length, options.limits.maxCount);
 
   const reports: AttachmentReport[] = [];
   const replacements = new Map<string, JsonValue>();
@@ -101,6 +111,31 @@ export async function rewriteAttachments(
   }
 
   return { body: substitute(body, replacements), reports };
+}
+
+/**
+ * Refuse a request that carries more attachments than `maxCount`.
+ *
+ * Counted before anything is decoded, and refused whatever `onUnreadable`
+ * says: the limit is not about whether a document could be read but about how
+ * many there are, and withholding or forwarding the surplus would still leave
+ * one audit entry per document. Every attachment becomes an entry in the
+ * request's record, and a record longer than the line `hushgate audit` reads
+ * back would leave a trail nobody tampered with failing verification for good.
+ * So the record says what happened in a single entry, with a reason built
+ * from two numbers, and nothing from the request.
+ */
+function tooMany(count: number, limit: number): AttachmentBlockedError {
+  const mediaType = mediaTypeForFormat('unknown');
+  const reason = `the request carries ${count} attachments, more than the attachments.maxCount limit of ${limit}`;
+  return new AttachmentBlockedError(
+    mediaType,
+    0,
+    reason,
+    'unknown',
+    [{ format: 'unknown', mediaType, bytes: 0, chars: 0, pages: null, extractor: null, outcome: 'blocked', reason }],
+    'attachments.maxCount',
+  );
 }
 
 /**
@@ -137,7 +172,8 @@ async function handleSite(
   soFar: readonly AttachmentReport[],
 ): Promise<SiteOutcome> {
   const { limits } = options;
-  const declared = normaliseMediaType(site.declaredMediaType) ?? 'application/octet-stream';
+  // Nothing sniffed yet, so a declared type is kept only if hushgate knows it.
+  const declared = auditMediaType(site.declaredMediaType, 'unknown', options);
 
   if (site.unresolvable !== null) {
     return refuse(site, 'unknown', declared, 0, site.unresolvable, limits.onUnreadable, soFar);
@@ -174,7 +210,7 @@ async function handleSite(
     return refuse(
       site,
       format,
-      normaliseMediaType(site.declaredMediaType) ?? mediaTypeForFormat(format),
+      auditMediaType(site.declaredMediaType, format, options),
       bytes.byteLength,
       'this attachment sits where redaction does not reach, so its text could not be pseudonymised',
       limits.onUnreadable,
@@ -183,7 +219,10 @@ async function handleSite(
     );
   }
 
-  const mediaType = normaliseMediaType(site.declaredMediaType) ?? mediaTypeForFormat(format);
+  const mediaType = auditMediaType(site.declaredMediaType, format, options);
+  // The prompt-facing header may show what the caller declared: it travels in
+  // the text the detectors redact, and never reaches the trail.
+  const headerMediaType = normaliseMediaType(site.declaredMediaType) ?? mediaType;
   const context = {
     format,
     mediaType: site.declaredMediaType,
@@ -251,11 +290,29 @@ async function handleSite(
           ? `text was cut at the ${limits.maxTextChars} character limit`
           : null,
       },
-      replacement: textPart(header(site.filename, mediaType, pages, truncated), text),
+      replacement: textPart(header(site.filename, headerMediaType, pages, truncated), text),
     };
   }
 
   return refuse(site, format, mediaType, bytes.byteLength, lastReason, limits.onUnreadable, soFar);
+}
+
+/**
+ * The media type that may be written to the audit trail.
+ *
+ * The declared type is the caller's choice and can carry anything that is a
+ * valid token, so it is recorded only when hushgate recognises it. Otherwise
+ * the type the sniffed format implies stands in, and `application/octet-stream`
+ * when even the format is unknown.
+ */
+function auditMediaType(
+  declared: string | null,
+  format: AttachmentFormat,
+  options: RewriteOptions,
+): string {
+  const config = { extractors: options.externalExtractors ?? [] };
+  if (isKnownMediaType(declared, config)) return normaliseMediaType(declared) as string;
+  return mediaTypeForFormat(format);
 }
 
 /**

@@ -434,6 +434,19 @@ describe('attachment configuration', () => {
       applyEnv(defaultConfig(), { HUSHGATE_ATTACHMENTS_ON_UNREADABLE: 'whatever' }),
     ).toThrow(/HUSHGATE_ATTACHMENTS_ON_UNREADABLE/u);
   });
+
+  it('limits how many attachments one request may carry, from the file or the environment', () => {
+    expect(defaultConfig().attachments.maxCount).toBe(256);
+    expect(parseConfig({ attachments: { maxCount: 12 } }).attachments.maxCount).toBe(12);
+    expect(applyEnv(defaultConfig(), { HUSHGATE_ATTACHMENT_MAX_COUNT: '40' }).attachments.maxCount).toBe(40);
+
+    for (const maxCount of [0, -1, 2.5, '10']) {
+      expect(() => parseConfig({ attachments: { maxCount } })).toThrow(/attachments"\.maxCount must be a positive integer/u);
+    }
+    expect(() => applyEnv(defaultConfig(), { HUSHGATE_ATTACHMENT_MAX_COUNT: 'many' })).toThrow(
+      /HUSHGATE_ATTACHMENT_MAX_COUNT/u,
+    );
+  });
 });
 
 describe('residency rule keys', () => {

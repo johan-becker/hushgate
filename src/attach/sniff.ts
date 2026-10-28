@@ -389,6 +389,27 @@ export function normaliseMediaType(value: string | null): string | null {
 }
 
 /**
+ * Whether hushgate itself knows this media type.
+ *
+ * The audit trail may name a media type only if it is one of ours: the declared
+ * type is typed by the caller, and a token such as `text/x-kuendigung.anna`
+ * would carry a name straight into evidence that is meant to hold categories
+ * and counts. Known means a type hushgate maps to a format, a type it reports
+ * for a format it sniffed, or one an operator wrote into the config for an
+ * external extractor — none of which a request can influence.
+ */
+export function isKnownMediaType(
+  mediaType: string | null,
+  config?: { readonly extractors?: readonly { readonly mediaTypes: readonly string[] }[] },
+): boolean {
+  const normalised = normaliseMediaType(mediaType);
+  if (normalised === null) return false;
+  if (MEDIA_TYPE_FORMATS.has(normalised) || ODF_MIMETYPES.has(normalised)) return true;
+  if (KNOWN_FORMATS.some((format) => mediaTypeForFormat(format) === normalised)) return true;
+  return (config?.extractors ?? []).some((spec) => spec.mediaTypes.includes(normalised));
+}
+
+/**
  * What this attachment is, decided from its bytes first.
  *
  * `declaredMediaType` and `filename` are read only once the bytes have had
@@ -470,6 +491,11 @@ function looksLikeHtml(bytes: Uint8Array): boolean {
   const tags = head.match(/<\/?(?:p|div|span|a|br|table|tr|td|li|ul|ol|h[1-6]|img)[\s/>]/gu);
   return tags !== null && tags.length >= 3;
 }
+
+/** Every format that has a media type of its own, for {@link isKnownMediaType}. */
+const KNOWN_FORMATS: readonly AttachmentFormat[] = [
+  'pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'html', 'rtf', 'eml', 'csv', 'json', 'xml', 'text',
+];
 
 /**
  * The media type a sniffed format implies.
