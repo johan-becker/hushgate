@@ -7,6 +7,7 @@ import {
   urlCredentialsDetector,
 } from '../src/detectors/index.js';
 import type { Detector } from '../src/types.js';
+import { cpuMs } from './helpers/cpu-time.js';
 
 /**
  * Catastrophic backtracking, measured rather than reasoned about.
@@ -45,33 +46,34 @@ import type { Detector } from '../src/types.js';
  * step later, so the bounds refuse only candidates that were being discarded.
  */
 
-/** Best of three: one sample at this size is mostly scheduler noise. */
+/** Best of three, in CPU time: see `helpers/cpu-time.ts` for why not the wall clock. */
 function best(detector: Detector, text: string): number {
   let ms = Infinity;
   for (let run = 0; run < 3; run++) {
-    const started = performance.now();
-    detector.find(text);
-    ms = Math.min(ms, performance.now() - started);
+    ms = Math.min(ms, cpuMs(() => detector.find(text)));
   }
   return ms;
 }
 
 /**
- * Quadruple the input and assert the cost did not sixteenfold.
+ * Grow the input eightfold and assert the cost did not grow sixty-fourfold.
  *
- * A 4x step rather than 2x, for the reason `ops.test.ts` argues at length:
- * doubling puts linear at 2 and quadratic at 4, and ordinary jitter on a shared
- * runner covers that whole gap. Over 4x the predictions are 4 and 16, and the
- * bound of 8 sits between them with room on both sides — noise cannot reach it
- * from below and the quadratic shapes above cannot fit under it. Each of them
- * measured a clean 16.0 across this step before the bounds went in.
+ * An 8x step, for the reason `ops.test.ts` argues at length: the step has to
+ * put linear and quadratic far enough apart that jitter cannot bridge them.
+ * This was a 4x step with a bound of 8 — linear at 4, quadratic at 16 — timed
+ * by the wall clock, until the sort-code case measured 8.44 on correct code
+ * while a second suite ran beside it. Timing is now in CPU time, which a busy
+ * machine barely moves, and over 8x the predictions are 8 and 64, so the bound
+ * of 32 leaves a factor of four on both sides. The quadratic shapes above each
+ * measured a clean 16.0 over the old 4x step before the bounds went in, which
+ * is 64 over this one.
  */
 function assertSubQuadratic(detector: Detector, make: (n: number) => string): void {
   const small = best(detector, make(12_500));
-  const large = best(detector, make(50_000));
+  const large = best(detector, make(100_000));
   // A floor on the denominator: at sub-millisecond timings the ratio is
   // meaningless, and a detector that fast is not the one this test is about.
-  expect(large / Math.max(small, 0.5)).toBeLessThan(8);
+  expect(large / Math.max(small, 0.5)).toBeLessThan(32);
 }
 
 describe('no detector backtracks catastrophically', () => {

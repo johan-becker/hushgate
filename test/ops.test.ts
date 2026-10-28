@@ -14,6 +14,7 @@ import type { UpstreamClient, UpstreamResponse } from '../src/proxy/upstream.js'
 import { Session } from '../src/redact/session.js';
 import { startHarness, type Harness } from './helpers/proxy-harness.js';
 import { replyJson } from './helpers/fake-upstream.js';
+import { cpuMs } from './helpers/cpu-time.js';
 
 let harness: Harness | undefined;
 
@@ -53,12 +54,11 @@ function document(sizeKb: number): string {
 }
 
 /** Milliseconds to redact `text` in a fresh session, best of `runs`. */
+/** Best of `runs`, in CPU time: see `helpers/cpu-time.ts` for why not the wall clock. */
 function timeRedaction(text: string, runs = 3): number {
   let best = Infinity;
   for (let run = 0; run < runs; run++) {
-    const started = performance.now();
-    new Session().redact(text);
-    best = Math.min(best, performance.now() - started);
+    best = Math.min(best, cpuMs(() => new Session().redact(text)));
   }
   return best;
 }
@@ -396,7 +396,11 @@ describe('the hot path stays linear', () => {
     expect(elapsed).toBeLessThan(8_000);
   });
 
-  it('does not degrade super-linearly as the input grows', () => {
+  // The assertions in these two are ratios, so the time they take says nothing
+  // by itself; it only has to stay under the test's timeout. On a busy machine
+  // the prose case took 21.8 s against the suite's 20 s default and failed on
+  // the clock with its ratio never computed.
+  it('does not degrade super-linearly as the input grows', { timeout: 60_000 }, () => {
     // Warm the JIT so the first measurement is not the slow one.
     timeRedaction(document(128), 1);
 
@@ -414,7 +418,7 @@ describe('the hot path stays linear', () => {
     expect(large / small).toBeLessThan(20);
   });
 
-  it('stays linear when almost every character is part of a finding', () => {
+  it('stays linear when almost every character is part of a finding', { timeout: 60_000 }, () => {
     // The prose fixture above carries one finding per ~45 bytes, which lets the
     // linear regex phase mask a quadratic resolver. This one carries one per 8.
     timeRedaction(dense(4_000), 1);

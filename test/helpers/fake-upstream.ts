@@ -29,6 +29,11 @@ export interface FakeReply {
   readonly chunks?: readonly (string | Buffer)[];
   /** Milliseconds to wait between chunks. */
   readonly chunkDelayMs?: number;
+  /**
+   * Awaited before each chunk is written, with its index: lets a test hold the
+   * rest of a stream back until it has seen what the proxy did with the start.
+   */
+  readonly beforeChunk?: (index: number) => Promise<void>;
   /** Never answer at all — used to exercise the upstream timeout. */
   readonly hang?: boolean;
   /**
@@ -94,7 +99,10 @@ export async function startFakeUpstream(initial?: FakeHandler): Promise<FakeUpst
       return;
     }
 
-    for (const piece of reply.chunks) {
+    for (const [index, piece] of reply.chunks.entries()) {
+      // Sequential on purpose, like the delay below.
+      // oxlint-disable-next-line no-await-in-loop
+      await reply.beforeChunk?.(index);
       response.write(piece);
       if ((reply.chunkDelayMs ?? 0) > 0) {
         // Sequential on purpose: the point is to space the chunks out in time.
