@@ -16,6 +16,7 @@ import {
   type BriefingConfig,
 } from '../briefing/index.js';
 import type { JsonValue } from '../redact/traverse.js';
+import type { Finding } from '../types.js';
 import { countByKind, Session } from '../redact/session.js';
 import { SseParser, StreamRehydrator } from '../stream/index.js';
 import { PAGE_CSS, PAGE_JS, renderPage, type PlaygroundEndpoint } from './page.js';
@@ -202,7 +203,8 @@ async function preview(
     return;
   }
 
-  const session = new Session();
+  const names = namesFrom(body['names']);
+  const session = names.length === 0 ? new Session() : new Session({ dictionary: { names } });
   const result = session.redact(text);
   const briefing = briefingFor(options.briefing ?? defaultBriefingConfig(), result.findings);
   const entry = options.store.create(session, result.text, model, briefing);
@@ -216,10 +218,61 @@ async function preview(
       // Kinds and counts. Never values — this is the same thing the audit
       // trail records, for the same reason.
       findings: countByKind(result.findings),
+      // Where each replaced value sat, so the page can mark it and link it to
+      // its placeholder. Offsets rather than values: they point into text the
+      // browser already holds (what it pasted, or `extracted` below), so they
+      // tell it nothing it could not read off its own screen.
+      marks: marksOf(result.findings),
       ...(extracted === undefined ? {} : { extracted }),
     },
     SECURITY_HEADERS,
   );
+}
+
+/** How many names a trial may list, and how long each may be. */
+const MAX_NAMES = 100;
+const MAX_NAME_LENGTH = 100;
+
+/**
+ * The names the page asked to treat as personal, as a dictionary would list
+ * them. The trial has no dictionary of its own, so without these a name could
+ * never be replaced there. Anything malformed is dropped without comment: the
+ * field is a convenience, and a bad entry should not cost the whole check.
+ */
+function namesFrom(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const names = new Set<string>();
+  for (const entry of value) {
+    if (names.size >= MAX_NAMES) break;
+    if (typeof entry !== 'string') continue;
+    const name = entry.trim();
+    if (name === '' || name.length > MAX_NAME_LENGTH) continue;
+    names.add(name);
+  }
+  return [...names];
+}
+
+interface Mark {
+  readonly start: number;
+  readonly end: number;
+  readonly kind: string;
+  readonly placeholder: string;
+}
+
+/** One mark per finding that was replaced, in document order, without its value. */
+function marksOf(findings: readonly Finding[]): Mark[] {
+  const marks: Mark[] = [];
+  for (const finding of findings) {
+    if (finding.placeholder === null) continue;
+    marks.push({
+      start: finding.start,
+      end: finding.end,
+      kind: finding.kind,
+      placeholder: finding.placeholder,
+    });
+  }
+  return marks;
 }
 
 interface DroppedPayload {

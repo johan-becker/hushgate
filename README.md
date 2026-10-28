@@ -20,8 +20,9 @@ npx hushgate setup
 
 That is the whole start, with nothing to install first. It asks whether to try
 hushgate or set it up. Trying shows, on a page on `127.0.0.1`, exactly what the
-provider would receive. Setting up writes `hushgate.config.json`, checks it and
-starts the proxy.
+provider would receive, with each value linked to the placeholder that replaced
+it; sample documents are there if you have nothing to hand. Setting up writes
+`hushgate.config.json`, checks it and starts the proxy.
 
 npm's own install box says `npm i hushgate`. That adds hushgate to the project
 in the current folder, where it runs as `npx hushgate` and can be imported as a
@@ -75,10 +76,13 @@ npx hushgate setup
 ```
 
 Two questions — which provider, and your API key — and it opens a page on
-`127.0.0.1` showing the whole round trip: what you wrote, what the provider
-would receive, the reply as it streams back with placeholders in it, and the
-same reply with your data put back. Nothing is written to disk, and the key
-stays inside that one process.
+`127.0.0.1` showing the whole round trip, side by side: what you wrote and what
+the provider would receive, then the reply as it streams back with placeholders
+in it and the same reply with your data put back. Point at a value and the
+placeholder that replaced it lights up, in the reply as well. Four sample
+documents, two of them German, fill the page in one click, and a field for
+names shows what `redaction.dictionary.names` will do once you set it up.
+Nothing is written to disk, and the key stays inside that one process.
 
 The same command sets hushgate up for real. Only the provider has to be
 answered; the rest is optional and can be filled in later. It writes
