@@ -126,6 +126,14 @@ hashes whatever a line holds, and simply does not know to report a gap.
   and `possiblyLostWindows`, and `JsonlAuditLog` gains
   `droppedSinceLastRecord`.
 
+- **`hushgate scan <folder>` walks the folder.** Every file in it and below is
+  read in name order, each reported under the path as the operator would type
+  it, so `scan docs` yields `docs/a.txt`; entries whose name starts with a dot
+  and `node_modules` are left alone. A folder with nothing in it says so on
+  stderr, rather than reporting no personal data in 0 files as if that settled
+  anything. Until now a folder was an `EISDIR` error, in a command whose own
+  description says it exists to sweep one.
+
 ### Changed
 
 - **`hushgate serve` refuses to start when it cannot open an audit trail.** The
@@ -197,6 +205,20 @@ hashes whatever a line holds, and simply does not know to report a gap.
   a trail of any size can be checked: reading it whole failed beyond 512 MiB,
   and `doctor` then reported it as not written yet. New trail files are created
   with mode `0640`; they were world-readable under the usual umask.
+
+- **The command line answers a slip with the word meant.** `hushgate scann`
+  says `unknown command "scann"; did you mean "scan"?` and points at `hushgate
+  help`, instead of printing the whole command list to stderr; `audit verfiy`,
+  `keys hassh` and `--upstrem` are answered the same way, the last with both
+  `--upstream-openai` and `--upstream-anthropic`. Options may stand before the
+  command as well as after it, so `hushgate --json residency` works;
+  `hushgate --help <command>` and `hushgate help <command>` print that
+  command's help, and `help` for a command that does not exist is a usage
+  error, exit 2, rather than the general help with exit 0. Errors from the
+  file system are said in words — `cannot read nope.txt: no such file or
+  directory` — without the errno code and the path repeated behind it; `serve`
+  on a port that is taken says so, and what to do about it; the `-c/--config`
+  description names the default; and `doctor` with one warning says "Fix it".
 
 ### Fixed
 

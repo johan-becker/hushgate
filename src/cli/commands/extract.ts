@@ -14,13 +14,13 @@ import { assessText, hidesIdentifiers } from '../../attach/quality.js';
 import { mediaTypeForFormat, sniffFormat } from '../../attach/sniff.js';
 import { formatBytes } from '../../attach/decode.js';
 import { loadConfig, redactionOptions } from '../../config.js';
-import { HushgateError, UsageError } from '../../errors.js';
+import { describeSystemError, HushgateError, UsageError } from '../../errors.js';
 import { Session } from '../../redact/session.js';
-import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 
 export const EXTRACT_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   raw: { type: 'boolean', description: 'print the extracted text without pseudonymising it' },
   json: { type: 'boolean', description: 'machine-readable output' },
 };
@@ -41,7 +41,7 @@ export async function extract(cli: Cli, argv: readonly string[]): Promise<number
   try {
     bytes = readFileSync(path);
   } catch (cause) {
-    throw new HushgateError(`cannot read ${target}: ${(cause as Error).message}`, { cause });
+    throw new HushgateError(`cannot read ${target}: ${describeSystemError(cause)}`, { cause });
   }
 
   const format = sniffFormat(bytes, null, target);

@@ -8,11 +8,11 @@
 import { loadConfig } from '../../config.js';
 import { runChecks, tally, type Finding, type Severity } from '../../doctor/checks.js';
 import { ConfigError } from '../../errors.js';
-import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 
 export const DOCTOR_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   json: { type: 'boolean', description: 'machine-readable output' },
   'allow-warnings': { type: 'boolean', description: 'exit 0 when only warnings were found' },
 };
@@ -99,10 +99,12 @@ function render(
 
   // Telling someone to re-run with a flag they are already using reads, in a CI
   // log, as if the flag had not taken effect — and the exit code says otherwise.
+  const them = counts.fail + counts.warn === 1 ? 'it' : 'them';
+  const accepted = counts.fail === 0 ? them : counts.warn === 1 ? 'the warning' : 'the warnings';
   const advice =
     counts.fail === 0 && allowWarnings
       ? 'Accepted via --allow-warnings.'
-      : 'Fix them, or re-run with --allow-warnings to accept the warnings.';
+      : `Fix ${them}, or re-run with --allow-warnings to accept ${accepted}.`;
 
   lines.push(`${parts.join(', ')}. ${advice}`, '');
 

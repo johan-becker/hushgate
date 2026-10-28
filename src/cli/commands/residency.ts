@@ -14,11 +14,11 @@ import { enforcementFor, evaluateUpstream, type ResidencyVerdict } from '../../r
 import { BUILTIN_ENDPOINTS } from '../../residency/registry.js';
 import { jurisdiction } from '../../residency/jurisdictions.js';
 import type { HushgateConfig } from '../../config.js';
-import { boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
+import { CONFIG_FLAG, boolFlag, parseFlags, stringFlag, type FlagSpecs } from '../args.js';
 import { EXIT, type Cli } from '../cli.js';
 
 export const RESIDENCY_FLAGS: FlagSpecs = {
-  config: { type: 'string', alias: 'c', description: 'path to hushgate.config.json', placeholder: '<path>' },
+  config: CONFIG_FLAG,
   json: { type: 'boolean', description: 'machine-readable output' },
   registry: { type: 'boolean', description: 'list the known endpoints and their jurisdictions' },
 };

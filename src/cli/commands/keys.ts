@@ -9,6 +9,7 @@ import { HushgateError, UsageError } from '../../errors.js';
 import { hashKey, issueKey, KEY_PREFIX } from '../../tenants/tenant.js';
 import { boolFlag, parseFlags, type FlagSpecs } from '../args.js';
 import { EXIT, readAll, type Cli } from '../cli.js';
+import { noSuchSubcommand } from '../suggest.js';
 
 export const KEYS_FLAGS: FlagSpecs = {
   json: { type: 'boolean', description: 'machine-readable output' },
@@ -28,8 +29,11 @@ export async function keys(cli: Cli, argv: readonly string[]): Promise<number> {
       return hashFromStdin(cli, boolFlag(parsed, 'json'));
     }
     default: {
+      const explained = '"new <tenant-id>" to mint a key, or "hash" to hash one from standard input';
       throw new UsageError(
-        `hushgate keys needs a subcommand: "new <tenant-id>" to mint a key, or "hash" to hash one from standard input`,
+        subcommand === undefined
+          ? `hushgate keys needs a subcommand: ${explained}`
+          : noSuchSubcommand('keys', subcommand, ['new', 'hash'], explained),
       );
     }
   }
