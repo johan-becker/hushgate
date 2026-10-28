@@ -32,7 +32,8 @@ I built it for the situation a European team keeps hitting: the models they
 want are operated in the United States, and the data they would like to send is
 not allowed to go there. hushgate is the technical half of the answer — the
 half you can point an auditor at. It has zero runtime dependencies, makes no
-network calls of its own beyond the upstream you configure, and its whole test
+network calls of its own beyond the upstream you configure (`hushgate update`
+asks npm for the newest release, and only when you run it), and its whole test
 suite passes with the cable pulled out.
 
 Attachments go through the same door: a PDF or a Word file in a request is
@@ -1365,6 +1366,7 @@ measured in hundreds of milliseconds.
 | `hushgate audit verify [<file> \| --tenant <id> \| --all] [--anchor <hash>]... [--continues-from <hash>] [--json]` | Walk the whole hash chain: every break, gap and unreadable line, with line numbers, and every anchor. See [§7](#verifying-it). |
 | `hushgate audit report [<file> \| --tenant <id>] [--from <date>] [--to <date>] [--anchor <hash>]... [--continues-from <hash>] [--json]` | Article 30 style record of processing, over UTC days. See [§7](#the-report). |
 | `hushgate keys new <tenant-id>` / `hushgate keys hash` | Mint a tenant key, or hash an existing one. |
+| `hushgate update [--check [--json]] [--to <version>] [--yes]` | See whether a newer release exists, and install it where npm put this one. The only command that contacts anything but the upstream, and only when run. See [§12](#updating). |
 | `hushgate help [command]`, `hushgate version` | Help, and the version. |
 
 `serve` additionally takes `-H/--host`, `-p/--port`, `--upstream-openai`,
@@ -1860,6 +1862,36 @@ with full-jitter exponential backoff for failures that happened *before* a
 response arrived. A response is never retried, whatever its status — a 429
 with a `retry-after` belongs to the caller, and quietly resending a request the
 provider has already seen and charged for would be worse than the error.
+
+### Updating
+
+```sh
+hushgate update --check      # is there a newer release? installs nothing
+hushgate update              # install it, after asking
+hushgate update --yes        # the same without asking, for cron or config management
+hushgate update --to 0.5.0   # a particular version, older ones included
+```
+
+`update` asks npm for the newest release, through whichever registry npm is
+configured to use, so a company mirror, its proxy and its credentials apply as
+they do to any other install. It then updates hushgate where npm put it:
+globally, or in the project whose `package.json` names it. It is the one command
+that contacts anything but your upstream, and only when you run it: `serve`
+never checks for updates. For monitoring, `update --check --json` prints the
+installed and newest versions, whether an update is available, and how this copy
+was installed.
+
+A copy npm did not install is updated the way it was installed, and `update`
+says how instead of touching it: the Docker image by building or pulling the
+image for the new version, a clone with `git pull` and a build, and `npx` by
+naming the version, as in `npx hushgate@<version> serve`. Where it cannot tell
+whether npm installed a copy globally or into a project, it installs nothing and
+prints both commands.
+
+After an update, a running `hushgate serve` keeps the old version until it is
+restarted. Restart it, or the service that runs it, and run `hushgate doctor`.
+Before 1.0 a minor release can change behaviour, so `update` links the changelog
+of the release it is about to install.
 
 ## 13. Development
 
