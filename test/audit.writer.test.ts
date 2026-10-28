@@ -282,10 +282,10 @@ describe('writing through failures', () => {
   });
 });
 
-describe('a record too long to read back', () => {
-  /** A route long enough that the record's line passes the reader's cap. */
-  const oversized = (): AuditEvent => event({ route: 'r'.repeat(MAX_LINE_BYTES) });
+/** A route long enough that the record's line passes the reader's cap. */
+const oversized = (): AuditEvent => event({ route: 'r'.repeat(MAX_LINE_BYTES) });
 
+describe('a record too long to read back', () => {
   it('is not written, and the next record carries it as dropped', async () => {
     const path = join(workspace(), 'audit.jsonl');
     const { log, messages } = writer(path);

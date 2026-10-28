@@ -369,6 +369,10 @@ describe('handling: what actually happened to the data', () => {
   });
 });
 
+/** A gateway event whose residency decision names one jurisdiction. */
+const inJurisdiction = (jurisdiction: string): AuditEvent =>
+  gatewayEvent({ residency: { mode: 'sanitize', rule: 'residency.mode', jurisdiction, controls: [] } });
+
 describe('recipients and safeguards', () => {
   it('looks the legal basis up by the endpoint that admitted the request', () => {
     const records = chain([
@@ -464,15 +468,12 @@ describe('recipients and safeguards', () => {
   });
 
   it('gives each jurisdiction of one host its own row, whichever came first', () => {
-    const at = (jurisdiction: string): AuditEvent =>
-      gatewayEvent({ residency: { mode: 'sanitize', rule: 'residency.mode', jurisdiction, controls: [] } });
-
     for (const order of [
       ['UNKNOWN', 'US', 'US'],
       ['US', 'US', 'UNKNOWN'],
     ]) {
       const records = chain(
-        order.map((code, index) => ({ at: `2026-03-0${index + 2}T08:00:00.000Z`, event: at(code) })),
+        order.map((code, index) => ({ at: `2026-03-0${index + 2}T08:00:00.000Z`, event: inJurisdiction(code) })),
       );
       const report = buildReport(records, options({ config: defaultConfig() }));
 
@@ -636,11 +637,11 @@ describe('escaping free text', () => {
   });
 });
 
-describe('a record of the wrong shape', () => {
-  /** A verified-looking record whose lists and maps are not what the writer writes. */
-  const misshapen = (fields: Record<string, unknown>): AuditRecord =>
-    ({ ...chain([{ at: '2026-03-02T08:00:00.000Z', event: event() }])[0]!, ...fields }) as unknown as AuditRecord;
+/** A verified-looking record whose lists and maps are not what the writer writes. */
+const misshapen = (fields: Record<string, unknown>): AuditRecord =>
+  ({ ...chain([{ at: '2026-03-02T08:00:00.000Z', event: event() }])[0]!, ...fields }) as unknown as AuditRecord;
 
+describe('a record of the wrong shape', () => {
   it('does not stop the document from being written', () => {
     const records = [
       misshapen({ attachments: [null, 5, 'pdf', { format: 7, outcome: ['x'], bytes: '9', extractor: {} }] }),

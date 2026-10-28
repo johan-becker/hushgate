@@ -382,15 +382,15 @@ describe('hushgate audit verify --continues-from', () => {
   });
 });
 
-describe('hushgate audit verify, with tenant trails', () => {
-  async function tenantWorkspace(): Promise<string> {
-    const dir = workspace({ 'hushgate.config.json': TENANT_CONFIG });
-    await writeTrail(join(dir, 'hushgate-audit.jsonl'), 2);
-    await writeTrail(join(dir, 'tenants', 'acme.jsonl'), 1, 'acme');
-    await writeTrail(join(dir, 'tenants', 'shared.jsonl'), 3, 'beta');
-    return dir;
-  }
+async function tenantWorkspace(): Promise<string> {
+  const dir = workspace({ 'hushgate.config.json': TENANT_CONFIG });
+  await writeTrail(join(dir, 'hushgate-audit.jsonl'), 2);
+  await writeTrail(join(dir, 'tenants', 'acme.jsonl'), 1, 'acme');
+  await writeTrail(join(dir, 'tenants', 'shared.jsonl'), 3, 'beta');
+  return dir;
+}
 
+describe('hushgate audit verify, with tenant trails', () => {
   it('says which tenant trails a plain verify did not check', async () => {
     const dir = await tenantWorkspace();
 

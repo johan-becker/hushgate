@@ -166,21 +166,21 @@ describe('parseAuditLines', () => {
   });
 });
 
+async function serveWithAudit(
+  path: string,
+  options: Parameters<typeof startHarness>[0] = {},
+): Promise<{ log: JsonlAuditLog }> {
+  const log = new JsonlAuditLog({ path });
+  harness = await startHarness({ ...options, proxy: { audit: log, ...options.proxy } });
+  return { log };
+}
+
 describe('the proxy trail', () => {
   const secrets = {
     email: 'johan@example.com',
     iban: 'DE89370400440532013000',
     key: 'sk-abcdefghijklmnopqrstuvwx',
   };
-
-  async function serveWithAudit(
-    path: string,
-    options: Parameters<typeof startHarness>[0] = {},
-  ): Promise<{ log: JsonlAuditLog }> {
-    const log = new JsonlAuditLog({ path });
-    harness = await startHarness({ ...options, proxy: { audit: log, ...options.proxy } });
-    return { log };
-  }
 
   it('records counts, policies and latency for a forwarded request', async () => {
     const path = join(workspace(), 'audit.jsonl');
